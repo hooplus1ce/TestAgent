@@ -28,6 +28,80 @@ description: 为 WMS/MOM/ERP 等企业系统迭代生成测试用例（oh-my-pi 
 
 ---
 
+## 0-b. 系统接入配置（免登）
+
+> 接入 Hoolinks SCM 演示系统时，通过 `browser` 工具 + Cookie 注入绕过登录页面。
+
+### 目标系统
+
+| 配置项 | 值 |
+|--------|-----|
+| **SCM Admin 入口** | `https://demo19-scm.hoolinks.com/scm-static/scm-admin/scm-admin/#/` |
+| **SCM 登录页** | `https://demo19-scm.hoolinks.com/meLogin.do` |
+| **企业名称** | 诺贝科技（中山）有限公司 |
+| **技术栈** | Ant Design Pro + React SPA（侧边栏菜单 + 顶部标签导航） |
+| **表格渲染** | VTable Canvas（`.vtable` 元素）——列表页使用 |
+| **模块嵌入** | iframe 内嵌旧版 SCM 页面（`scm-spo/#/` 路由） |
+
+### Cookie 注入免登流程（3 步）
+
+**Step 1** — OCR 识别验证码 + HTTP 登录，获取认证 Cookie：
+
+```python
+# 在 eval (py kernel) 中执行，依赖 ddddocr + httpx（项目 pyproject.toml 已声明）
+# 或直接调用项目中的 set_LoginAuth.get_login_auth()
+import uuid, ddddocr, httpx
+
+ocr = ddddocr.DdddOcr(show_ad=False)
+ocr.set_ranges("0123456789")  # 字符集限定纯数字
+
+client = httpx.Client(base_url="https://demo19-scm.hoolinks.com")
+cookies = {"SESSION": str(uuid.uuid4())}
+
+# 获取验证码图片
+resp = client.get("/validateCode.json", params={"key": "regValidateCode"},
+    headers={"Referer": "https://demo19-scm.hoolinks.com/meLogin.do?"}, cookies=cookies)
+vcode = ocr.classification(resp.read())
+
+# 登录（账号密码固定为演示环境凭证）
+data = {"username": "Hooplus1ce", "userpwd": "Ac123456", "vcode": vcode}
+resp = client.post("/signin.html", data=data, cookies=cookies)
+auth_cookies = [{"name": k, "value": v} for k, v in resp.cookies.items()]
+# 返回 4 个 Cookie: cookie_token, UCTOKEN, SESSION, SYSSOURCE
+```
+
+**Step 2** — 将 Cookie 注入 `browser` 标签页：
+
+```javascript
+// 在 browser run 中执行
+const cdp = await page.target().createCDPSession();
+for (const c of auth_cookies) {
+  await cdp.send('Network.setCookie', {
+    name: c.name, value: c.value,
+    domain: '.hoolinks.com', path: '/',
+    secure: true, sameSite: 'Lax'
+  });
+}
+```
+
+**Step 3** — 导航到 SCM Admin 入口，验证登录态：
+
+```javascript
+await tab.goto("https://demo19-scm.hoolinks.com/scm-static/scm-admin/scm-admin/#/",
+  { waitUntil: "networkidle0" });
+// 页面标题应为「诺贝科技（中山）有限公司」，侧边栏可见 19 个一级菜单
+```
+
+### 依赖安装
+
+```bash
+cd ~/CodeSpace/Hoolinks/TestAgent && uv sync  # 安装 ddddocr, httpx, openpyxl
+```
+
+> **关键约束**：MUST 使用 `uv` 管理依赖，NEVER `pip install`。项目 `.venv` 已由 `uv sync` 创建。
+
+---
+
 ## 1. 工具映射速查
 
 | 用途 | omp 工具 |
@@ -77,13 +151,17 @@ description: 为 WMS/MOM/ERP 等企业系统迭代生成测试用例（oh-my-pi 
 
 ### Phase 1 — 需求采集
 
-- 确认领域和模块（WMS / MOM / ERP）
+- 确认领域和模块（WMS / MOM / ERP / SCM）
 - **必须显式向用户确认 DOMAIN（领域名称），不可从 URL 路径、页面标题或系统标识自行推断**
 - 按 **输入 → 处理 → 输出** 引导用户描述业务流程
 - 询问需要覆盖的测试类型
-- 如果用户提供**系统截图**：用 `read` 或 `inspect_image` 截图分析，按 §6 流程处理
-- 如果用户已打开目标系统页面：用 `browser` 工具连接调试 Chrome，获取 DOM 结构、截图、识别 UI 元素
-- 如果在本仓库内工作：用 `read` 查找旧用例、用 `search` 查找业务规则实现
+- **【SCM 系统专用】** 如果用户仅提供模块名称（如「进货明细表」），按 §0-b 流程：
+  1. 执行 Cookie 注入免登 → `browser` 打开 SCM Admin
+  2. 侧边栏点击目标模块 → 如内容在 iframe 内则切换 frame
+  3. 提取 VTable 列定义和样本数据（§6.3 注入脚本）
+  4. **查询报表类模块**：强制执行 Phase 1-b 穷尽筛选字段
+  5. 用实际页面数据替代用户描述，自动填充业务规则
+- 如果用户提供**系统截图**：用 `inspect_image` 分析，按 §6 流程处理
 - 记录关键**业务规则**、**状态流转节点**
 
 **→ 推进条件**（全部满足）：
@@ -93,6 +171,96 @@ description: 为 WMS/MOM/ERP 等企业系统迭代生成测试用例（oh-my-pi 
 4. ✅ 测试类型范围已确认
 
 > 兜底：3 轮追问后仍信息不足 → 生成骨架用例，在「备注」列标注 `[待确认: <缺失项>]`。
+
+### Phase 1-b — 筛选区域字段穷尽（查询报表类模块强制）
+
+> 当目标模块为**查询/报表类**页面（列表页、明细表、统计表）时，MUST 先穷尽筛选区域的所有字段、运算符和下拉选项，再进入 Phase 2 设计用例。**禁止凭猜测捏造筛选字段或下拉值**。
+
+#### 穷尽步骤
+
+**Step 1** — 定位页面 iframe 上下文：
+
+SCM Admin 的模块页面通常嵌入在 iframe 中（`id="ReactIframe<code>"`）。先通过 `page.frames()` 找到匹配的 frame：
+
+```javascript
+const frame = page.frames().find(f => f.url().includes('purchaseList'));
+// 之后所有 evaluate/click 操作都在 frame 上执行
+```
+
+**Step 2** — 点击「展开▼」打开高级搜索弹窗：
+
+```javascript
+await frame.evaluate(() => {
+  const buttons = document.querySelectorAll('button');
+  for (const btn of buttons) {
+    if (btn.textContent.includes('展开')) { btn.click(); return true; }
+  }
+});
+```
+
+弹窗标题为「高级搜索」，内含 37 个筛选行（每行 = 字段选择 + 运算符选择 + 值输入）。
+
+**Step 3** — 系统扫描所有筛选行，区分值输入类型：
+
+```javascript
+const allRows = modal.querySelectorAll('.ant-row .ant-col-xs-12');
+for (const row of allRows) {
+  const selects = row.querySelectorAll('.ant-select');
+  const fieldName = selects[0]?.querySelector('.ant-select-selection-selected-value')?.textContent;
+  const operator = selects[1]?.querySelector('.ant-select-selection-selected-value')?.textContent;
+
+  // 判断值输入类型
+  const thirdCol = row.querySelector('.ant-col-8:nth-child(3)');
+  let valueType;
+  if (thirdCol.querySelector('.ant-calendar-picker')) valueType = 'date_range';
+  else if (thirdCol.querySelector('.ant-select')) valueType = 'select_dropdown';
+  else if (thirdCol.querySelector('input[type="text"]')) valueType = 'text_input';
+  // 记录 { fieldName, operator, valueType }
+}
+```
+
+**Step 4** — 穷尽运算符（按字段类型区分）：
+
+| 值输入类型 | 点击元素 | 典型运算符选项 |
+|-----------|---------|--------------|
+| 文本输入 (`text_input`) | 第 2 个 select（运算符列） | 包含、不包含、等于、不等于 |
+| 下拉选择 (`select_dropdown`) | 第 2 个 select（运算符列） | 等于、不等于 |
+| 日期范围 (`date_range`) | 第 2 个 select（运算符列） | 介于 |
+
+```javascript
+// 点击运算符下拉获取选项
+row.querySelectorAll('.ant-select')[1].click();
+// 读取弹出菜单
+document.querySelectorAll('.ant-select-dropdown:not(.ant-select-dropdown-hidden) .ant-select-dropdown-menu-item')
+```
+
+**Step 5** — 穷尽下拉字段的枚举值：
+
+仅 `valueType === 'select_dropdown'` 的字段需要此步。点击第 3 个 select（值选择列）展开下拉，收集选项。
+
+```javascript
+// 滚动到目标行 → 点击第 3 个 select
+row.scrollIntoView({ block: 'center' });
+row.querySelectorAll('.ant-select')[2].click();
+// 读取选项
+const items = document.querySelectorAll(
+  '.ant-select-dropdown:not(.ant-select-dropdown-hidden) .ant-select-dropdown-menu-item'
+);
+```
+
+**关键约束**：每次点击下拉后 MUST 先关闭（点击弹窗标题区域），再点下一个，否则下拉选项会被缓存/串扰。
+
+#### 产出物
+
+穷尽完成后，输出完整的**筛选字段矩阵**，格式如下：
+
+| 字段名 | 值输入类型 | 可用运算符 | 枚举选项（下拉字段） |
+|--------|-----------|-----------|-------------------|
+| 进货状态 | select_dropdown | 等于 / 不等于 | 待安排进货、部分安排进货、待进货、部分进货、全部进货、已取消 |
+| 进货订单号 | text_input | 包含 / 不包含 / 等于 / 不等于 | — |
+| 计划进货日期 | date_range | 介于 | — |
+
+此矩阵作为 Phase 2 用例设计的**唯一数据源**——测试数据中的字段名、下拉选项值 MUST 来自此矩阵，不得凭空编造。
 
 ### Phase 2 — 用例生成
 
@@ -539,6 +707,12 @@ omp 提供 `eval`（持久 Python kernel），Phase 4 直接在 kernel 中逐 ce
 | 截图读取失败 | 验证路径 → 用 `inspect_image` 重试 → 让用户手动描述 |
 | 浏览器连接失败 | 检查 Chrome 是否以 `--remote-debugging-port=9229` 启动 → 验证 `http://localhost:9229/json` |
 | 需求描述不清晰 | 最多 3 轮追问 → 生成骨架用例，备注列标注 `[待确认]` |
+| SCM Cookie 过期/失效 | 重新执行 §0-b Step 1~2 获取新 Cookie → 注入 → 重新导航 |
+| SCM 模块页面加载为空白/404 | 检查 iframe URL 是否正确（`page.frames()` 列出所有 frame） → 检查侧边栏菜单是否正确点击 |
+| 高级搜索弹窗未弹出 | 确认「展开▼」按钮可点击（`btn.textContent.includes('展开')`）→ 如已展开则按钮显示为「收起▲」 |
+| 高级搜索下拉选项串扰 | 每次点击下拉后 MUST 先点击弹窗标题关闭再点下一个，否则读取到上一个下拉的缓存数据 |
+| 筛选字段 valueType 误判 | 人工复核：text_input 为 `<input>`，select_dropdown 为 `.ant-select`，date_range 为 `.ant-calendar-picker` |
+| SCM 侧边栏菜单未展开 | 先点击一级菜单项（`.ant-menu-submenu-title`），等待动画完成，再提取子菜单列表 |
 | 用例超过 30 条 | 建议按子功能分批生成导出 |
 | 输出目录不存在 | 代码自动创建 |
 | 写入权限不足 | 降级到当前工作目录（`.`） |
