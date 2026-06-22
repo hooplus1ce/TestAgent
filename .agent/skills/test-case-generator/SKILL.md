@@ -340,6 +340,7 @@ for 每个按钮 in 当前页面:
 
 **关键约束（与广度遍历相反）**：
 - **NEVER** 点一下按钮看一眼就关掉点下一个
+- **每次页面跳转/Tab切换/弹窗关闭后 MUST 重新获取 iframe 引用**（`page.frames().find(...)`），旧引用在导航后立即失效
 - 弹窗内的每个下拉字段 MUST 展开穷尽全部选项
 - 弹窗内的每个按钮 MUST 点击并记录行为
 - 新页面的表单 MUST 填一遍所有字段观察校验规则
@@ -404,16 +405,50 @@ await page.evaluate((name) => {
 }, '托工订单新增');
 ```
 
-**iframe 上下文切换**：
+
+**iframe 上下文获取（⚠️ 核心铁律）**：
+
+> **每次页面跳转、标签切换、弹窗关闭后 MUST 重新获取 iframe 引用。旧引用在导航后立即失效——继续使用会导致 `undefined is not an object` 或操作到错误页面。**
 
 ```javascript
-// 列出所有 iframe
-const frames = page.frames().map(f => ({ name: f.name(), url: f.url().slice(0, 100) }));
-// 根据 URL 模式定位
-const targetFrame = page.frames().find(f => f.url().includes('laborOrder'));
-// 在该 iframe 内执行
-await targetFrame.evaluate(() => { /* ... */ });
+// ❌ 错误：缓存 frame 引用
+const frame = page.frames().find(f => f.url().includes('laborOrder'));
+await frame.evaluate(() => { /* 点击按钮触发跳转 */ });
+await frame.evaluate(() => { /* 💥 frame 可能已失效! */ });
+
+// ✅ 正确模式：每次导航后重新获取
+let f = page.frames().find(f => f.url().includes('laborOrder'));
+await f.evaluate(() => { /* 点击按钮触发跳转 */ });
+await new Promise(r => setTimeout(r, 2000));   // 等待导航
+f = page.frames().find(f => f.url().includes('newPage')); // ← 重新获取
+await f.evaluate(() => { /* 在新页面操作 */ });
+
+// ✅ SCM Admin 模式：列表页 iframe → 点击新增 → 父页面新Tab
+let listFrame = page.frames().find(f => f.url().includes('laborOrder'));
+await listFrame.evaluate(() => { /* 点击「新增」按钮 */ });
+// 新 iframe 出现在父页面 → 重新获取
+let detailFrame = page.frames().find(f => f.url().includes('laborOrderDetail'));
+await detailFrame.evaluate(() => { /* 在新增页操作 */ });
+// 关闭Tab → 回到列表 → 重新获取列表 iframe
+listFrame = page.frames().find(f => f.url().includes('laborOrder'));
 ```
+
+**必须重新获取 iframe 的场景**：
+
+| 触发操作 | 原因 |
+|---------|------|
+| 按钮导致 `location.href` 变化 | iframe URL 改变 |
+| 点击「新增」→ 父页面开新Tab | 新 iframe 被动态创建 |
+| 关闭 Tab | iframe 被销毁 |
+| `history.back()` 返回 | iframe URL 回退 |
+| 父页面切换 `.ant-tabs-tab` | 不同 iframe 变为活跃 |
+
+**调试辅助**：操作前后打印 `page.frames()` 列表确认 iframe 变化：
+
+```javascript
+console.log(page.frames().map(f => f.url().slice(0, 80)));
+```
+
 ### Phase 1-d — VTable 单元格交互探索（Canvas 渲染表格强制）
 
 > **核心原则同 Phase 1-c：深度优先**——当页面使用 VTable（`@visactor/vtable`）Canvas 渲染时，MUST 通过 VTable 实例 API 探测每个可交互单元格，触发编辑/选择后穷尽其交互深度，再继续下一个单元格。
