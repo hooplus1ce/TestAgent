@@ -155,12 +155,14 @@ cd ~/CodeSpace/Hoolinks/TestAgent && uv sync  # 安装 ddddocr, httpx, openpyxl
 - **必须显式向用户确认 DOMAIN（领域名称），不可从 URL 路径、页面标题或系统标识自行推断**
 - 按 **输入 → 处理 → 输出** 引导用户描述业务流程
 - 询问需要覆盖的测试类型
-- **【SCM 系统专用】** 如果用户仅提供模块名称（如「进货明细表」），按 §0-b 流程：
+- **【SCM 系统专用】** 如果用户仅提供模块名称（如「托工订单」），按 §0-b 流程：
   1. 执行 Cookie 注入免登 → `browser` 打开 SCM Admin
   2. 侧边栏点击目标模块 → 如内容在 iframe 内则切换 frame
   3. 提取 VTable 列定义和样本数据（§6.3 注入脚本）
   4. **查询报表类模块**：强制执行 Phase 1-b 穷尽筛选字段
-  5. 用实际页面数据替代用户描述，自动填充业务规则
+  5. **所有模块强制**：执行 Phase 1-c 穷尽所有按钮交互（弹窗/跳转/下载）
+  6. **Canvas 表格强制**：执行 Phase 1-d 探测 VTable 单元格交互
+  7. 用实际页面数据替代用户描述，自动填充业务规则
 - 如果用户提供**系统截图**：用 `inspect_image` 分析，按 §6 流程处理
 - 记录关键**业务规则**、**状态流转节点**
 
@@ -262,13 +264,141 @@ const items = document.querySelectorAll(
 
 此矩阵作为 Phase 2 用例设计的**唯一数据源**——测试数据中的字段名、下拉选项值 MUST 来自此矩阵，不得凭空编造。
 
+### Phase 1-c — 页面按钮穷尽（所有模块强制）
+
+> 发现目标页面上**所有按钮的交互行为**：弹窗、页面跳转、下载触发、行内展开。每发现一个交互行为 = 一个测试用例分组。
+
+#### 穷尽步骤
+
+**Step 1** — 定位页面工具栏区域：
+
+```javascript
+// 在目标 iframe 中执行
+const buttons = document.querySelectorAll('button');
+const visibleButtons = [...buttons].filter(b => b.offsetParent !== null && b.textContent.trim());
+// 记录：按钮文本、className、disabled 状态、onclick 属性
+```
+
+**Step 2** — 逐个点击并观察结果，5 种可能：
+
+| 结果类型 | 判断方法 | 示例 |
+|---------|---------|------|
+| **打开弹窗** | `document.querySelectorAll('.ant-modal').length` 增加 | 「料件预计领用」→ 弹出领用表 |
+| **打开抽屉** | `document.querySelectorAll('.ant-drawer-open').length` 增加 | 设置 → 列配置抽屉 |
+| **页面跳转** | `location.href` 变化 | 「流程设置」→ `/flowSet` |
+| **打开新Tab** | 父页面新 iframe 出现 | 「新增」→ 父页面新增 `<iframe>` + `.ant-tabs-tab` |
+| **触发下载/打印** | 浏览器级行为，DOM 无变化 | 「导出」→ xlsx 下载；「打印」→ 打印对话框 |
+
+**Step 3** — 对弹窗/抽屉/新页面执行二级穷尽：
+
+- 弹窗内：提取标题、所有输入框、下拉框、表格列定义、按钮
+- 新页面内：Phase 1-b 的筛选穷尽在此也适用
+- 父页面：检查 `page.frames()` 新增的 iframe（`name` 属性如 `44110006`），切换 frame 后继续探索
+
+**关键约束**：
+- 每次点击后 MUST 关闭弹窗（点击 `.ant-modal-close` 或 `.ant-modal-mask`）再点下一个
+- 按钮可能因 VTable 行选中而动态出现（如「批量删除」），MUST 先勾选行再扫一次
+- SCM Admin 的「新增」按钮会在父页面打开新标签页；需要检查 `page.evaluate()` 级别的变动
+
+#### 产出物
+
+| 按钮 | 交互类型 | 目标页面/弹窗 | 关键元素 |
+|------|---------|-------------|---------|
+| 新增 | button_nav | laborOrderDetail（新tab） | 12字段表单+货物信息+附件上传 |
+| 设置 | button_vtable | VTable列配置（Canvas） | 列显示/隐藏 |
+| 导出 | button_export | 浏览器下载 | xlsx |
+| 打印 | button_print | 浏览器打印 | — |
+| 料件预计领用 | button_modal | 领用表弹窗 | 搜索框+15列表格 |
+| 流程设置 | button_nav | /flowSet?moduleEnum=20 | 27复选框+2radio+编辑 |
+
+---
+
+### Phase 1-d — VTable 单元格交互探索（Canvas 渲染表格强制）
+
+> 当页面使用 VTable（`@visactor/vtable`）Canvas 渲染时，MUST 通过 VTable 实例 API 探测单元格交互能力。
+
+#### 探测维度
+
+**维度 1 — 列编辑器（inline editing）**：
+
+```javascript
+const vt = window._vtable;
+// 检查每列是否有编辑器定义
+for (const col of vt.columns) {
+  const hasEditor = vt.isHasEditorDefine?.(col) ?? false;
+  // 检查编辑器类型
+  const editorType = col.editor || col.fieldType;
+  // 下拉编辑器 → col.listEditor || col.options
+  // 日期编辑器 → col.editor === 'date' || col.fieldType === 'date'
+  // 文本编辑器 → col.editor === 'input' || typeof col.editor === 'function'
+  // 复选框列 → col.cellType === 'checkbox' || col.headerType === 'checkbox'
+}
+// 实际触发编辑器
+vt.startEditCell(row, col);  // 观察 Canvas 上是否出现编辑组件
+```
+
+**维度 2 — 事件处理器**：
+
+```javascript
+// 检查 VTable 内部事件配置
+const props = vt.internalProps || {};
+// eventOptions: 单元格 click/dblclick/mousedown 等事件
+// menu/menuHandler: 右键上下文菜单
+// dataSourceEventIds: 数据变更事件
+const eventKeys = Object.keys(props).filter(k =>
+  k.toLowerCase().includes('click') || k.toLowerCase().includes('menu') ||
+  k.toLowerCase().includes('event') || k.toLowerCase().includes('dbl')
+);
+```
+
+**维度 3 — 列头交互**：
+
+```javascript
+// 列头点击 → 排序
+// 列头下拉 → 筛选（按值筛选/按条件筛选）
+// 列头拖拽 → 列宽调整
+// 列头右键 → 列操作菜单
+// 判断：点击列头区域 → 检查 .ant-dropdown 或 .vtable-menu 出现
+```
+
+**维度 4 — 行选择与行操作**：
+
+```javascript
+// 复选框列 → 勾选/全选 → 检查工具栏新按钮
+// 行双击 → 详情页跳转
+// 行悬停 → tooltip
+// 行右键 → 上下文菜单
+```
+
+#### VTable API 速查表
+
+| API 方法 | 用途 | 返回值 |
+|---------|------|--------|
+| `vt.isHasEditorDefine(col)` | 列是否有编辑器 | boolean |
+| `vt.startEditCell(row, col)` | 触发单元格编辑 | boolean |
+| `vt.completeEditCell()` / `vt.cancelEditCell()` | 完成/取消编辑 | void |
+| `vt.getCellValue(row, col)` / `vt.getCellRawValue(row, col)` | 获取单元格值 | any |
+| `vt.getCellRect(row, col)` | 获取单元格坐标 | `{x, y, width, height}` |
+| `vt.scrollToCell({row, col})` | 滚动到指定单元格 | void |
+| `vt.selectCell(row, col)` / `vt.selectCells(ranges)` | 选择单元格 | void |
+| `vt.getSelectedCellInfos()` | 获取选中单元格信息 | array |
+| `vt.getCheckboxState()` | 复选框选中状态 | array |
+
+#### 产出物
+
+| 列名 | hasEditor | editorType | 列头交互 | 行交互 |
+|------|-----------|-----------|---------|--------|
+| _vtable_checkbox | false | checkbox(header) | 全选/取消 | 行勾选 |
+| 订单状态 | false | — | 按值筛选/排序 | — |
+| 采购数量 | false | — | 按条件筛选(大于/小于/等于) | — |
+
 ### Phase 2 — 用例生成
 
 每张用例必须包含 **18 个字段**（对齐 Excel 输出列结构）：
 
 | # | 字段 | 说明 | 要求 |
 |---|------|------|------|
-| A | 用例编号 | `{ENTERPRISE_PREFIX}_{MODULE_PINYIN}_{分组字母}{3位数字}` | 全局唯一。示例：`NB_WLSQD_F001`（物料申请单筛选用例）。分组字母约定：A=新增/添加、F=筛选查询、E=编辑、P=审批流程、C=取消、L=转单流转、B=批量操作 |
+| A | 用例编号 | `{ENTERPRISE_PREFIX}_{MODULE_PINYIN}_{分组字母}{3位数字}` | 全局唯一。示例：`NB_TGDD_F001`（托工订单筛选用例）。分组字母约定：A=新增/添加、F=筛选查询、E=编辑、C=配置/流程设置、I=行内/弹窗交互、B=批量操作/导出/打印、P=页面级别（标签切换/刷新/布局） |
 | B | 用例标题 | 动宾结构，简明概括 | 如「采购订单转单成功」 |
 | C | 优先级 | P0~P3 | P0=阻塞；P1=核心；P2=一般；P3=低优 |
 | D | 验证点 | 简明验证目标描述 | 必须有明确的可验证内容 |
