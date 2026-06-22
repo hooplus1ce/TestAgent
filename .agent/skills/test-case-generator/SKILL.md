@@ -43,54 +43,60 @@ description: 为 WMS/MOM/ERP 等企业系统迭代生成测试用例（oh-my-pi 
 | **表格渲染** | VTable Canvas（`.vtable` 元素）——列表页使用 |
 | **模块嵌入** | iframe 内嵌旧版 SCM 页面（`scm-spo/#/` 路由） |
 
-### Cookie 注入免登流程（3 步）
+### 免登流程（浏览器内原生登录，已验证可用）
 
-**Step 1** — OCR 识别验证码 + HTTP 登录，获取认证 Cookie：
+> **注意**：HTTP Cookie 注入方案（httpx 获取 → CDP `Network.setCookie`）在实际测试中**不可靠**——Cookie 域/路径问题导致 SCM Admin 菜单不加载。以下**浏览器内原生登录流程**已实际验证通过。
+
+**Step 0** — 打开浏览器到登录页：
+
+```javascript
+// browser open → 自动重定向到 meLogin.do
+// 页面标题: 「诺贝科技（中山）有限公司 | 登录」
+```
+
+**Step 1** — 获取浏览器 SESSION + OCR 验证码（eval py kernel）：
 
 ```python
-# 在 eval (py kernel) 中执行，依赖 ddddocr + httpx（项目 pyproject.toml 已声明）
-# 或直接调用项目中的 set_LoginAuth.get_login_auth()
-import uuid, ddddocr, httpx
-
+import ddddocr, httpx
+# 先从 browser run 中获取 SESSION: page.cookies() → sessionCookie.value
 ocr = ddddocr.DdddOcr(show_ad=False)
-ocr.set_ranges("0123456789")  # 字符集限定纯数字
-
+ocr.set_ranges("0123456789")
 client = httpx.Client(base_url="https://demo19-scm.hoolinks.com")
-cookies = {"SESSION": str(uuid.uuid4())}
-
-# 获取验证码图片
 resp = client.get("/validateCode.json", params={"key": "regValidateCode"},
-    headers={"Referer": "https://demo19-scm.hoolinks.com/meLogin.do?"}, cookies=cookies)
-vcode = ocr.classification(resp.read())
-
-# 登录（账号密码固定为演示环境凭证）
-data = {"username": "Hooplus1ce", "userpwd": "Ac123456", "vcode": vcode}
-resp = client.post("/signin.html", data=data, cookies=cookies)
-auth_cookies = [{"name": k, "value": v} for k, v in resp.cookies.items()]
-# 返回 4 个 Cookie: cookie_token, UCTOKEN, SESSION, SYSSOURCE
+    headers={"Referer": "https://demo19-scm.hoolinks.com/meLogin.do"},
+    cookies={"SESSION": session_cookie_value})
+vcode = ocr.classification(resp.read())  # → 4位纯数字
 ```
 
-**Step 2** — 将 Cookie 注入 `browser` 标签页：
+**Step 2** — 浏览器内填表登录（browser run）：
 
 ```javascript
-// 在 browser run 中执行
-const cdp = await page.target().createCDPSession();
-for (const c of auth_cookies) {
-  await cdp.send('Network.setCookie', {
-    name: c.name, value: c.value,
-    domain: '.hoolinks.com', path: '/',
-    secure: true, sameSite: 'Lax'
-  });
-}
+// 用户名：标准 textbox
+await tab.fill('textbox[name="用户名"]', 'Hooplus1ce');
+
+// 密码：contenteditable div + hidden input（非标准 input[type=password]）
+await page.evaluate((vcode) => {
+  document.getElementById('signinValue').textContent = 'Ac123456';
+  document.querySelector('input[name="vcode"]').value = vcode;
+}, vcode);
+
+// 点击「登录」按钮 → aria-ref 或 fallback
+await tab.click('aria-ref=e30');
 ```
 
-**Step 3** — 导航到 SCM Admin 入口，验证登录态：
+**Step 3** — 验证并导航到 SCM Admin：
 
 ```javascript
-await tab.goto("https://demo19-scm.hoolinks.com/scm-static/scm-admin/scm-admin/#/",
-  { waitUntil: "networkidle0" });
-// 页面标题应为「诺贝科技（中山）有限公司」，侧边栏可见 19 个一级菜单
+await new Promise(r => setTimeout(r, 3000));
+// 登录成功 → 自动跳转 SCM Admin
+// 验证：document.title === '诺贝科技（中山）有限公司'
+// 侧边栏：19 个一级菜单
 ```
+
+**关键约束**：
+- 密码字段是 `contenteditable="true"` 的 `div#signinValue`，**禁止** `tab.fill()`
+- 验证码由 py kernel OCR → `page.evaluate()` 传值
+- SESSION/cookie_token/UCTOKEN/SYSSOURCE 由浏览器自动管理，**禁止**手动 CDP Cookie 注入
 
 ### 依赖安装
 
@@ -338,6 +344,76 @@ for 每个按钮 in 当前页面:
 - 弹窗内的每个按钮 MUST 点击并记录行为
 - 新页面的表单 MUST 填一遍所有字段观察校验规则
 - 只有当前节点**彻底穷尽**后才返回父节点
+
+#### 可复用 JS 片段
+
+**扫描当前页面所有可见按钮**：
+
+```javascript
+const buttons = [...document.querySelectorAll('button')]
+  .filter(b => b.offsetParent !== null && b.textContent.trim())
+  .map(b => ({ text: b.textContent.trim().replace(/\s/g, ''), disabled: b.disabled }));
+```
+
+**检测点击结果（5 种）**：
+
+```javascript
+// 弹窗
+const modals = [...document.querySelectorAll('.ant-modal')].filter(m => m.offsetParent);
+// 抽屉
+const drawers = [...document.querySelectorAll('.ant-drawer-open')];
+// 页面跳转
+const urlChanged = location.href !== previousUrl;
+// 下载/打印：DOM 无变化 → 记录为 button_export/button_print
+// 新Tab（父页面级，需在 page 级别检查）:
+const parentTabs = await page.evaluate(() =>
+  [...document.querySelectorAll('.ant-tabs-tab')].map(t => t.textContent.trim())
+);
+```
+
+**弹窗深度穷尽模板**：
+
+```javascript
+// 1. 记录弹窗标题
+const title = modal.querySelector('.ant-modal-title')?.textContent;
+// 2. 穷尽弹窗内下拉字段的枚举值（见 Phase 1-b Step 5）
+// 3. 穷尽弹窗内每个按钮
+const modalBtns = modal.querySelectorAll('button');
+// 4. for each btn: 点击 → 观察子结果 → 关闭子结果 → 回到弹窗
+// 5. 关闭弹窗
+modal.querySelector('.ant-modal-close')?.click();
+```
+
+**SCM Admin 标签页管理（父页面）**：
+
+```javascript
+// 检测新标签
+const tabs = await page.evaluate(() =>
+  [...document.querySelectorAll('.ant-tabs-tab')].map(t => t.textContent.trim())
+);
+// 切换到指定标签
+await page.evaluate((name) => {
+  [...document.querySelectorAll('.ant-tabs-tab')]
+    .find(t => t.textContent.trim() === name)?.click();
+}, '托工订单');
+// 关闭标签
+await page.evaluate((name) => {
+  const tab = [...document.querySelectorAll('.ant-tabs-tab')]
+    .find(t => t.textContent.trim().includes(name));
+  tab?.querySelector('.ant-tabs-close, .anticon-close')?.click();
+}, '托工订单新增');
+```
+
+**iframe 上下文切换**：
+
+```javascript
+// 列出所有 iframe
+const frames = page.frames().map(f => ({ name: f.name(), url: f.url().slice(0, 100) }));
+// 根据 URL 模式定位
+const targetFrame = page.frames().find(f => f.url().includes('laborOrder'));
+// 在该 iframe 内执行
+await targetFrame.evaluate(() => { /* ... */ });
+```
 ### Phase 1-d — VTable 单元格交互探索（Canvas 渲染表格强制）
 
 > **核心原则同 Phase 1-c：深度优先**——当页面使用 VTable（`@visactor/vtable`）Canvas 渲染时，MUST 通过 VTable 实例 API 探测每个可交互单元格，触发编辑/选择后穷尽其交互深度，再继续下一个单元格。
