@@ -451,28 +451,29 @@ console.log(page.frames().map(f => f.url().slice(0, 80)));
 
 ### Phase 1-d — VTable 单元格交互探索（Canvas 渲染表格强制）
 
-> **核心原则同 Phase 1-c：深度优先**——当页面使用 VTable（`@visactor/vtable`）Canvas 渲染时，MUST 通过 VTable 实例 API 探测每个可交互单元格，触发编辑/选择后穷尽其交互深度，再继续下一个单元格。
+> **核心原则同 Phase 1-c：深度优先 + 鼠标/键盘模拟**——当页面使用 VTable（`@visactor/vtable`）Canvas 渲染时，通过 VTable 实例 API **探测**可交互单元格的结构信息（列定义、编辑器类型、事件配置），但**实际触发编辑/选择/排序等交互行为 MUST 使用鼠标/键盘模拟**（`page.mouse.click/move/down/up` + `page.keyboard`），禁止走 VTable 内部 API（`startEditCell`, `selectCell`, `updateSortState` 等）。
 
 #### DFS 遍历顺序
 
 ```
 for 每个列 in VTable.columns:
     if 列有编辑器:
-        startEditCell → 编辑器出现 → 穷尽编辑器内所有交互
+        page.mouse.click → 触发编辑（基于 getCellRect 坐标）
+        ├── 编辑器出现 → 穷尽编辑器内所有交互
         ├── 下拉编辑器 → 展开所有选项 → 切换选项 → 观察联动
         ├── 日期编辑器 → 选择日期 → 观察格式
         ├── 文本编辑器 → 输入有效值/无效值 → 观察校验
-        └── completeEditCell / cancelEditCell
-    if 列头可点击:
-        点击列头 → 筛选/排序弹窗出现
+        └── 回车/Tab 确认编辑 / Esc 取消
+    if 列头可点击（有 sort/filter/menu 配置）:
+        page.mouse.click 列头 → 筛选/排序弹窗出现
         ├── 按值筛选 → 勾选/取消选项 → 确认
         ├── 按条件筛选 → 切换条件 → 输入值 → 确认
         └── 关闭弹窗
     if 行可交互:
-        点击复选框 → 观察工具栏变化 → 点击新增按钮 → ... → 取消选择
-        双击行 → 观察跳转 → 探索目标页面 → 返回
-        右键行 → 上下文菜单 → 点击每个菜单项 → 观察结果
-
+        page.mouse.click 复选框 → 观察工具栏变化 → 点击新增按钮 → ... → 取消选择
+        page.mouse.dblclick 行 → 观察跳转 → 探索目标页面 → 返回
+        page.mouse.click({button:'right'}) 行 → 上下文菜单 → 点击每个菜单项 → 观察结果
+```
 #### 探测维度
 
 **维度 1 — 列编辑器（inline editing）**：
@@ -488,9 +489,10 @@ for (const col of vt.columns) {
   // 日期编辑器 → col.editor === 'date' || col.fieldType === 'date'
   // 文本编辑器 → col.editor === 'input' || typeof col.editor === 'function'
   // 复选框列 → col.cellType === 'checkbox' || col.headerType === 'checkbox'
-}
-// 实际触发编辑器
-vt.startEditCell(row, col);  // 观察 Canvas 上是否出现编辑组件
+// 实际触发编辑器（仅供探测编辑器是否存在，不可用于测试验证）
+// ❌ 验证编辑功能时 MUST 使用 page.mouse.click 基于 getCellRect 坐标触发
+vt.startEditCell(row, col);  // 仅探测：观察 Canvas 上是否出现编辑组件
+vt.cancelEditCell();         // 关闭编辑器，恢复状态
 ```
 
 **维度 2 — 事件处理器**：
@@ -523,23 +525,22 @@ const eventKeys = Object.keys(props).filter(k =>
 // 复选框列 → 勾选/全选 → 检查工具栏新按钮
 // 行双击 → 详情页跳转
 // 行悬停 → tooltip
-// 行右键 → 上下文菜单
-```
-
 #### VTable API 速查表
 
-| API 方法 | 用途 | 返回值 |
-|---------|------|--------|
-| `vt.isHasEditorDefine(col)` | 列是否有编辑器 | boolean |
-| `vt.startEditCell(row, col)` | 触发单元格编辑 | boolean |
-| `vt.completeEditCell()` / `vt.cancelEditCell()` | 完成/取消编辑 | void |
-| `vt.getCellValue(row, col)` / `vt.getCellRawValue(row, col)` | 获取单元格值 | any |
-| `vt.getCellRect(row, col)` | 获取单元格坐标 | `{x, y, width, height}` |
-| `vt.scrollToCell({row, col})` | 滚动到指定单元格 | void |
-| `vt.selectCell(row, col)` / `vt.selectCells(ranges)` | 选择单元格 | void |
-| `vt.getSelectedCellInfos()` | 获取选中单元格信息 | array |
-| `vt.getCheckboxState()` | 复选框选中状态 | array |
-
+| API 方法 | 用途 | 返回值 | 验证用途 |
+|---------|------|--------|---------|
+| `vt.isHasEditorDefine(col)` | 列是否有编辑器 | boolean | ✅ 数据探测 |
+| `vt.startEditCell(row, col)` | 触发单元格编辑（仅探测用） | boolean | ⚠️ 仅探测编辑器是否存在，**不用于验证** |
+| `vt.completeEditCell()` / `vt.cancelEditCell()` | 完成/取消编辑 | void | ⚠️ 同上 |
+| `vt.getCellValue(row, col)` / `vt.getCellRawValue(row, col)` | 获取单元格值 | any | ✅ 数据读取 |
+| `vt.getCellRect(row, col)` | 获取单元格坐标 | `{x, y, width, height}` | ✅ 鼠标点击坐标计算 |
+| `vt.scrollToCell({row, col})` | 滚动到指定单元格 | void | ⚠️ 辅助滚动，**不用于验证交互** |
+| `vt.selectCell(row, col)` / `vt.selectCells(ranges)` | 选择单元格 | void | ❌ **禁止**：走 page.mouse.click |
+| `vt.getSelectedCellInfos()` | 获取选中单元格信息 | array | ✅ 读取选中状态 |
+| `vt.getCheckboxState()` | 复选框选中状态 | array | ✅ 数据读取 |
+| `vt.updateSortState({field, order})` | 更新排序状态 | void | ❌ **禁止**：走 page.mouse.click 列头 |
+| `vt.rowCount` / `vt.colCount` | 行列数 | number | ✅ 数据读取 |
+| `vt.getCellOriginRecord(col, row)` | 获取行原始数据 | object | ✅ 数据提取 |
 #### 产出物
 
 | 列名 | hasEditor | editorType | 列头交互 | 行交互 |
@@ -587,9 +588,7 @@ const eventKeys = Object.keys(props).filter(k =>
 
 #### 展示规则（强制）
 
-1. **Markdown 大纲先行**：用例设计完成后，以 Markdown 表格向用户展示大纲，**不得直接导出 Excel**
-2. **大纲内容**：仅展示用例编号、用例标题、优先级、测试类型、验证点这 5 列，**不展示完整 18 列**
-3. **逐功能/按钮模拟执行**：每个操作按钮必须先用 `browser` 工具实际点击执行，观察交互流程后再设计用例，不得靠推测写用例
+3. **逐功能/按钮模拟执行（强制鼠标/键盘模拟）**：每个操作按钮必须先用 `browser` 工具实际点击执行（`page.mouse.click`），观察交互流程后再设计用例，不得靠推测写用例。**对于 VTable Canvas 渲染表格**，必须使用 `page.mouse.click/move/down/up` 基于 `getCellRect` 坐标进行交互验证，禁止走 VTable 内部 API（`startEditCell`, `selectCell`, `updateSortState` 等）。测试人员最终是与真实页面交互的，AI 探索阶段必须模拟真实操作路径。
 4. **用户确认后方可导出**：在用户未明确说「导出」「生成 Excel」或「可以了」之前，不得执行 `wb.save()` 等保存逻辑
 
 #### 迭代流程
@@ -884,12 +883,19 @@ var tableData = await tab.evaluate(function() {
 
 VTable 中某些列可编辑（启动编辑后单元格变为文本输入框、下拉选择框、日期选择框等）。
 
-提供 **两套交互方式**，按需选用：
+> **核心交互原则**：数据提取走 VTable 实例 API，交互验证走鼠标/键盘模拟。
+> 
+> | 用途 | 允许方式 | 说明 |
+> |------|---------|------|
+> | **数据读取**（列定义、单元格值、行记录） | VTable 实例 API ✅ | `getCellValue`, `getCellOriginRecord`, `columns`, `rowCount`, `getCellRect` 等 |
+> | **交互验证**（点击、排序、选中、悬停、编辑） | 鼠标/键盘模拟 ✅ （`page.mouse.click/move/down/up`, `page.keyboard`） | `page.mouse.click(x, y)` 基于 `getCellRect` 坐标 |
+> | **交互验证**（走 VTable 内部 API） | ❌ **禁止** | `updateSortState`, `selectCell`, `startEditCell`/`completeEditCell` 等内部 API 跳过真实交互，测试人员无法复现 |
+>
+> **原因**：最终导出的 Excel 测试用例是交由测试人员手动执行的。测试人员是软件交付的守门员，必须与实际的网页系统页面进行**所见即所得**的交互。VTable 框架内部 API 跳过 Canvas 事件管道，即使能触发功能也无法验证真实用户操作路径。AI 自动化在探索和设计用例阶段也必须使用模拟鼠标键盘操作，确保用例步骤贴合真实操作。
 
-| 方式 | 速度 | 可见性 | 适用场景 |
-|------|------|--------|---------|
-| **API 方式**（`editor.setValue`） | 瞬间完成，不可见 | ❌ | 批量数据准备、自动化校验 |
-| **鼠标/键盘模拟**（坐标点击+DOM输入） | 模拟真实操作，可见 | ✅ | 测试执行演示、人工观察 |
+> **例外**：`getCellRect` 用于获取单元格在 Canvas 中的坐标是允许的——它仅提供位置信息，不触发任何交互行为。
+
+提供 **两套交互方式**，按需选用：
 
 ---
 
