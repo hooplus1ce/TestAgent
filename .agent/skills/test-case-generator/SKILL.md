@@ -933,10 +933,8 @@ var cellHeight = cellRect.bounds.y2 - cellRect.bounds.y1;
 
 排序图标定位在单元格内容右侧。`getCellIcons` 返回的 `marginLeft` 是图标与右侧内容之间的间距，`hover.width/height` 是可点击热区尺寸。点击目标为 **hover 热区中心**（不是图标中心）：
 
-```text
-热区中心 X（canvas 坐标）= cellRect.bounds.x2 - marginLeft - hover.width / 2
+热区中心 X（canvas 坐标）= cellRect.bounds.x2 - marginLeft - hover.width（不需除 2）
 热区中心 Y（canvas 坐标）= (cellRect.bounds.y1 + cellRect.bounds.y2) / 2
-```
 
 ```javascript
 function getSortIconViewportCoords(col) {
@@ -948,11 +946,9 @@ function getSortIconViewportCoords(col) {
   var icons = vt.getCellIcons(col, 0);
   var icon = icons.find(function(i) { return i.funcType === 'sort'; });
   if (!icon) return null;
-
-  // hover 热区中心（iframe 内视口坐标）
-  var cx = vtRect.left + cellRect.bounds.x2 - icon.marginLeft - icon.hover.width / 2;
+  // hover 热区中心 X = 单元格右边缘 - marginLeft - hover.width（不需除 2）
+  var cx = vtRect.left + cellRect.bounds.x2 - icon.marginLeft - icon.hover.width;
   var cy = vtRect.top  + (cellRect.bounds.y1 + cellRect.bounds.y2) / 2;
-
   // ⚠️ 此坐标是 iframe 内视口坐标。如果在主页面执行 page.mouse.click，
   //    需加上 iframe 偏移：
   //    var iframeRect = await page.evaluate(() =>
@@ -967,12 +963,10 @@ function getSortIconViewportCoords(col) {
 // if (pos) await page.mouse.click(pos.viewportX, pos.viewportY);
 
 > **数值验证**（col 3 托外商品识别码）：`cellRect.bounds.x2=530`，`marginLeft=3`，`hover.width=22`
-> → 热区中心 X = `530 - 3 - 11 = 516`（canvas 坐标）
-> → 视口 X = `vtRect.left(182) + 516 = 698`
+> → 热区中心 X = `530 - 3 - 22 = 505`（canvas 坐标）
+> → 加 iframe 偏移后：`主页面 X = iframeRect.left(170) + vtRect.left(12) + 505 = 687`
 
 **下拉菜单图标坐标**（`funcType === "dropDown"`，`positionType === "right"`）：
-
-下拉图标定位在单元格右边缘，使用 `marginRight` 定义间距。同样以 hover 热区中心为点击目标：
 
 ```javascript
 function getDropDownIconViewportCoords(col) {
@@ -991,24 +985,6 @@ function getDropDownIconViewportCoords(col) {
   var cy = vtRect.top  + (cellRect.bounds.y1 + cellRect.bounds.y2) / 2;
 
   return { viewportX: cx, viewportY: cy };
-}
-```
-
-**列宽拖拽手柄坐标**（仅当 `_canResizeColumn(col, row) === true` 时有效）：
-
-> 注意：`_canResizeColumn` 签名是 `(col, row)`，表头行传 `row=0`。只传 `(col)` 会导致判断不准确。
-
-拖拽手柄在列右边缘 ±3px 区域，点击后 mousedown → 水平 mousemove → mouseup：
-
-```javascript
-function getColumnResizeHandleViewportX(col) {
-  var vt = window._vtable;
-  var vtEl = document.querySelector('.vtable');
-  if (!vtEl) return null;
-  var vtRect = vtEl.getBoundingClientRect();
-  var cellRect = vt.getCellRect(col, 0);
-  // 拖拽手柄在列右边缘 ±3px 区域
-  return vtRect.left + cellRect.bounds.x2;
 }
 ```
 在点击之前，通过以下 API 确认交互是否可用：
