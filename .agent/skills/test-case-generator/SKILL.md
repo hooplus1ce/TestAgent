@@ -533,7 +533,7 @@ const eventKeys = Object.keys(props).filter(k =>
 | `vt.startEditCell(col, row)` | 触发单元格编辑（仅探测用） | boolean | ⚠️ 仅探测编辑器是否存在，**不用于验证** |
 | `vt.completeEditCell()` / `vt.cancelEditCell()` | 完成/取消编辑 | void | ⚠️ 同上 |
 | `vt.getCellValue(col, row)` / `vt.getCellRawValue(col, row)` | 获取单元格值 | any | ✅ 数据读取 |
-| `vt.getCellRect(col, row)` | **单元格在 Canvas 中的边界** | `{bounds: {x1,y1,x2,y2}}` | ✅ **坐标计算核心**，与 `canvas.getBoundingClientRect()` 结合转换为视口坐标 |
+| `vt.getCellRect(col, row)` | **单元格在 Canvas 中的边界** | `{bounds: {x1,y1,x2,y2}}` | ✅ **坐标计算核心**，与 `document.querySelector('.vtable').getBoundingClientRect()` 结合转换为视口坐标 |
 | `vt.getCellIcons(col, row)` | **获取单元格内交互图标信息**（排序、下拉等） | `[{funcType, positionType, width, height, marginLeft, hover, ...}]` | ✅ **坐标计算核心**，用于精确定位排序图标/下拉图标的热区 |
 | `vt.getHeaderDefine(col, row)` | 列头配置（sort, filter 等标志位） | `{title, field, sort, filter}` | ✅ 交互能力探测，确认列头是否可排序/筛选 |
 | `vt._canResizeColumn(col, row)` | 列是否可拖拽调整宽度 | boolean | ✅ 交互能力探测。签名 `(col, row)`，表头传 `row=0` |
@@ -886,16 +886,14 @@ getCellRect(col, row) → { bounds: { x1, y1, x2, y2 } }
 ```
 返回值是 **Canvas 画布坐标系**（相对于 Canvas 左上角），不是视口坐标。
 
-**转换为视口坐标**：
 ```javascript
-var canvas = document.querySelector('.vtable canvas');
-var cRect = canvas.getBoundingClientRect();     // Canvas 在视口中的位置
-var cellRect = vt.getCellRect(col, row);         // 单元格在 Canvas 中的位置
+var vtRect = document.querySelector('.vtable').getBoundingClientRect(); // .vtable 容器在视口中的位置
+var cellRect = vt.getCellRect(col, row);                                 // 单元格在 Canvas 中的位置
 
-var viewportX = cRect.left + cellRect.bounds.x1; // 单元格左上角 X（视口）
-var viewportY = cRect.top + cellRect.bounds.y1;  // 单元格左上角 Y（视口）
-var viewportCX = cRect.left + (cellRect.bounds.x1 + cellRect.bounds.x2) / 2; // 单元格中心 X
-var viewportCY = cRect.top + (cellRect.bounds.y1 + cellRect.bounds.y2) / 2;  // 单元格中心 Y
+var viewportX = vtRect.left + cellRect.bounds.x1; // 单元格左上角 X（视口坐标）
+var viewportY = vtRect.top  + cellRect.bounds.y1;  // 单元格左上角 Y（视口坐标）
+var viewportCX = vtRect.left + (cellRect.bounds.x1 + cellRect.bounds.x2) / 2; // 单元格中心 X
+var viewportCY = vtRect.top  + (cellRect.bounds.y1 + cellRect.bounds.y2) / 2;  // 单元格中心 Y
 var cellWidth  = cellRect.bounds.x2 - cellRect.bounds.x1;
 var cellHeight = cellRect.bounds.y2 - cellRect.bounds.y1;
 ```
@@ -928,17 +926,17 @@ var cellHeight = cellRect.bounds.y2 - cellRect.bounds.y1;
 ```javascript
 function getSortIconViewportCoords(col) {
   var vt = window._vtable;
-  var canvas = document.querySelector('.vtable canvas');
-  if (!canvas) return null;
-  var cRect = canvas.getBoundingClientRect();
+  var vtEl = document.querySelector('.vtable');
+  if (!vtEl) return null;
+  var vtRect = vtEl.getBoundingClientRect();
   var cellRect = vt.getCellRect(col, 0);
   var icons = vt.getCellIcons(col, 0);
   var icon = icons.find(function(i) { return i.funcType === 'sort'; });
   if (!icon) return null;
 
   // hover 热区中心 = 单元格右边缘 - marginLeft - hover.width/2
-  var cx = cRect.left + cellRect.bounds.x2 - icon.marginLeft - icon.hover.width / 2;
-  var cy = cRect.top  + (cellRect.bounds.y1 + cellRect.bounds.y2) / 2;
+  var cx = vtRect.left + cellRect.bounds.x2 - icon.marginLeft - icon.hover.width / 2;
+  var cy = vtRect.top  + (cellRect.bounds.y1 + cellRect.bounds.y2) / 2;
 
   return { viewportX: cx, viewportY: cy };
 }
@@ -949,7 +947,7 @@ function getSortIconViewportCoords(col) {
 
 > **数值验证**（col 3 托外商品识别码）：`cellRect.bounds.x2=530`，`marginLeft=3`，`hover.width=22`
 > → 热区中心 X = `530 - 3 - 11 = 516`（canvas 坐标）
-> → 视口 X = `canvasRect.left(12) + 516 = 528`
+> → 视口 X = `vtRect.left(182) + 516 = 698`
 
 **下拉菜单图标坐标**（`funcType === "dropDown"`，`positionType === "right"`）：
 
@@ -958,9 +956,9 @@ function getSortIconViewportCoords(col) {
 ```javascript
 function getDropDownIconViewportCoords(col) {
   var vt = window._vtable;
-  var canvas = document.querySelector('.vtable canvas');
-  if (!canvas) return null;
-  var cRect = canvas.getBoundingClientRect();
+  var vtEl = document.querySelector('.vtable');
+  if (!vtEl) return null;
+  var vtRect = vtEl.getBoundingClientRect();
   var cellRect = vt.getCellRect(col, 0);
   var icons = vt.getCellIcons(col, 0);
   var icon = icons.find(function(i) { return i.funcType === 'dropDown'; });
@@ -968,8 +966,8 @@ function getDropDownIconViewportCoords(col) {
 
   // hover 热区中心 = 单元格右边缘 - marginRight - hover.width/2
   var hw = icon.hover ? icon.hover.width / 2 : icon.width / 2;
-  var cx = cRect.left + cellRect.bounds.x2 - (icon.marginRight || 0) - hw;
-  var cy = cRect.top  + (cellRect.bounds.y1 + cellRect.bounds.y2) / 2;
+  var cx = vtRect.left + cellRect.bounds.x2 - (icon.marginRight || 0) - hw;
+  var cy = vtRect.top  + (cellRect.bounds.y1 + cellRect.bounds.y2) / 2;
 
   return { viewportX: cx, viewportY: cy };
 }
@@ -981,19 +979,17 @@ function getDropDownIconViewportCoords(col) {
 
 拖拽手柄在列右边缘 ±3px 区域，点击后 mousedown → 水平 mousemove → mouseup：
 
-**列头拖拽重排**（仅当 `_canDragHeaderPosition(col) === true` 时有效）：
 ```javascript
-// 在列头区域 mousedown → 拖拽到目标列
+function getColumnResizeHandleViewportX(col) {
+  var vt = window._vtable;
+  var vtEl = document.querySelector('.vtable');
+  if (!vtEl) return null;
+  var vtRect = vtEl.getBoundingClientRect();
+  var cellRect = vt.getCellRect(col, 0);
+  // 拖拽手柄在列右边缘 ±3px 区域
+  return vtRect.left + cellRect.bounds.x2;
+}
 ```
-
-**冻结列分隔线**（仅当 `options.frozenColDragHeaderMode` 未禁用时）：
-```javascript
-var frozenWidth = vt.getFrozenColsWidth();
-var dividerX = cRect.left + frozenWidth;
-```
-
-##### 交互能力探测
-
 在点击之前，通过以下 API 确认交互是否可用：
 
 | 探测方法 | 用途 | 返回 |
@@ -1009,23 +1005,19 @@ var dividerX = cRect.left + frozenWidth;
 ```javascript
 function getCellViewportCoords(col, row) {
   var vt = window._vtable;
-  var canvas = document.querySelector('.vtable canvas');
-  if (!canvas) return null;
-  var cRect = canvas.getBoundingClientRect();
+  var vtEl = document.querySelector('.vtable');
+  if (!vtEl) return null;
+  var vtRect = vtEl.getBoundingClientRect();
   var cellRect = vt.getCellRect(col, row);
   if (!cellRect || !cellRect.bounds) return null;
   return {
-    x: cRect.left + (cellRect.bounds.x1 + cellRect.bounds.x2) / 2,
-    y: cRect.top + (cellRect.bounds.y1 + cellRect.bounds.y2) / 2,
+    x: vtRect.left + (cellRect.bounds.x1 + cellRect.bounds.x2) / 2,
+    y: vtRect.top  + (cellRect.bounds.y1 + cellRect.bounds.y2) / 2,
     width: cellRect.bounds.x2 - cellRect.bounds.x1,
     height: cellRect.bounds.y2 - cellRect.bounds.y1
   };
 }
 ```
-
----
-
-#### A. API 方式（快速、不可见）
 
 适用于自动化流程，不展示交互过程。
 
