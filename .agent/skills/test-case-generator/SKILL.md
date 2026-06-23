@@ -906,68 +906,72 @@ var cellHeight = cellRect.bounds.y2 - cellRect.bounds.y1;
 
 `getCellIcons(col, row)` 返回单元格内所有交互图标的信息数组。每个图标包含：
 
-| 字段 | 类型 | 说明 | 示例值 |
-|------|------|------|--------|
 | `funcType` | string | 功能类型 | `"sort"`, `"dropDown"`, `"frozen"` |
-| `positionType` | string | 位置类型 | `"contentRight"`（内容右侧）, `"right"`（单元格右侧） |
+| `positionType` | string | 图标定位区域 | `"contentRight"`（内容右侧）, `"right"`（单元格右侧） |
 | `name` | string | 图标名称 | `"sort_normal"`, `"dropdownIcon"` |
-| `width` / `height` | number | SVG 图标尺寸 | 16 / 16 |
-| `marginLeft` / `marginRight` | number | 边距（px） | 3 / 4 |
-| `hover.width` / `hover.height` | number | 可点击热区尺寸 | 22 / 22 |
+| `width` / `height` | number | SVG 图标自身尺寸（px） | 16 / 16 |
+| `marginLeft` / `marginRight` | number | 图标与相邻内容的间距（px） | 3 / 4 |
+| **`hover.width` / `hover.height`** | number | **可点击热区尺寸（px）——比图标大，便于鼠标命中，点击目标为此热区中心** | **22 / 22** |
 | `cursor` | string | 鼠标样式 | `"pointer"` |
 | `visibleTime` | string | 显示时机 | `"always"`（始终）, `"hover"`（悬停时） |
 | `tooltip` | object | 提示信息 | `{ title, placement }` |
 
 **排序图标坐标**（`funcType === "sort"`，`positionType === "contentRight"`）：
+
+排序图标定位在单元格内容右侧。`getCellIcons` 返回的 `marginLeft` 是图标与右侧内容之间的间距，`hover.width/height` 是可点击热区尺寸。点击目标为 **hover 热区中心**（不是图标中心）：
+
+```text
+热区中心 X（canvas 坐标）= cellRect.bounds.x2 - marginLeft - hover.width / 2
+热区中心 Y（canvas 坐标）= (cellRect.bounds.y1 + cellRect.bounds.y2) / 2
+```
+
 ```javascript
 function getSortIconViewportCoords(col) {
   var vt = window._vtable;
   var canvas = document.querySelector('.vtable canvas');
+  if (!canvas) return null;
   var cRect = canvas.getBoundingClientRect();
-  var cellRect = vt.getCellRect(col, 0); // row 0 = 表头
+  var cellRect = vt.getCellRect(col, 0);
   var icons = vt.getCellIcons(col, 0);
-  var sortIcon = icons.find(function(i) { return i.funcType === 'sort'; });
-  if (!sortIcon) return null;
+  var icon = icons.find(function(i) { return i.funcType === 'sort'; });
+  if (!icon) return null;
 
-  // sort icon 定位在单元格内容右侧（contentRight）
-  // icon 左边缘 = 单元格右边缘 - marginLeft - iconWidth
-  var iconLeftEdge = cellRect.bounds.x2 - sortIcon.marginLeft - sortIcon.width;
-  var iconCenterX = cRect.left + iconLeftEdge + sortIcon.width / 2;
-  var iconCenterY = cRect.top + (cellRect.bounds.y1 + cellRect.bounds.y2) / 2;
+  // hover 热区中心 = 单元格右边缘 - marginLeft - hover.width/2
+  var cx = cRect.left + cellRect.bounds.x2 - icon.marginLeft - icon.hover.width / 2;
+  var cy = cRect.top  + (cellRect.bounds.y1 + cellRect.bounds.y2) / 2;
 
-  // hover 热区（22x22）以 icon 中心为基准
-  var hoverLeft = iconCenterX - sortIcon.hover.width / 2;
-  var hoverTop  = iconCenterY - sortIcon.hover.height / 2;
-
-  return {
-    viewportX: iconCenterX,
-    viewportY: iconCenterY,
-    hoverRect: { left: hoverLeft, top: hoverTop,
-                 width: sortIcon.hover.width, height: sortIcon.hover.height }
-  };
+  return { viewportX: cx, viewportY: cy };
 }
-// 使用：点击排序图标
-var pos = getSortIconViewportCoords(1); // col 1 = 托外供应商
-// await page.mouse.click(pos.viewportX, pos.viewportY);
+// 使用
+// var pos = getSortIconViewportCoords(3);
+// if (pos) await page.mouse.click(pos.viewportX, pos.viewportY);
 ```
 
-**下拉菜单图标坐标**（`funcType === "dropDown"`，在序号列表头）：
+> **数值验证**（col 3 托外商品识别码）：`cellRect.bounds.x2=530`，`marginLeft=3`，`hover.width=22`
+> → 热区中心 X = `530 - 3 - 11 = 516`（canvas 坐标）
+> → 视口 X = `canvasRect.left(12) + 516 = 528`
+
+**下拉菜单图标坐标**（`funcType === "dropDown"`，`positionType === "right"`）：
+
+下拉图标定位在单元格右边缘，使用 `marginRight` 定义间距。同样以 hover 热区中心为点击目标：
+
 ```javascript
 function getDropDownIconViewportCoords(col) {
   var vt = window._vtable;
   var canvas = document.querySelector('.vtable canvas');
+  if (!canvas) return null;
   var cRect = canvas.getBoundingClientRect();
   var cellRect = vt.getCellRect(col, 0);
   var icons = vt.getCellIcons(col, 0);
-  var ddIcon = icons.find(function(i) { return i.funcType === 'dropDown'; });
-  if (!ddIcon) return null;
+  var icon = icons.find(function(i) { return i.funcType === 'dropDown'; });
+  if (!icon) return null;
 
-  // dropdown icon 定位在单元格右侧（right）
-  var iconRightEdge = cellRect.bounds.x2 - (ddIcon.marginRight || 0);
-  var iconCenterX = cRect.left + iconRightEdge - ddIcon.width / 2;
-  var iconCenterY = cRect.top + (cellRect.bounds.y1 + cellRect.bounds.y2) / 2;
+  // hover 热区中心 = 单元格右边缘 - marginRight - hover.width/2
+  var hw = icon.hover ? icon.hover.width / 2 : icon.width / 2;
+  var cx = cRect.left + cellRect.bounds.x2 - (icon.marginRight || 0) - hw;
+  var cy = cRect.top  + (cellRect.bounds.y1 + cellRect.bounds.y2) / 2;
 
-  return { viewportX: iconCenterX, viewportY: iconCenterY };
+  return { viewportX: cx, viewportY: cy };
 }
 ```
 
