@@ -786,52 +786,9 @@ modelRoles:
 
 ```javascript
 // 挂载 VTable 实例到 window._vtable
-// 优化点：动态 Fiber 遍历（替代硬编码 return.return.return.return）
-//         多重属性名探测（vtableInstance/vTable/vtable/VTable）
-//         守护检查 getCellRect 确认实例类型
+// 直接路径：__reactInternalInstance$.return.return.return.return.stateNode.vtableInstance
+// 上层框架固定挂载方式，无需循环探测
 (function mountVTable() {
-  var el = document.querySelector('.vtable');
-  if (!el || !el.parentElement) return false;
-  var parent = el.parentElement;
-  var fk = Object.keys(parent).find(function(k) {
-    return k.startsWith('__reactFiber') || k.startsWith('__reactInternalInstance');
-  });
-  if (!fk) return false;
-  try {
-    var fiber = parent[fk];
-    var depth = 0;
-    var instance = null;
-    while (fiber && depth < 20 && !instance) {
-      if (fiber.stateNode) {
-        var candidates = ['vtableInstance', 'vTable', 'vtable', '_vtable', 'VTable'];
-        for (var i = 0; i < candidates.length; i++) {
-          if (fiber.stateNode[candidates[i]] &&
-              typeof fiber.stateNode[candidates[i]].getCellRect === 'function') {
-            instance = fiber.stateNode[candidates[i]];
-            break;
-          }
-        }
-      }
-      fiber = fiber.return;
-      depth++;
-    }
-    if (instance) {
-      var win = document.defaultView || document.contentWindow || window;
-      win._vtable = instance;
-      return true;
-    }
-  } catch(e) {}
-  return false;
-})();
-```
-
-> **与原方案对比**：原代码 `parent[fk].return.return.return.return.stateNode.vtableInstance` 硬编码 4 级跳转，Fiber 树结构变化即断裂。优化版动态遍历至多 20 层，适配任意深度变化。
-
-#### 一键提取全部表格数据（browser.evaluate 内使用）
-
-```javascript
-var tableData = await tab.evaluate(function() {
-  // === 挂载 VTable ===
   var el = document.querySelector('.vtable');
   if (!el || !el.parentElement) return null;
   var parent = el.parentElement;
@@ -839,23 +796,29 @@ var tableData = await tab.evaluate(function() {
     return k.startsWith('__reactFiber') || k.startsWith('__reactInternalInstance');
   });
   if (!fk) return null;
-  var fiber = parent[fk];
-  var depth = 0;
-  var instance = null;
-  while (fiber && depth < 20 && !instance) {
-    if (fiber.stateNode) {
-      var keys = ['vtableInstance', 'vTable', 'vtable', '_vtable', 'VTable'];
-      for (var i = 0; i < keys.length; i++) {
-        if (fiber.stateNode[keys[i]] && typeof fiber.stateNode[keys[i]].getCellRect === 'function') {
-          instance = fiber.stateNode[keys[i]];
-          break;
-        }
-      }
-    }
-    fiber = fiber.return;
-    depth++;
-  }
-  if (!instance) return null;
+  try {
+    var win = document.defaultView || document.contentWindow || window;
+    win._vtable = parent[fk].return.return.return.return.stateNode.vtableInstance;
+    return true;
+  } catch(e) { return null; }
+})();
+```
+
+#### 一键提取全部表格数据（browser.evaluate 内使用）
+
+```javascript
+var tableData = await tab.evaluate(function() {
+  // === 挂载 VTable（直接路径） ===
+  var el = document.querySelector('.vtable');
+  if (!el || !el.parentElement) return null;
+  var parent = el.parentElement;
+  var fk = Object.keys(parent).find(function(k) {
+    return k.startsWith('__reactFiber') || k.startsWith('__reactInternalInstance');
+  });
+  if (!fk) return null;
+  var instance;
+  try { instance = parent[fk].return.return.return.return.stateNode.vtableInstance; }
+  catch(e) { return null; }
   
   // === 遍历数据行，提取简化记录 ===
   var records = [];
