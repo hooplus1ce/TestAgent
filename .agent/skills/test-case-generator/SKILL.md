@@ -451,7 +451,15 @@ console.log(page.frames().map(f => f.url().slice(0, 80)));
 
 ### Phase 1-d — VTable 单元格交互探索（Canvas 渲染表格强制）
 
-> **核心原则同 Phase 1-c：深度优先 + 鼠标/键盘模拟**——当页面使用 VTable（`@visactor/vtable`）Canvas 渲染时，通过 VTable 实例 API **探测**可交互单元格的结构信息（列定义、编辑器类型、事件配置），但**实际触发编辑/选择/排序等交互行为 MUST 使用鼠标/键盘模拟**（`page.mouse.click/move/down/up` + `page.keyboard`），禁止走 VTable 内部 API（`startEditCell`, `selectCell`, `updateSortState` 等）。
+> **核心原则同 Phase 1-c：深度优先 + 鼠标/键盘模拟**——当页面使用 VTable（`@visactor/vtable`）Canvas 渲染时，通过 VTable 实例 API **探测**可交互单元格的结构信息（列定义、编辑器类型、事件配置），但**实际触发编辑/选择/排序等交互行为 MUST 使用鼠标/键盘模拟**，禁止走 VTable 内部 API（`startEditCell`, `selectCell` 等）。
+>
+> **⚠️ VTable 排序图标交互的特殊性（SCM 系统）**：
+> 排序图标的场景图节点 `pickable: false`（`content-right` 组显式设置），无法被 `pickTarget()` 命中。VTable 的排序点击链路为：
+> `pointermove(多次)` → `dealIconHover()` → `updateHoverIcon()` (激活图标悬浮态) → `pointertap` → `dealIconClick()` → `updateSortState()`
+> 
+> **因此 Puppeteer 的 `page.mouse.click()` 直接点击排序图标区域无法触发排序**（缺少足够的中间 `pointermove` 事件激活悬浮态）。
+>
+> **正确方法：使用 DrissionPage `actions.move_to().click()`**，其 `duration` 参数（默认 0.5s）生成约 30~60 步精细的鼠标移动轨迹，让 VTable 的 `updateHoverIcon` 正确检测图标并激活。已在 `FastVTableHelper.click_cell_icon()` 中封装此逻辑。
 
 #### DFS 遍历顺序
 
@@ -465,7 +473,7 @@ for 每个列 in VTable.columns:
         ├── 文本编辑器 → 输入有效值/无效值 → 观察校验
         └── 回车/Tab 确认编辑 / Esc 取消
     if 列头可点击（有 sort/filter/menu 配置）:
-        page.mouse.click 列头 → 筛选/排序弹窗出现
+        use FastVTableHelper.click_cell_icon(col, 0) → 排序/筛选弹窗出现
         ├── 按值筛选 → 勾选/取消选项 → 确认
         ├── 按条件筛选 → 切换条件 → 输入值 → 确认
         └── 关闭弹窗
@@ -547,7 +555,7 @@ const eventKeys = Object.keys(props).filter(k =>
 | `vt.selectCell(col, row)` / `vt.selectCells(ranges)` | 选择单元格 | void | ❌ **禁止**：走 page.mouse.click |
 | `vt.getSelectedCellInfos()` | 获取选中单元格信息 | array | ✅ 读取选中状态 |
 | `vt.getCheckboxState()` | 复选框选中状态 | array | ✅ 数据读取 |
-| `vt.updateSortState({field, order})` | 更新排序状态 | void | ❌ **禁止**：走 page.mouse.click 列头 |
+| `vt.updateSortState([{field, order}])` | 更新排序状态 | void | ⚠️ **验证用 API**：SCM VTable 的排序图标场景图 `pickable: false`，Puppeteer `page.mouse.click` 无法触发。排错/测试时可直接调用此 API 验证排序逻辑，但测试用例中需注明「通过 API 触发」 |
 | `vt.rowCount` / `vt.colCount` | 行列数 | number | ✅ 数据读取 |
 | `vt.getCellOriginRecord(col, row)` | 获取行原始数据 | object | ✅ 数据提取 |
 | `vt.showTooltip(text)` | 显示 tooltip | void | ✅ 测试 tooltip 功能 |

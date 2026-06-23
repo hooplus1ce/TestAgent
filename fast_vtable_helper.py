@@ -156,3 +156,53 @@ class FastVTableHelper:
             end_x,
             end_y,
         )).wait(0.1).release()
+
+    def click_cell_icon(self, col, row, func_type="sort", duration=0.5):
+        """
+        点击单元格内的交互图标（排序/下拉等）。
+        
+        关键原理：
+        - VTable 的场景图图标节点 pickable=False，无法被 pickTarget 直接命中
+        - 图标的悬浮态需要通过足够的 pointermove 事件序列激活
+        - 使用 DrissionPage actions.move_to() 的 duration 参数
+          （默认 0.5s）生成精细的鼠标移动轨迹，让 VTable 的 
+          updateHoverIcon 检测到图标并激活悬浮态
+        - 悬浮态激活后，click() 触发 pointertap → dealIconClick → 排序/下拉
+        
+        :param col: 列索引
+        :param row: 行索引（表头传 0）
+        :param func_type: 图标类型，默认 'sort'
+        :param duration: 鼠标移动时长（秒），默认 0.5s
+        :return: True 表示点击成功，False 表示图标未找到
+        """
+        icon_info = self.iframe.run_js(f"""
+            const vt = window._vtable;
+            if (!vt) return null;
+            const icons = vt.getCellIcons({col}, {row});
+            if (!icons || icons.length === 0) return null;
+            const icon = icons.find(ic => ic.funcType === '{func_type}');
+            if (!icon) return null;
+            
+            // 用 getCellRelativeRect 获取含滚动偏移的单元格边界
+            const relRect = vt.getCellRelativeRect({col}, {row});
+            if (!relRect) return null;
+            
+            // 图标热区中心 ≈ 单元格右边界 - marginLeft - hover.width/2
+            return {{
+                x: relRect.bounds.x2 - icon.marginLeft - icon.hover.width / 2,
+                y: relRect.bounds.y1 + (relRect.bounds.y2 - relRect.bounds.y1) / 2
+            }};
+        """)
+        
+        if not icon_info:
+            return False
+        
+        # 获取 VTable canvas 在视口中的位置
+        canvas_x, canvas_y = self.vtable_ele.rect.viewport_location
+        
+        target_x = canvas_x + icon_info["x"]
+        target_y = canvas_y + icon_info["y"]
+        
+        # 用 move_to 的 duration 参数实现慢速悬浮 → 点击
+        self.iframe.actions.move_to((target_x, target_y), duration=duration).click()
+        return True
