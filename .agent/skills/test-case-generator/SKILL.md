@@ -888,6 +888,24 @@ getCellRect(col, row) → { bounds: { x1, y1, x2, y2 } }
 
 ```javascript
 var vtRect = document.querySelector('.vtable').getBoundingClientRect(); // .vtable 容器在视口中的位置
+
+// ⚠️ 如果 VTable 在 iframe 内，page.mouse.click 使用的是主页面视口坐标，
+//    而 getBoundingClientRect 在 iframe 内返回的是 iframe 视口坐标。
+//    两者差了 iframe 在主页面中的偏移量。
+//    
+//    从主页面获取 iframe 偏移（在主页面上下文中执行）：
+//    var iframeRect = await page.evaluate(() => {
+//      var f = document.querySelector('iframe[name="..."], iframe[src*="模块路由"]');
+//      return f.getBoundingClientRect();
+//    });
+//    var iframeOffsetX = iframeRect.left;
+//    var iframeOffsetY = iframeRect.top;
+//    
+//    然后：主页面点击坐标 = iframeOffset + vtRectInIframe + cellBounds
+//    page.mouse.click(iframeOffsetX + vtRect.left + cellBounds.x2, ...);
+//
+//   验证方法：比较 vtRect.left 与肉眼观察到的页面位置。
+//   iframe 内返回 12 但肉眼看到 ~182 → iframe偏移 = 182-12 = 170
 var cellRect = vt.getCellRect(col, row);                                 // 单元格在 Canvas 中的位置
 
 var viewportX = vtRect.left + cellRect.bounds.x1; // 单元格左上角 X（视口坐标）
