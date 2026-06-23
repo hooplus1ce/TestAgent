@@ -536,7 +536,7 @@ const eventKeys = Object.keys(props).filter(k =>
 | `vt.getCellRect(col, row)` | **单元格在 Canvas 中的边界** | `{bounds: {x1,y1,x2,y2}}` | ✅ **坐标计算核心**，与 `canvas.getBoundingClientRect()` 结合转换为视口坐标 |
 | `vt.getCellIcons(col, row)` | **获取单元格内交互图标信息**（排序、下拉等） | `[{funcType, positionType, width, height, marginLeft, hover, ...}]` | ✅ **坐标计算核心**，用于精确定位排序图标/下拉图标的热区 |
 | `vt.getHeaderDefine(col, row)` | 列头配置（sort, filter 等标志位） | `{title, field, sort, filter}` | ✅ 交互能力探测，确认列头是否可排序/筛选 |
-| `vt._canResizeColumn(col)` | 列是否可拖拽调整宽度 | boolean | ✅ 交互能力探测 |
+| `vt._canResizeColumn(col, row)` | 列是否可拖拽调整宽度 | boolean | ✅ 交互能力探测。签名 `(col, row)`，表头传 `row=0` |
 | `vt._canDragHeaderPosition(col)` | 列头是否可拖拽重排 | boolean | ✅ 交互能力探测 |
 | `vt.getColWidth(col)` | 获取列宽（px） | number | ✅ 数据读取 |
 | `vt.isFrozenColumn(col)` | 是否为冻结列 | boolean | ✅ 数据读取 |
@@ -975,19 +975,11 @@ function getDropDownIconViewportCoords(col) {
 }
 ```
 
-**列宽拖拽手柄坐标**（仅当 `_canResizeColumn(col) === true` 时有效）：
-```javascript
-function getColumnResizeHandleViewportX(col) {
-  var vt = window._vtable;
-  var canvas = document.querySelector('.vtable canvas');
-  var cRect = canvas.getBoundingClientRect();
-  var cellRect = vt.getCellRect(col, 0);
-  // 拖拽手柄在列右边缘 ±3px 区域
-  var handleX = cRect.left + cellRect.bounds.x2;
-  return handleX;
-}
-// 使用：在列右边缘 mousedown → mousemove → mouseup
-```
+**列宽拖拽手柄坐标**（仅当 `_canResizeColumn(col, row) === true` 时有效）：
+
+> 注意：`_canResizeColumn` 签名是 `(col, row)`，表头行传 `row=0`。只传 `(col)` 会导致判断不准确。
+
+拖拽手柄在列右边缘 ±3px 区域，点击后 mousedown → 水平 mousemove → mouseup：
 
 **列头拖拽重排**（仅当 `_canDragHeaderPosition(col) === true` 时有效）：
 ```javascript
@@ -1012,8 +1004,7 @@ var dividerX = cRect.left + frozenWidth;
 | `vt._canDragHeaderPosition(col)` | 列头是否可拖拽移动 | boolean |
 | `vt.isFrozenColumn(col)` | 是否为冻结列 | boolean |
 | `vt.options.frozenColDragHeaderMode` | 冻结列拖拽模式 | string |
-
-##### 通用函数：单元格视口坐标
+| `vt._canResizeColumn(col, row)` | 列是否可拖拽调整宽度 | boolean |
 
 ```javascript
 function getCellViewportCoords(col, row) {
