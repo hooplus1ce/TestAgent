@@ -887,34 +887,31 @@ getCellRect(col, row) → { bounds: { x1, y1, x2, y2 } }
 返回值是 **Canvas 画布坐标系**（相对于 Canvas 左上角），不是视口坐标。
 
 ```javascript
-var vtRect = document.querySelector('.vtable').getBoundingClientRect(); // .vtable 容器在视口中的位置
+var vtRect = document.querySelector('.vtable').getBoundingClientRect();
+var cellRect = vt.getCellRect(col, row);
 
-// ⚠️ 如果 VTable 在 iframe 内，page.mouse.click 使用的是主页面视口坐标，
+// ⚠️ SCM 系统中 VTable 均在 iframe 内，page.mouse.click 使用主页面视口坐标，
 //    而 getBoundingClientRect 在 iframe 内返回的是 iframe 视口坐标。
-//    两者差了 iframe 在主页面中的偏移量。
-//    
-//    从主页面获取 iframe 偏移（在主页面上下文中执行）：
-//    var iframeRect = await page.evaluate(() => {
-//      var f = document.querySelector('iframe[name="..."], iframe[src*="模块路由"]');
-//      return f.getBoundingClientRect();
-//    });
-//    var iframeOffsetX = iframeRect.left;
-//    var iframeOffsetY = iframeRect.top;
-//    
-//    然后：主页面点击坐标 = iframeOffset + vtRectInIframe + cellBounds
-//    page.mouse.click(iframeOffsetX + vtRect.left + cellBounds.x2, ...);
+//    必须加上 iframe 在主页面中的偏移。
 //
-//   验证方法：比较 vtRect.left 与肉眼观察到的页面位置。
-//   iframe 内返回 12 但肉眼看到 ~182 → iframe偏移 = 182-12 = 170
-var cellRect = vt.getCellRect(col, row);                                 // 单元格在 Canvas 中的位置
+// 从主页面获取 iframe 偏移（选 aria-hidden="false" 的 tabpanel 下的 iframe）：
+// var iframeRect = await page.evaluate(() => {
+//   var panel = document.querySelector('[role="tabpanel"][aria-hidden="false"] iframe');
+//   return panel.getBoundingClientRect();
+// });
+//
+// 主页面视口坐标 = iframeRect + vtRectInIframe + cellBounds
+// page.mouse.click(
+//   iframeRect.left + vtRect.left + cellBounds.x2 - marginLeft - hoverHalf,
+//   iframeRect.top  + vtRect.top  + (y1 + y2) / 2
+// );
 
-var viewportX = vtRect.left + cellRect.bounds.x1; // 单元格左上角 X（视口坐标）
-var viewportY = vtRect.top  + cellRect.bounds.y1;  // 单元格左上角 Y（视口坐标）
-var viewportCX = vtRect.left + (cellRect.bounds.x1 + cellRect.bounds.x2) / 2; // 单元格中心 X
-var viewportCY = vtRect.top  + (cellRect.bounds.y1 + cellRect.bounds.y2) / 2;  // 单元格中心 Y
+var viewportX = vtRect.left + cellRect.bounds.x1;
+var viewportY = vtRect.top  + cellRect.bounds.y1;
+var viewportCX = vtRect.left + (cellRect.bounds.x1 + cellRect.bounds.x2) / 2;
+var viewportCY = vtRect.top  + (cellRect.bounds.y1 + cellRect.bounds.y2) / 2;
 var cellWidth  = cellRect.bounds.x2 - cellRect.bounds.x1;
 var cellHeight = cellRect.bounds.y2 - cellRect.bounds.y1;
-```
 
 > **注意**：`getCellRect` 返回的坐标**已包含滚动偏移**，无需额外减去 `scrollLeft`/`scrollTop`。但如果需要判断单元格是否在可视区域内，可用 `getBodyVisibleCellRange()` 获取当前可视行列范围。
 
@@ -952,16 +949,22 @@ function getSortIconViewportCoords(col) {
   var icon = icons.find(function(i) { return i.funcType === 'sort'; });
   if (!icon) return null;
 
-  // hover 热区中心 = 单元格右边缘 - marginLeft - hover.width/2
+  // hover 热区中心（iframe 内视口坐标）
   var cx = vtRect.left + cellRect.bounds.x2 - icon.marginLeft - icon.hover.width / 2;
   var cy = vtRect.top  + (cellRect.bounds.y1 + cellRect.bounds.y2) / 2;
+
+  // ⚠️ 此坐标是 iframe 内视口坐标。如果在主页面执行 page.mouse.click，
+  //    需加上 iframe 偏移：
+  //    var iframeRect = await page.evaluate(() =>
+  //      document.querySelector('[role="tabpanel"][aria-hidden="false"] iframe').getBoundingClientRect()
+  //    );
+  //    page.mouse.click(iframeRect.left + cx, iframeRect.top + cy);
 
   return { viewportX: cx, viewportY: cy };
 }
 // 使用
 // var pos = getSortIconViewportCoords(3);
 // if (pos) await page.mouse.click(pos.viewportX, pos.viewportY);
-```
 
 > **数值验证**（col 3 托外商品识别码）：`cellRect.bounds.x2=530`，`marginLeft=3`，`hover.width=22`
 > → 热区中心 X = `530 - 3 - 11 = 516`（canvas 坐标）
