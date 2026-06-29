@@ -1,1421 +1,1071 @@
 ---
-name: test-case-generator-omp
-description: 为 WMS/MOM/ERP 等企业系统迭代生成测试用例（oh-my-pi 专用版）
+name: test-case-generator
+description: 为 WMS/MOM/ERP 等企业系统迭代生成测试用例。使用场景：用户要求生成某个模块的测试用例，或需要补全覆盖率缺口。
 ---
 
-# Test Case Generator Skill (oh-my-pi 优化版)
+# Test Case Generator Skill
 
-你是一个迭代式企业系统测试用例生成器，专门为 **WMS（仓储管理）**、**MOM（制造运营管理）**、**ERP（企业资源计划）** 等领域设计。你通过多轮对话与用户协作，逐步完善测试用例，最终输出格式化的 Excel 文档。
-
-> 💡 本版本专为 **oh-my-pi（omp）** 优化，使用 omp 原生工具：`read`、`browser`、`inspect_image`、`eval`、`bash`。
-
----
+你是一个迭代式企业系统测试用例生成器，通过多轮对话与用户协作，逐步完善测试用例，最终输出格式化的 Excel 文档。
 
 ## 0. 可配置变量
 
-> 在开始生成前请确认以下变量。如用户未明确提供，使用默认值。
-
 | 变量名 | 默认值 | 说明 |
 |--------|--------|------|
-| `ENTERPRISE_PREFIX` | `NB` | 企业名称缩写，用于用例编号前缀（如 `NB`、`HH`、`XY`）。**按实际项目更换，不可硬编码** |
-| `DEFAULT_AUTHOR` | `Hooplus1ce` | 默认编写人，填入编写人字段 |
-| `OUTPUT_DIR` | `.`（当前工作目录） | Excel 文件输出目录，可改为绝对路径 |
-| `DOMAIN` | 用户指定 | 系统领域分类：`WMS` / `MOM` / `ERP` / 其他。**用于文件命名和系统标识，非 Excel 列字段** |
-| `MODULE_NAME` | 用户指定 | 如 `采购管理_物料申请单`，用于文件命名中的模块标识 |
-| `MODULE_LEVEL1` | 用户指定 | **Excel 一级模块列的值**，如「采购管理」「仓储管理」「生产管理」。与 DOMAIN 不同 |
-| `MODULE_LEVEL2` | 用户指定 | **Excel 二级模块列的值**，如「物料申请单」「入库收货」「销售订单」 |
-| `MODULE_PINYIN` | 用户指定 | 二级模块的拼音首字母缩写，用于用例编号。如 物料申请单→`WLSQD`，入库收货→`RKSHR` |
+| `ENTERPRISE_PREFIX` | `NB` | 企业缩写，用于用例编号前缀 |
+| `DEFAULT_AUTHOR` | `Hooplus1ce` | 默认编写人 |
+| `OUTPUT_DIR` | `.` | 输出目录 |
+| `DOMAIN` | 用户指定 | MOM / ERP / WMS |
+| `MODULE_NAME` | 用户指定 | 如 `生产管理_制造排产`，用于文件命名 |
+| `MODULE_LEVEL1` | 用户指定 | 一级模块，如「生产管理」 |
+| `MODULE_LEVEL2` | 用户指定 | 二级模块，如「制造排产」 |
+| `MODULE_PINYIN` | 用户指定 | 二级模块拼音缩写，如 `ZZPC` |
 
----
+## 0-b. 系统接入
 
-## 0-b. 系统接入配置（免登）
+接入 Hoolinks SCM 演示系统时：
 
-> 接入 Hoolinks SCM 演示系统时，通过 `browser` 工具 + Cookie 注入绕过登录页面。
+**浏览器连接规则（MUST）**：
+- 默认接管端口号 9222 下已打开的 Chrome 浏览器实例
+- 使用 `browser open app.cdp_url http://localhost:9222` 连接，**禁止启动新浏览器**
+- 连接后检查当前页面是否已有 SCM 会话；若有则直接复用，无需重新登录
 
-### 目标系统
+Session 过期处理：
+- 检测 top 层 `.ant-confirm` 弹窗（提示「您还未登录或登录信息过期，请重新登录」）
+- 按 `scripts/scm-login.js` 中的 `refreshSession()` 流程：注入 Cookie 后刷新页面
 
-| 配置项 | 值 |
-|--------|-----|
-| **SCM Admin 入口** | `https://demo19-scm.hoolinks.com/scm-static/scm-admin/scm-admin/#/` |
-| **SCM 登录页** | `https://demo19-scm.hoolinks.com/meLogin.do` |
-| **企业名称** | 诺贝科技（中山）有限公司 |
-| **技术栈** | Ant Design Pro + React SPA（侧边栏菜单 + 顶部标签导航） |
-| **表格渲染** | VTable Canvas（`.vtable` 元素）——列表页使用 |
-| **模块嵌入** | iframe 内嵌旧版 SCM 页面（`scm-spo/#/` 路由） |
+### 0-c. 验证前初始状态重置（MUST）
 
-### 免登流程（浏览器内原生登录，已验证可用）
-
-> **注意**：HTTP Cookie 注入方案（httpx 获取 → CDP `Network.setCookie`）在实际测试中**不可靠**——Cookie 域/路径问题导致 SCM Admin 菜单不加载。以下**浏览器内原生登录流程**已实际验证通过。
-
-**Step 0** — 打开浏览器到登录页：
+每次验证用例前，必须重置页面到初始状态，确保用例间不互相影响：
 
 ```javascript
-// browser open → 自动重定向到 meLogin.do
-// 页面标题: 「诺贝科技（中山）有限公司 | 登录」
+// Step 1: 关闭当前 tab（点击 tab 上的关闭×按钮）
+var tabCloseBtn = document.querySelector('.ant-tabs-tab-active.outSide .anticon-close');
+if (tabCloseBtn) tabCloseBtn.click();
+await new Promise(function(r){ setTimeout(r, 2000); });
+
+// Step 2: 从左侧菜单栏重新进入目标模块
+var menuItem = [...document.querySelectorAll('.ant-menu-item, li[class*="ant-menu"]')].find(function(el){
+  return el.textContent.trim().indexOf('制造排产') >= 0;
+});
+if (menuItem) menuItem.click();
+
+// Step 3: 等待 iframe 加载完成（轮询最多 15 秒，每 500ms 检查一次）
+var maxWait = 30; // 30 iterations × 500ms = 15s
+for (var i = 0; i < maxWait; i++) {
+  await new Promise(function(r){ setTimeout(r, 500); });
+  var iframe = document.querySelector('iframe[src*="makerTable"]');
+  if (iframe) {
+    // iframe 存在后，再等待 VTable 渲染
+    try {
+      var doc = iframe.contentDocument || iframe.contentWindow.document;
+      if (doc.querySelector('.vtable')) break;
+    } catch(e) {}
+  }
+}
 ```
 
-**Step 1** — 获取浏览器 SESSION + OCR 验证码（eval py kernel）：
+| 用途 | 工具 |
+| 浏览器自动化 | `browser`（必须用 `app.cdp_url: "http://localhost:9222"` 连接已有 Chrome，禁止用无头浏览器） |
+| 文件/路径读取 | `read` |
 
-```python
-import ddddocr, httpx
-# 先从 browser run 中获取 SESSION: page.cookies() → sessionCookie.value
-ocr = ddddocr.DdddOcr(show_ad=False)
-ocr.set_ranges("0123456789")
-client = httpx.Client(base_url="https://demo19-scm.hoolinks.com")
-resp = client.get("/validateCode.json", params={"key": "regValidateCode"},
-    headers={"Referer": "https://demo19-scm.hoolinks.com/meLogin.do"},
-    cookies={"SESSION": session_cookie_value})
-vcode = ocr.classification(resp.read())  # → 4位纯数字
-```
-
-**Step 2** — 浏览器内填表登录（browser run）：
-
-```javascript
-// 用户名：标准 textbox
-await tab.fill('textbox[name="用户名"]', 'Hooplus1ce');
-
-// 密码：contenteditable div + hidden input（非标准 input[type=password]）
-await page.evaluate((vcode) => {
-  document.getElementById('signinValue').textContent = 'Ac123456';
-  document.querySelector('input[name="vcode"]').value = vcode;
-}, vcode);
-
-// 点击「登录」按钮 → aria-ref 或 fallback
-await tab.click('aria-ref=e30');
-```
-
-**Step 3** — 验证并导航到 SCM Admin：
-
-```javascript
-await new Promise(r => setTimeout(r, 3000));
-// 登录成功 → 自动跳转 SCM Admin
-// 验证：document.title === '诺贝科技（中山）有限公司'
-// 侧边栏：19 个一级菜单
-```
-
-**关键约束**：
-- 密码字段是 `contenteditable="true"` 的 `div#signinValue`，**禁止** `tab.fill()`
-- 验证码由 py kernel OCR → `page.evaluate()` 传值
-- SESSION/cookie_token/UCTOKEN/SYSSOURCE 由浏览器自动管理，**禁止**手动 CDP Cookie 注入
-
-### 依赖安装
-
-```bash
-cd ~/CodeSpace/Hoolinks/TestAgent && uv sync  # 安装 ddddocr, httpx, openpyxl
-```
-
-> **关键约束**：MUST 使用 `uv` 管理依赖，NEVER `pip install`。项目 `.venv` 已由 `uv sync` 创建。
-
----
-
-## 1. 工具映射速查
-
-| 用途 | omp 工具 |
-|------|---------|
-| 读取文件/路径列表 | `read` |
-| 视觉识别截图 | `read`（基础解码）/ `inspect_image`（深度分析，需 settings 中开启） |
-| 浏览器自动化 | `browser`（Puppeteer + CDP attach）——连接用户已开启的调试 Chrome |
-| 执行 Python（导出 Excel） | `eval`（持久 Python kernel） |
-| 执行 Shell 命令 | `bash` |
-
-> `inspect_image` 的视觉模型选择优先级：`modelRoles.vision` → `modelRoles.default` → 当前活跃模型 → 首个可用模型。通过 `~/.omp/agent/config.yml` 配置专用视觉模型，如 `modelRoles: { vision: "gpt-5.3-codex" }`。
-
----
+| 执行 Python | `eval`（持久 kernel） |
+| Shell 命令 | `bash` |
 
 ## 2. Python 依赖
 
-- `openpyxl >= 3.1`（Excel 生成），通过 `uv add openpyxl` 添加到 `pyproject.toml`。
+- `openpyxl` >= 3.1 — 通过 `uv add openpyxl` 安装
 
----
+## 3. 迭代工作流
 
-## 3. 快速开始 — 示例对话
-
-**用户**：我需要为仓储管理系统的入库收货模块写测试用例，主要覆盖正常收货和超收拦截两个场景。
-
-**Agent（Phase 1 采集）**：收到！先帮你梳理需求——
-1. **领域确认**：WMS 入库管理 ✓
-2. **操作主体**：谁发起收货操作？仓库收货员还是系统自动触发？
-3. **业务流程**：输入（收货单如何创建？必填字段？）→ 处理（系统做什么校验？）→ 输出（成功后单据状态？库存变化？）
-4. **测试类型**：功能测试 + 边界值测试？
-
-**用户**：仓库收货员手工创建，必填字段是仓库、供应商、物料编码、收货数量。收货数量不能超过采购单剩余未到货量，超出要报错拦截。成功收货后状态变为「已完成」，库存自动增加。
-
-**Agent（Phase 2 生成首批用例概览）**：
-
-| 用例编号 | 用例标题 | 测试类型 | 优先级 |
-|---------|---------|---------|------|
-| NB_RKSHR_001 | 正常收货流程—完整填写必填项提交成功 | 功能测试 | P1 |
-| NB_RKSHR_002 | 收货数量超过采购单剩余量时系统拦截 | 边界值测试 | P0 |
-| NB_RKSHR_003 | 必填项「收货数量」为空时提交被拦截 | 功能测试 | P1 |
-| NB_RKSHR_004 | 收货数量等于采购单剩余量时提交成功（边界值） | 边界值测试 | P1 |
-
----
-
-## 4. 迭代工作流
-
-严格按以下 4 个阶段推进，**不可跳步**。每个阶段末尾有明确的推进条件。
+严格按以下 4 个阶段推进，不可跳步。
 
 ### Phase 1 — 需求采集
 
-- 确认领域和模块（WMS / MOM / ERP / SCM）
-- **必须显式向用户确认 DOMAIN（领域名称），不可从 URL 路径、页面标题或系统标识自行推断**
+### 0-e. 视口坐标转换通用规则（MUST）
+
+所有 `page.mouse.click()` / `page.mouse.move()` 的坐标**必须是主页面视口坐标**（绝对坐标），不可使用 iframe 内或 VTable canvas 内的相对坐标。
+
+**来自 iframe 内元素**（如工具栏按钮、弹窗按钮）：
+```javascript
+var iframeRect = document.querySelector('iframe').getBoundingClientRect();
+var elRect = iframe.contentDocument.querySelector('button').getBoundingClientRect();
+// elRect 是 iframe 相对坐标 → 需加 iframe 偏移
+var viewportX = iframeRect.left + elRect.left + elRect.width / 2;
+var viewportY = iframeRect.top  + elRect.top  + elRect.height / 2;
+await page.mouse.click(viewportX, viewportY);
+```
+
+**来自 VTable 场景图**（canvas 内元素）：
+```javascript
+var viewportX = iframeRect.left + vtableRect.left + scenegraphBounds.x1;
+var viewportY = iframeRect.top  + vtableRect.top  + scenegraphBounds.y1;
+```
+
+**来自 VTable `getCellRect`**（需 scroll 修正）：
+```javascript
+var viewportX = iframeRect.left + vtableRect.left + cellCenterX - vt.scrollLeft;
+var viewportY = iframeRect.top  + vtableRect.top  + cellCenterY - vt.scrollTop;
+```
+
+**Scanner 产出**（已算好视口坐标，直接使用）：
+```javascript
+await page.mouse.click(scanResult[col].icons[0].viewportX, scanResult[col].icons[0].viewportY);
+```
+
+**常见错误**：
+- ❌ `page.mouse.click(elRect.left, elRect.top)` — 这是在 iframe 内取得的坐标，点击位置偏移整个 iframe 的距离
+- ❌ `page.mouse.click(vt.getCellRect(col,row).bounds.x1, ...)` — 未加 scroll 修正，滚动后偏移
+
+- 确认领域（显式询问用户，不要从 URL 推断）
 - 按 **输入 → 处理 → 输出** 引导用户描述业务流程
-- 询问需要覆盖的测试类型
-- **【SCM 系统专用】** 如果用户仅提供模块名称（如「托工订单」），按 §0-b 流程：
-  1. 执行 Cookie 注入免登 → `browser` 打开 SCM Admin
-  2. 侧边栏点击目标模块 → 如内容在 iframe 内则切换 frame
-  3. 提取 VTable 列定义和样本数据（§6.3 注入脚本）
-  4. **查询报表类模块**：强制执行 Phase 1-b 穷尽筛选字段
-  5. **所有模块强制**：执行 Phase 1-c 穷尽所有按钮交互（弹窗/跳转/下载）
-  6. **Canvas 表格强制**：执行 Phase 1-d 探测 VTable 单元格交互
-  7. 用实际页面数据替代用户描述，自动填充业务规则
-- 如果用户提供**系统截图**：用 `inspect_image` 分析，按 §6 流程处理
-- 记录关键**业务规则**、**状态流转节点**
-
-**→ 推进条件**（全部满足）：
-1. ✅ 领域和模块已确认
-2. ✅ 业务流程主链路已描述清楚
-3. ✅ 至少识别出 2 条业务规则或状态流转节点
-4. ✅ 测试类型范围已确认
-
-> 兜底：3 轮追问后仍信息不足 → 生成骨架用例，在「备注」列标注 `[待确认: <缺失项>]`。
-
-### Phase 1-b — 筛选区域字段穷尽（查询报表类模块强制）
-
-> 当目标模块为**查询/报表类**页面（列表页、明细表、统计表）时，MUST 先穷尽筛选区域的所有字段、运算符和下拉选项，再进入 Phase 2 设计用例。**禁止凭猜测捏造筛选字段或下拉值**。
-
-#### 穷尽步骤
-
-**Step 1** — 定位页面 iframe 上下文：
-
-SCM Admin 的模块页面通常嵌入在 iframe 中（`id="ReactIframe<code>"`）。先通过 `page.frames()` 找到匹配的 frame：
+- SCM 系统：若用户只提供模块名，执行以下流程：
+【Step 0 — DOM 结构俯瞰】进入模块页面后，第一件事不是点任何按钮，而是站在最高视角分析页面结构。在 iframe 中执行：
 
 ```javascript
-const frame = page.frames().find(f => f.url().includes('purchaseList'));
-// 之后所有 evaluate/click 操作都在 frame 上执行
-```
-
-**Step 2** — 点击「展开▼」打开高级搜索弹窗：
-
-```javascript
-await frame.evaluate(() => {
-  const buttons = document.querySelectorAll('button');
-  for (const btn of buttons) {
-    if (btn.textContent.includes('展开')) { btn.click(); return true; }
-  }
+var layout = await f.evaluate(function(){
+  return {
+    tabs: [...document.querySelectorAll('.ant-radio-button-wrapper, .ant-tabs-tab')].map(function(t){
+      return { text: t.textContent.trim(), selected: t.classList.contains('ant-radio-button-wrapper-checked') || t.classList.contains('ant-tabs-tab-active') };
+    }),
+    buttons: [...document.querySelectorAll('button')].filter(function(b){ return b.offsetParent !== null && b.textContent.trim(); }).map(function(b){
+      return { text: b.textContent.trim().replace(/\s+/g, ''), disabled: b.disabled };
+    }),
+    filters: [...document.querySelectorAll('.ant-row')].filter(function(r){ return r.querySelectorAll('.ant-select').length >= 2; }).map(function(r){
+      var s = r.querySelectorAll('.ant-select');
+      return { field: s[0]?.textContent?.trim(), operator: s[1]?.textContent?.trim() };
+    })
+  };
 });
+// layout 产出：所有页签、按钮、筛选字段的全局清单
 ```
 
-弹窗标题为「高级搜索」，内含 37 个筛选行（每行 = 字段选择 + 运算符选择 + 值输入）。
+**产出物**：页面布局全景图。这张图决定了后续 DFS 遍历的边界和优先级——哪些区域有交互、哪些是静态展示，一目了然。
 
-**Step 3** — 系统扫描所有筛选行，区分值输入类型：
+  Step 1. 侧边栏点击目标模块 → 切换到 iframe
+  **Step 1.5 执行筛选模式切换与展开（MUST）→ 将所有筛选字段暴露在 DOM 中（详见 Phase 1-a）**
+  Step 2. 运行 `scripts/vtable-scanner.js` 挂载 VTable → `scanColumns()` 获取列行为和图标坐标
+  Step 3. 执行 Phase 1-b 穷尽筛选字段
+  Step 4. 执行 Phase 1-c DFS 穷尽所有按钮 + Phase 1-c-2 弹窗探索
+  Step 5. 执行 Phase 1-d 探测 VTable 单元格交互
+  Step 6. 用实际页面数据替代用户描述
+- 记录业务规则、状态流转节点
+
+**推进条件**: 领域和模块确认 + 主链路描述清楚 + ≥2 条业务规则 + 测试类型确认
+
+
+### Phase 1-a — 筛选模式切换与展开（所有查询报表类 MUST）
+
+每次进入一个二级菜单模块（查询/报表/列表类），必须先执行以下操作链，
+将筛选区域从「弹窗模式」切换到「内联模式」并展开所有折叠字段，
+使所有筛选字段、运算符选项、下拉待选项都暴露在 DOM 中，供后续 Phase 1-b 扫描和分析。
+若页面不包含该模式切换按钮（旧版 scm-spo 直接内联），则跳过此步骤。
+
+**操作链（在目标模块的 iframe 中 MUST 完整执行）：**
 
 ```javascript
-const allRows = modal.querySelectorAll('.ant-row .ant-col-xs-12');
-for (const row of allRows) {
-  const selects = row.querySelectorAll('.ant-select');
-  const fieldName = selects[0]?.querySelector('.ant-select-selection-selected-value')?.textContent;
-  const operator = selects[1]?.querySelector('.ant-select-selection-selected-value')?.textContent;
+// ===== 筛选模式切换与展开 =====
+// 必须在 iframe 的 contentWindow 中执行
 
-  // 判断值输入类型
-  const thirdCol = row.querySelector('.ant-col-8:nth-child(3)');
-  let valueType;
-  if (thirdCol.querySelector('.ant-calendar-picker')) valueType = 'date_range';
-  else if (thirdCol.querySelector('.ant-select')) valueType = 'select_dropdown';
-  else if (thirdCol.querySelector('input[type="text"]')) valueType = 'text_input';
-  // 记录 { fieldName, operator, valueType }
+// Step 1: 检测筛选模式切换按钮（anticon-bars 下拉触发按钮）
+var modeToggleBtn = Array.from(document.querySelectorAll('button')).find(function(b){
+  return b.querySelector('.anticon-bars') && b.classList.contains('ant-dropdown-trigger');
+});
+
+if (modeToggleBtn) {
+  // Step 2: 点击模式切换按钮，弹出下拉菜单
+  modeToggleBtn.click();
+  await new Promise(function(r){ setTimeout(r, 1000); });
+
+  // Step 3: 检测当前选中的模式
+  var selectedMode = document.querySelector('.ant-dropdown-menu-item-selected');
+  var currentMode = selectedMode ? selectedMode.textContent.trim() : '';
+
+  // Step 4: 如果当前是「弹窗模式」，切换到「内联模式」
+  if (currentMode.indexOf('弹窗') >= 0) {
+    var inlineItem = Array.from(document.querySelectorAll('.ant-dropdown-menu-item')).find(function(item){
+      return item.textContent.trim().indexOf('内联') >= 0;
+    });
+    if (inlineItem) {
+      inlineItem.click();
+      await new Promise(function(r){ setTimeout(r, 1500); });
+    }
+  } else {
+    // 已在内联模式，关闭下拉
+    modeToggleBtn.click();
+    await new Promise(function(r){ setTimeout(r, 500); });
+  }
+}
+
+// Step 5: 检测筛选区展开/折叠状态，仅在折叠时点击展开
+var expandBtn = Array.from(document.querySelectorAll('button')).find(function(b){
+  var text = b.textContent.trim().replace(/\s+/g, '');
+  return text.indexOf('展开') >= 0 || text.indexOf('收起') >= 0;
+});
+if (expandBtn) {
+  var btnText = expandBtn.textContent.trim().replace(/\s+/g, '');
+  if (btnText.indexOf('展开') >= 0) {
+    // 当前折叠 → 点击展开
+    expandBtn.click();
+    await new Promise(function(r){ setTimeout(r, 1500); });
+    console.log('筛选区已从折叠展开');
+  } else {
+    // 当前已展开（按钮显示「收起」）→ 无需操作
+    console.log('筛选区已展开，跳过展开操作');
+  }
+} else {
+  console.log('未找到展开/收起按钮，可能无折叠筛选区');
+}
+
+
+**目的**：许多模块默认使用「弹窗模式」或折叠状态，导致 DOM 中不可见大量筛选字段和选项。
+只有在「内联模式」且展开后，Phase 1-b 的扫描代码才能检测到全部字段及其输入类型。
+若此步骤未执行，后端可能返回不完整的筛选字段列表，导致测试用例遗漏。
+
+### Phase 1-b — 筛选字段穷尽（查询报表类强制）
+
+定位 iframe 后，扫描所有筛选行，每行 = 字段选择 + 运算符 + 值输入：
+
+```javascript
+// 内联筛选模式（scm-spo 旧版）：field/operator/value 三列
+var selects = document.querySelectorAll('.ant-select');
+// selects[0] = 字段名, selects[1] = 运算符, selects[2] = 值输入
+
+// 高级搜索弹窗模式：点击「展开▼」弹出弹窗
+// 弹窗内 .ant-row .ant-col-xs-12 每行一个筛选条件
+```
+
+穷尽运算符和下拉选项后，产出**筛选字段矩阵**，矩阵必须包含每列的**实际输入类型**（text input / dropdown / searchable-dropdown / date range），因为字段的输入方式决定了用例步骤的写法。输入类型检测代码：
+
+```javascript
+// 检测每个筛选字段的值输入类型
+var allAntRows = document.querySelector('.legions-pro-quick-filter .ant-row').children;
+var fieldTypes = [];
+for (var i = 0; i < allAntRows.length; i++) {
+  var innerRow = allAntRows[i].querySelector('.ant-row');
+  if (!innerRow) continue;
+  var cols = innerRow.children;
+  if (cols.length < 3) continue;
+  var field = cols[0].textContent.trim();
+  var hasSelect = !!cols[2].querySelector('.ant-select');
+  var hasSearchInput = !!cols[2].querySelector('.ant-select-search__field');
+  var hasTextInput = !!cols[2].querySelector('input[type="text"]:not(.ant-select-search__field)');
+  var type = 'input';
+  if (hasSelect && hasSearchInput) type = 'searchable-dropdown';
+  else if (hasSelect) type = 'dropdown';
+  fieldTypes.push({ field: field, inputType: type });
 }
 ```
 
-**Step 4** — 穷尽运算符（按字段类型区分）：
+**重要**：设计筛选用例时，必须从页面**实际数据**出发，不能凭空构造。具体流程：
 
-| 值输入类型 | 点击元素 | 典型运算符选项 |
-|-----------|---------|--------------|
-| 文本输入 (`text_input`) | 第 2 个 select（运算符列） | 包含、不包含、等于、不等于 |
-| 下拉选择 (`select_dropdown`) | 第 2 个 select（运算符列） | 等于、不等于 |
-| 日期范围 (`date_range`) | 第 2 个 select（运算符列） | 介于 |
+1. 在 VTable 中获取各列的**真实值样本**：取前 100 行数据（若不足则取全部），从中随机挑选作为测试数据，避免只取前 5 行导致样本偏差（如前几行可能全是同一状态/同一部门）
+2. 对于 dropdown/searchable-dropdown 字段，打开下拉列表记录**所有可选值**
+3. 对于 text input 字段，从实际数据中取一个**存在的值**作为测试数据
+4. 对于「等于」操作符，使用完全匹配的实际值；对于「包含」操作符，使用实际值的子串
+5. 验证筛选结果时，用 `getColumnValuesByTitle()` 确认筛选后各列的值符合预期
 
-```javascript
-// 点击运算符下拉获取选项
-row.querySelectorAll('.ant-select')[1].click();
-// 读取弹出菜单
-document.querySelectorAll('.ant-select-dropdown:not(.ant-select-dropdown-hidden) .ant-select-dropdown-menu-item')
-```
+**反例**（本次教训）：「成品名称包含「测试」」→ 实际该字段是 searchable-dropdown，且没有完全匹配「测试」的选项
+**正例**：「成品名称选择「LZY-测试品1」」→ 该选项在 51 个下拉选项中真实存在
 
-**Step 5** — 穷尽下拉字段的枚举值：
+详见 `references/modal-types.md` 中的检测代码模板。
 
-仅 `valueType === 'select_dropdown'` 的字段需要此步。点击第 3 个 select（值选择列）展开下拉，收集选项。
+生成筛选用例时，AI **必须先用 `getColumnValuesByTitle()` 在浏览器中执行验证**，确认筛选逻辑正确后，再将验证结论转化为**纯中文描述**写入 Excel 的预期结果列。
+
+具体流程：
 
 ```javascript
-// 滚动到目标行 → 点击第 3 个 select
-row.scrollIntoView({ block: 'center' });
-row.querySelectorAll('.ant-select')[2].click();
-// 读取选项
-const items = document.querySelectorAll(
-  '.ant-select-dropdown:not(.ant-select-dropdown-hidden) .ant-select-dropdown-menu-item'
-);
+// AI 内部执行（不出现在 Excel 中）：
+// Step 1: 执行筛选操作
+// Step 2: 用 getColumnValuesByTitle 取列值
+var values = getColumnValuesByTitle(window._vtable, '制令单号');
+// Step 3: 内部断言
+var allMatch = values.every(function(v){ return v.indexOf('MO202606') !== -1; });
+// Step 4: 将结论转化为中文写入 Excel 预期结果
 ```
 
-**关键约束**：每次点击下拉后 MUST 先关闭（点击弹窗标题区域），再点下一个，否则下拉选项会被缓存/串扰。
+| 内部验证结论 | Excel 预期结果列写入的内容 |
+|-------------|--------------------------|
+| `allMatch === true` | 「表格所有制令单号均包含「MO202606」，无不符合的记录」 |
+| `allMatch === false` | 「存在不符合筛选条件的记录，需确认筛选逻辑」 |
 
-#### 产出物
+对组合查询，每列分别断言后，合并为一条中文描述：
 
-穷尽完成后，输出完整的**筛选字段矩阵**，格式如下：
+```javascript
+// AI 内部分别断言
+var ok1 = getColumnValuesByTitle(vt, '制令单号').every(function(v){ return v && v.indexOf('MO') !== -1; });
+var ok2 = getColumnValuesByTitle(vt, '生产部门').every(function(v){ return v === '冲压车间'; });
+// → Excel 写入: 「所有制令单号包含 MO，且所有生产部门为「冲压车间」」
+```
 
-| 字段名 | 值输入类型 | 可用运算符 | 枚举选项（下拉字段） |
-|--------|-----------|-----------|-------------------|
-| 进货状态 | select_dropdown | 等于 / 不等于 | 待安排进货、部分安排进货、待进货、部分进货、全部进货、已取消 |
-| 进货订单号 | text_input | 包含 / 不包含 / 等于 / 不等于 | — |
-| 计划进货日期 | date_range | 介于 | — |
+### Phase 1-c — 按钮 DFS 穷尽（所有模块强制）
 
-此矩阵作为 Phase 2 用例设计的**唯一数据源**——测试数据中的字段名、下拉选项值 MUST 来自此矩阵，不得凭空编造。
-
-### Phase 1-c — 页面按钮深度优先穷尽（所有模块强制）
-
-> **核心原则：深度优先遍历（DFS）**——每点击一个按钮，如果产生弹窗/跳转/新页面，MUST 先穷尽其内部所有交互（子按钮、子字段、子表格），回到原始页面后再处理下一个按钮。**禁止浅尝辄止的广度遍历**。
-
-#### DFS 遍历算法
+**核心原则：深度优先遍历（DFS）**。点一个按钮 → 弹窗出来 → **弹窗作为一个独立的交互节点**，对其 DOM 进行完整分析后生成派生 DFS 子节点（详见 `Phase 1-c-2` →「弹窗内部 DFS」）→ 关闭 → 点下一个按钮。
 
 ```
 for 每个按钮 in 当前页面:
+    【前置】关闭所有残留消息弹窗
     点击按钮
-    if 产生弹窗/抽屉:
-        ├── 记录弹窗标题、所有字段、所有子按钮
-        ├── for 每个子按钮 in 弹窗:
-        │      点击子按钮 → 记录行为 → 关闭子结果 → 回到弹窗
-        ├── 穷尽弹窗内所有下拉/日期/输入框字段
-        └── 关闭弹窗 → 回到列表
-    elif 产生页面跳转:
-        ├── 在新页面递归执行 Phase 1-c（按钮穷尽）
-        ├── 在新页面执行 Phase 1-b（筛选字段穷尽，如适用）
-        ├── 记录所有发现
-        └── 返回上一页（history.back() 或关闭tab）
-    elif 打开新Tab（父页面级）:
-        ├── 切换到新Tab的iframe
-        ├── 在新iframe内递归执行 Phase 1-b + 1-c + 1-d
-        └── 关闭Tab → 回到原Tab
-    elif 触发下载/打印:
-        └── 记录触发类型（export/print），不阻塞
-```
-
-#### 实现指南
-
-**递归终止条件**：
-- 当前页面/弹窗内所有按钮均已点击探索过
-- 已到达叶子节点（如「确认提交」「取消」「关闭」）
-- 检测到循环（同一URL/弹窗已访问过）
-
-**状态栈**：维护一个「页面栈」追踪深度：
+    if 交互弹窗 → 记录标题/字段/子按钮 → DFS 弹窗 → 关闭
+    if 业务确认弹窗（iframe 内 .ant-confirm） → 记录标题/内容/按钮 → 测试「取消」→ 关闭× → 测试「确定」
+    if 消息提醒 → 提取文字 → 关闭（不残留）
+    if 页面跳转 → 重新获取 iframe → 递归
+    if 新 Tab → 切换到新 iframe → 递归 → 关闭 Tab
+    if 系统级确认弹窗（top 层 .ant-confirm）→ Cookie 注入
+    if 下载/打印 → 记录类型，不阻塞
 
 ```
-列表页 (laborOrder)
-  ├── [1] 新增按钮 → 新增Tab (laborOrderDetail)
-  │     ├── [1.1] 托运责任下拉 → 切换选项 → 观察联动
-  │     ├── [1.2] 币别下拉 → 切换到美元 → 观察联动
-  │     ├── [1.3] 从商品库选择 → 弹窗
-  │     │     ├── [1.3.1] 搜索框输入
-  │     │     ├── [1.3.2] 商品列表点击选择
-  │     │     ├── [1.3.3] 确认按钮
-  │     │     └── [1.3.4] 取消按钮
-  │     ├── [1.4] 附件上传 → 文件选择
-  │     ├── [1.5] 返回按钮
-  │     ├── [1.6] 生成托工订单按钮（提交）
-  │     └── 关闭Tab → 回到列表
-  ├── [2] 设置按钮 → VTable列配置
-  ├── [3] 料件预计领用 → 弹窗
-  │     ├── [3.1] 搜索框
-  │     ├── [3.2] 重置按钮
-  │     ├── [3.3] 表格列头操作
-  │     └── 关闭弹窗
-  └── [4] 流程设置 → 新页面
-        ├── [4.1] 编辑按钮 → 编辑模式
-        ├── [4.2] 流程类型radio切换
-        ├── [4.3] 各字段复选框交互
-        └── 返回列表
-```
 
-#### 产出物：完整交互树
-
-每个叶子节点的交互行为 → 一条测试用例。使用缩进文本记录树形结构，`[N]` 标记编号，与最终用例编号对应。
-
-**关键约束（与广度遍历相反）**：
-- **NEVER** 点一下按钮看一眼就关掉点下一个
-- **每次页面跳转/Tab切换/弹窗关闭后 MUST 重新获取 iframe 引用**（`page.frames().find(...)`），旧引用在导航后立即失效
+**关键约束**：
+- iframe 导航后 MUST 重新获取 `page.frames().find(...)`
 - 弹窗内的每个下拉字段 MUST 展开穷尽全部选项
-- 弹窗内的每个按钮 MUST 点击并记录行为
-- 新页面的表单 MUST 填一遍所有字段观察校验规则
-- 只有当前节点**彻底穷尽**后才返回父节点
+- 禁用按钮也要记录其存在（级别：低）
 
-#### 可复用 JS 片段
-
-**扫描当前页面所有可见按钮**：
+可复用 JS 片段：
 
 ```javascript
-const buttons = [...document.querySelectorAll('button')]
-  .filter(b => b.offsetParent !== null && b.textContent.trim())
+// 扫描当前页面所有可见按钮
+[...document.querySelectorAll('button')].filter(b => b.offsetParent !== null && b.textContent.trim())
   .map(b => ({ text: b.textContent.trim().replace(/\s/g, ''), disabled: b.disabled }));
 ```
 
-**检测点击结果（5 种）**：
+### Phase 1-c-2 — VTable 行选择与弹窗深度探索
+
+点击业务操作按钮前，必须先选中 VTable 中的行。选择方法如下：
+
+**行选择方法（已验证可行）**：
 
 ```javascript
-// 弹窗
-const modals = [...document.querySelectorAll('.ant-modal')].filter(m => m.offsetParent);
-// 抽屉
-const drawers = [...document.querySelectorAll('.ant-drawer-open')];
-// 页面跳转
-const urlChanged = location.href !== previousUrl;
-// 下载/打印：DOM 无变化 → 记录为 button_export/button_print
-// 新Tab（父页面级，需在 page 级别检查）:
-const parentTabs = await page.evaluate(() =>
-  [...document.querySelectorAll('.ant-tabs-tab')].map(t => t.textContent.trim())
-);
+// 1. 用 getCellRect 获取复选框列的单元格坐标
+// 2. 转换为主页面视口坐标（iframe偏移 + canvas偏移）
+// 3. 用 page.mouse.click 模拟真实鼠标点击
+// 4. 用 getCellInfo(0, row).value 验证选中状态
+
+var vt = window._vtable;
+var row = 2; // 第3行（0-indexed，表头=0）
+var cr = vt.getCellRect(0, row);
+var vr = document.querySelector('.vtable').getBoundingClientRect();
+// 获取 iframe 在主页面中的偏移
+var iframeRect = document.querySelector('[role="tabpanel"][aria-hidden="false"] iframe').getBoundingClientRect();
+var mx = Math.round(iframeRect.left + vr.left + (cr.bounds.x1 + cr.bounds.x2) / 2);
+var my = Math.round(iframeRect.top + vr.top + (cr.bounds.y1 + cr.bounds.y2) / 2);
+
+// 多步移动模拟鼠标轨迹（解决 VTable pickable:false 问题）
+for (var i = 1; i <= 15; i++) {
+  var t = i / 15;
+  // 从远到近移动
+  await page.mouse.move(
+    Math.round(300 + (mx - 300) * t),
+    Math.round(200 + (my - 200) * t)
+  );
+  await new Promise(function(r){ setTimeout(r, 60); });
+}
+await page.mouse.click(mx, my);
+await new Promise(function(r){ setTimeout(r, 1500); });
+
+// 用 getCellInfo 验证选中状态（不要用 getCheckboxState，它可能返回 null）
+var cellInfo = vt.getCellInfo(0, row);
+console.log('checkbox选中状态:', cellInfo.value); // true = 已选中, undefined = 未选中
 ```
 
-**弹窗深度穷尽模板**：
+**⚠️ 已知陷阱**：
+- 不要用 `dispatchEvent` 在 canvas 上触发点击——它可更新 VTable 内部 `getSelection()` 状态，但**不会同步到组件层的视觉复选框**，按钮 handler 检测不到
+- 不要用 `methods.setSelection()`——同样不更新视觉复选框
+- **验证必须用 `getCellInfo(0, row).value`**（true=已选中, undefined=未选中），不要用 `getCheckboxState()`
+- 行号从 0 开始计数，表头 = row 0
+
+**选中行后点击按钮**：
 
 ```javascript
-// 1. 记录弹窗标题
-const title = modal.querySelector('.ant-modal-title')?.textContent;
-// 2. 穷尽弹窗内下拉字段的枚举值（见 Phase 1-b Step 5）
-// 3. 穷尽弹窗内每个按钮
-const modalBtns = modal.querySelectorAll('button');
-// 4. for each btn: 点击 → 观察子结果 → 关闭子结果 → 回到弹窗
-// 5. 关闭弹窗
-modal.querySelector('.ant-modal-close')?.click();
+// DOM click 在 iframe 内有效
+var btn = [...document.querySelectorAll('button')].find(function(b){
+  return b.textContent.trim().replace(/\s+/g, '') === '按钮文字';
+});
+if (btn) btn.click();
 ```
 
-**SCM Admin 标签页管理（父页面）**：
+**页面跳转检测（基于 TabPanel）**：
+
+部分操作按钮或双击 VTable 单元格会触发页面跳转（iframe URL 变化或新开 Tab）。通过以下方式检测：
 
 ```javascript
-// 检测新标签
-const tabs = await page.evaluate(() =>
-  [...document.querySelectorAll('.ant-tabs-tab')].map(t => t.textContent.trim())
-);
-// 切换到指定标签
-await page.evaluate((name) => {
-  [...document.querySelectorAll('.ant-tabs-tab')]
-    .find(t => t.textContent.trim() === name)?.click();
-}, '托工订单');
-// 关闭标签
-await page.evaluate((name) => {
-  const tab = [...document.querySelectorAll('.ant-tabs-tab')]
-    .find(t => t.textContent.trim().includes(name));
-  tab?.querySelector('.ant-tabs-close, .anticon-close')?.click();
-}, '托工订单新增');
+// 获取当前显示的 iframe URL
+function getActiveIframeSrc() {
+  var pane = document.querySelector('.ant-tabs-tabpane[aria-hidden="false"]');
+  var iframe = pane ? pane.querySelector('iframe') : null;
+  return iframe ? iframe.src : null;
+}
+
+// 获取当前选中的 tab 名称
+function getActiveTabName() {
+  var tab = document.querySelector('.ant-tabs-tab[aria-selected="true"]');
+  return tab ? tab.textContent.trim() : null;
+}
+
+// 检测是否有新 tab 出现
+function getTabCount() {
+  return document.querySelectorAll('.ant-tabs-tab').length;
+}
 ```
 
+**判断流程**：
+1. 操作前记录 `activeSrc = getActiveIframeSrc()` 和 `tabCount = getTabCount()`
+2. 操作后重新读取
+3. 若 `getActiveIframeSrc() !== activeSrc` → iframe 内页面跳转
 
-**iframe 上下文获取（⚠️ 核心铁律）**：
+#### DFS 子节点扩展 —— 弹窗 / 页面跳转 / 页面内容变更
 
-> **每次页面跳转、标签切换、弹窗关闭后 MUST 重新获取 iframe 引用。旧引用在导航后立即失效——继续使用会导致 `undefined is not an object` 或操作到错误页面。**
+**核心思想**：按钮点击后的产物——无论弹窗、页面跳转还是同屏内容变更——都是一个**新的交互面**，需要作为 DFS 子节点递归遍历，生成**衍生测试用例**。
+
+**三种子节点类型的精确定义**：
+
+| 类型 | 特征 | 判断条件 |
+|------|------|---------|
+| **弹窗** | iframe 内或 top 层弹出模态框 | `.ant-modal-content` 出现在 DOM 中 |
+| **页面跳转** | iframe 的 `src` 变化，或包裹 iframe 的 tabpanel 的激活状态变更 | 操作前 `iframe.src` ≠ 操作后 `iframe.src`，或 `document.querySelector('[role="tabpanel"][aria-hidden="false"]')` 指向不同的 tabpanel |
+| **内容变更** | 同一 iframe 且同一 tabpanel 下，内部 DOM 元素被替换/更新 | iframe URL 不变 + tabpanel 不变 + 内部元素集合改变 |
+
+```
+操作前:
+  主页面 tabpanel[aria-hidden="false"] → iframe A (URL: /makerTable)
+
+点击按钮后判断:
+  ├── iframe A 内出现 .ant-modal-content → 弹窗类型
+  ├── iframe A 的 src 变化 → 页面跳转类型
+  ├── tabpanel 激活切换（aria-hidden="false" 转移到另一个 tabpanel）→ 页面跳转类型
+  └── iframe A 没变 + tabpanel 没变，但内部按钮/表格/字段都换了 → 内容变更类型
+
+  注意：新交互面的测试用例，**前置条件只描述门户级初始状态**（如「已登录系统」「在制造排产页面」「表格已加载」），触发到该交互面的所有操作**必须写在测试步骤中**，不可放在前置条件。详见下方「用例衍生规则」示例。 |
+```
+
+**检测方法**：
 
 ```javascript
-// ❌ 错误：缓存 frame 引用
-const frame = page.frames().find(f => f.url().includes('laborOrder'));
-await frame.evaluate(() => { /* 点击按钮触发跳转 */ });
-await frame.evaluate(() => { /* 💥 frame 可能已失效! */ });
+// 操作前记录状态
+var beforeFrameSrc = iframe.src;
+var beforeTabpanel = document.querySelector('[role="tabpanel"][aria-hidden="false"]');
+var beforeTabIframeSrc = beforeTabpanel?.querySelector('iframe')?.src;
 
-// ✅ 正确模式：每次导航后重新获取
-let f = page.frames().find(f => f.url().includes('laborOrder'));
-await f.evaluate(() => { /* 点击按钮触发跳转 */ });
-await new Promise(r => setTimeout(r, 2000));   // 等待导航
-f = page.frames().find(f => f.url().includes('newPage')); // ← 重新获取
-await f.evaluate(() => { /* 在新页面操作 */ });
+// 操作后检测
+var afterTabpanel = document.querySelector('[role="tabpanel"][aria-hidden="false"]');
+var afterFrameSrc = iframe.src;
+var afterTabIframeSrc = afterTabpanel?.querySelector('iframe')?.src;
 
-// ✅ SCM Admin 模式：列表页 iframe → 点击新增 → 父页面新Tab
-let listFrame = page.frames().find(f => f.url().includes('laborOrder'));
-await listFrame.evaluate(() => { /* 点击「新增」按钮 */ });
-// 新 iframe 出现在父页面 → 重新获取
-let detailFrame = page.frames().find(f => f.url().includes('laborOrderDetail'));
-await detailFrame.evaluate(() => { /* 在新增页操作 */ });
-// 关闭Tab → 回到列表 → 重新获取列表 iframe
-listFrame = page.frames().find(f => f.url().includes('laborOrder'));
+if (afterTabIframeSrc !== beforeTabIframeSrc) {
+  // 类型 A: 页面跳转（tabpanel 切换 或 iframe URL 变化）
+  // 重新获取 iframe → 对新的 tabpanel/iframe 完全重新 DFS
+} else if (document.querySelector('.ant-modal-content')) {
+  // 类型 B: 弹窗 → 分析弹窗 DOM 进行内部 DFS
+} else {
+  // 类型 C: 内容变更（同 iframe 同 tabpanel，内部元素已更换）
+  // 重新分析当前 DOM，发现新元素继续 DFS
+}
 ```
 
-**必须重新获取 iframe 的场景**：
+**关键区分实例**：
+- iframe URL 未变 + tabpanel 未变 + 内容变了 → **内容变更**（例：点击重置后筛选区清空、收起▲后筛选区折叠、某按钮点击后表格刷新）
+- iframe URL 变了（即使 tabpanel 没明变）→ **页面跳转**（例：批量备料 → URL 从 makerTable 变为 createMaterialOrder）
+- tabpanel 变了（即使看起来还在同一模块）→ **页面跳转**（例：从「制造排产」页签切换到「制令单新增」页签）
+- 两者都没变，只是在当前 DOM 上弹了个窗 → **弹窗**
+```
 
-| 触发操作 | 原因 |
-|---------|------|
-| 按钮导致 `location.href` 变化 | iframe URL 改变 |
-| 点击「新增」→ 父页面开新Tab | 新 iframe 被动态创建 |
-| 关闭 Tab | iframe 被销毁 |
-| `history.back()` 返回 | iframe URL 回退 |
-| 父页面切换 `.ant-tabs-tab` | 不同 iframe 变为活跃 |
 
-**调试辅助**：操作前后打印 `page.frames()` 列表确认 iframe 变化：
+**用例衍生规则**：
+
+| 新交互面类型 | 内部可交互元素 | 衍生用例方向 | 前置条件（仅初始状态） | 测试步骤（含完整操作链） | 预期结果 |
+| **弹窗** (modal) | 输入框/文本域 | 输入不同值后验证 | 1. 已登录\n2. 在模块页面\n3. 表格已加载 | 1. 勾选行\n2. 点击触发按钮\n3. 等待弹窗\n4. 输入测试值 | 输入框显示输入值 |
+| **弹窗** (modal) | 按钮（确定/取消/×） | 点击后验证结果 | 1. 已登录\n2. 在模块页面\n3. 表格已加载 | 1. 勾选行\n2. 点击触发按钮\n3. 等待弹窗\n4. 点击目标按钮 | 弹窗关闭，操作执行 |
+| **页面跳转** (new iframe) | 新页面按钮 | 继续 DFS | 1. 已登录\n2. 在模块页面 | 1. 勾选行（如需）\n2. 点击跳转按钮\n3. 等待页面加载\n4. 点击新页面按钮 | 新页面响应正确 |
+| **页面跳转** (new iframe) | 返回按钮 | 返回主页面 | 1. 已登录\n2. 在模块页面 | 1. 勾选行（如需）\n2. 点击跳转按钮\n3. 等待页面加载\n4. 点击返回 | 返回主页面 |
+| **内容变更** (同iframe) | 新按钮/筛选 | 继续 DFS | 1. 已登录\n2. 在模块页面 | 1. 点击触发按钮\n2. 等待内容变更\n3. 点击新按钮 | 新按钮响应正确 |
+
+**常见场景的 DFS 用例示例**：
+
+1. **物料查询弹窗**（弹窗类型）
+   - 前置条件：1. 已登录系统 2. 在制造排产页面 3. 表格已加载
+   - 用例 1：1. 勾选一行 2. 点击物料查询 3. 等待弹窗 4. 查看物料明细表格各列数据
+   - 用例 2：1. 勾选一行 2. 点击物料查询 3. 等待弹窗 4. 点击关闭×按钮
+   - 用例 3：1. 勾选一行 2. 点击物料查询 3. 在弹窗中对比物料编码与所选行成品编码
+
+2. **批量完成确认弹窗**（弹窗类型）
+   - 前置条件：1. 已登录系统 2. 在制造排产页面 3. 表格已加载
+   - 用例 1：1. 勾选一行 2. 点击批量完成 3. 等待弹窗 4. 点击「取消」
+   - 用例 2：1. 勾选一行 2. 点击批量完成 3. 等待弹窗 4. 点击「确定」
+   - 用例 3：1. 勾选一行 2. 点击批量完成 3. 等待弹窗 4. 点击关闭×
+
+3. **批量排产 → 排产详情视图**
+   - 前置条件：1. 已登录系统 2. 在制造排产页面 3. 表格已加载
+   - 用例 1（查看工序）：1. 切换至「全部」页签 2. 勾选同部门同成品待排产行 3. 点击批量排产 4. 查看工序列表
+   - 用例 2（选设备）：1~3 同上 4. 为工序选择生产设备
+   - 用例 3（确认排产）：1~3 同上 4. 选择设备 5. 点击确认排产
+   - 用例 4（返回）：1~3 同上 4. 点击返回
+
+4. **批量备料 → 备料单创建页**
+   - 前置条件：1. 已登录系统 2. 在制造排产页面 3. 表格已加载
+   - 用例 1：1. 勾选行 2. 点击批量备料 3. 等待跳转 4. 查看备料明细
+   - 用例 2：1. 勾选行 2. 点击批量备料 3. 填写备料数量
+   - 用例 3：1. 勾选行 2. 点击批量备料 3. 提交备料单
+
+5. **折叠筛选区**（内容变更类型）
+   - 前置条件：1. 已登录系统 2. 在制造排产页面 3. 筛选区已展开
+   - 用例 1：1. 点击「收起▲」 2. 验证筛选区折叠
+   - 用例 2：1. 点击「展开▼」 2. 验证筛选区展开
+
+**关键约束**：
+- **前置条件只描述初始状态**：不得包含「已勾选行」「已打开弹窗」「已进入XX页面」等操作结果——必须写入测试步骤。前置条件示例：「1. 已登录系统\n2. 在制造排产页面\n3. 表格已加载」
+- **禁止**一条用例写多个步骤（先点按钮A、再在弹窗B里操作字段C、再点确定D）——这应拆为多条用例
+- 三种子节点关闭/返回后，必须**重新分析主页面 DOM**（操作可能改变了主页面的数据/状态）
+- 每个新交互面内的所有可交互元素至少产生一条用例（中级以上）
+- 页面跳转后 MUST 重新获取 iframe 引用（`page.frames().find(...)`）
+
+### Phase 1-d — VTable 单元格交互探索
+
+**必须先运行 scanner 脚本获取真实列分类**，然后只对 scanner 标记为可交互的列进行点击测试，禁止凭空猜测。
+
+运行 `scripts/vtable-scanner.js`：
 
 ```javascript
-console.log(page.frames().map(f => f.url().slice(0, 80)));
+// 1. 挂载 VTable 实例（按 scanner 中的 mountVTable 方法）
+// 2. 扫描列并输出分类结果
+var scanResult = scanColumns(50);
+// scanResult 每行包含:
+//   col, title              — 列序号和标题
+//   bodyBehavior            — 列体行为: '复选框' / '链接/按钮' / '文本'
+//   icons[].func            — 图标功能: '排序' / '筛选' / '下拉菜单'
+//   icons[].viewportX/Y     — 图标在视口中的精确坐标（用于 page.mouse.click）
 ```
 
-### Phase 1-d — VTable 单元格交互探索（Canvas 渲染表格强制）
+**bodyBehavior 分类含义**：
 
-> **核心原则同 Phase 1-c：深度优先 + 鼠标/键盘模拟**——当页面使用 VTable（`@visactor/vtable`）Canvas 渲染时，通过 VTable 实例 API **探测**可交互单元格的结构信息（列定义、编辑器类型、事件配置），但**实际触发编辑/选择/排序等交互行为 MUST 使用鼠标/键盘模拟**，禁止走 VTable 内部 API（`startEditCell`, `selectCell` 等）。
->
-> **⚠️ VTable 排序图标交互的特殊性（SCM 系统）**：
-> 排序图标的场景图节点 `pickable: false`（`content-right` 组显式设置），无法被 `pickTarget()` 命中。VTable 的排序点击链路为：
-> `pointermove(多次)` → `dealIconHover()` → `updateHoverIcon()` (激活图标悬浮态) → `pointertap` → `dealIconClick()` → `updateSortState()`
-> 
-> **因此 Puppeteer 的 `page.mouse.click()` 直接点击排序图标区域无法触发排序**（缺少足够的中间 `pointermove` 事件激活悬浮态）。
->
-> **正确方法：使用 DrissionPage `actions.move_to().click()`**，其 `duration` 参数（默认 0.5s）生成约 30~60 步精细的鼠标移动轨迹，让 VTable 的 `updateHoverIcon` 正确检测图标并激活。已在 `FastVTableHelper.click_cell_icon()` 中封装此逻辑。
+| bodyBehavior | 含义 | 交互方式 | 用例方向 |
+|-------------|------|---------|---------|
+| `复选框` | 行选择列 | `page.mouse.click` 点击坐标 | 行选择/取消/全选 |
+| `链接/按钮` | 可点击跳转的列（蓝色文字） | `page.mouse.click` 点击单元格 | 点击跳转详情页 |
+| `文本` | 纯展示文本 | 不交互（仅验证内容） | 数据展示正确性 |
 
-#### DFS 遍历顺序
+**icons[].func 分类含义**：
+
+| func | 含义 | 坐标来源 | 用例方向 |
+|------|------|---------|---------|
+| `排序` | 列头排序图标 | `getCellIconBounds()` 计算坐标 | 点击排序图标切换排序顺序 |
+| `筛选` | 列头筛选图标 | `getCellIconBounds()` 计算坐标 | 点击弹出筛选面板 |
+
+**列宽拖动**（所有列的通用交互，与 scanner 无关）：将鼠标移动到列头交界处，光标变为 ↔ 拖拽指针后，长按左键横向拖动 ≥30px 后松开即可调整列宽。这是 VTable 原生支持的交互。
+
+**遍历 scanner 可交互列的流程**：
 
 ```
-for 每个列 in VTable.columns:
-    if 列有编辑器:
-        page.mouse.click → 触发编辑（基于 getCellRect 坐标）
-        ├── 编辑器出现 → 穷尽编辑器内所有交互
-        ├── 下拉编辑器 → 展开所有选项 → 切换选项 → 观察联动
-        ├── 日期编辑器 → 选择日期 → 观察格式
-        ├── 文本编辑器 → 输入有效值/无效值 → 观察校验
-        └── 回车/Tab 确认编辑 / Esc 取消
-    if 列头可点击（有 sort/filter/menu 配置）:
-        use FastVTableHelper.click_cell_icon(col, 0) → 排序/筛选弹窗出现
-        ├── 按值筛选 → 勾选/取消选项 → 确认
-        ├── 按条件筛选 → 切换条件 → 输入值 → 确认
-        └── 关闭弹窗
-    if 行可交互:
-        page.mouse.click 复选框 → 观察工具栏变化 → 点击新增按钮 → ... → 取消选择
-        page.mouse.dblclick 行 → 观察跳转 → 探索目标页面 → 返回
-        page.mouse.click({button:'right'}) 行 → 上下文菜单 → 点击每个菜单项 → 观察结果
-```
-#### 探测维度
+for each column:
+  ├── bodyBehavior='复选框' → 单点击复选框坐标（参考 Phase 1-c-2 行选择）
+  │     验证 getCellInfo(0, row).value === true
+  │
+  ├── bodyBehavior='链接/按钮' → 双击单元格文字！！！（注意：必须双击，单击无效）
+  │     page.mouse.click → wait 150ms → page.mouse.click (同一坐标)
+  │     ├── 弹出弹窗 → 走弹窗 DFS
+  │     ├── iframe URL 变化 → 页面跳转（参考 DFS 子节点扩展）
+  │     ├── 新 Tab 出现 → 切换到新 Tab → DFS → 关闭
+  │     └── 无变化 → 跳过
+  │
+  ├── icons 包含 '排序' → 单击排序图标
+  │     page.mouse.click → 排序图标状态变化（↕ → ↑ → ↓）
+  └── icons 包含 '筛选' → 单击筛选图标
+        0. 若列不在视口内，先用 scrollToCell({ col: colIdx, row: 0 }) 滚动到目标列
+        1. 运行 scanColumns(maxCol) 获取所有列的精确视口坐标
+        2. 在 scanResult 中找该列 header 行的 icons，取 func='筛选' 的 viewportX/Y
+        3. 鼠标轨迹移动到该坐标 → page.mouse.click
+        4. 等待 2 秒后，用「6.4 弹窗检测」中的**全量扫描代码**检测弹窗
+        5. 检测到 .vtable-filter-menu → 分析其 DOM → 按 DFS 子节点扩展生成衍生用例
+        6. 检测到 .ant-modal-content → 走交互弹窗 DFS
+        7. 无弹窗 → 跳过
 
-**维度 1 — 列编辑器（inline editing）**：
+**关键区分：单击 vs 双击**：
+
+| 交互目标 | 操作 | 预期效果 |
+|---------|------|---------|
+| 复选框列 (col 0) | 单击 | 行选中/取消 |
+| 排序图标（列头） | 单击 | 排序切换 |
+| 筛选图标（列头） | 单击 | 弹出筛选面板 |
+| 单元格文字（链接/按钮列） | **双击** | 弹出详情弹窗或跳转 |
+
+**单元格双击实现**：
 
 ```javascript
-const vt = window._vtable;
-// 检查每列是否有编辑器定义
-for (const col of vt.columns) {
-  const hasEditor = vt.isHasEditorDefine?.(col) ?? false;
-  // 检查编辑器类型
-  const editorType = col.editor || col.fieldType;
-  // 下拉编辑器 → col.listEditor || col.options
-  // 日期编辑器 → col.editor === 'date' || col.fieldType === 'date'
-  // 文本编辑器 → col.editor === 'input' || typeof col.editor === 'function'
-  // 复选框列 → col.cellType === 'checkbox' || col.headerType === 'checkbox'
-// 实际触发编辑器（仅供探测编辑器是否存在，不可用于测试验证）
-// ❌ 验证编辑功能时 MUST 使用 page.mouse.click 基于 getCellRect 坐标触发
-vt.startEditCell(row, col);  // 仅探测：观察 Canvas 上是否出现编辑组件
-vt.cancelEditCell();         // 关闭编辑器，恢复状态
+// 获取单元格坐标（同单点击方法）
+var vt = window._vtable;
+var cellRect = vt.getCellRect(col, row);
+var mx = Math.round(iframeRect.left + vr.left + (cellRect.bounds.x1 + cellRect.bounds.x2) / 2);
+var my = Math.round(iframeRect.top + vr.top + (cellRect.bounds.y1 + cellRect.bounds.y2) / 2);
+// 鼠标轨迹移动
+for (var i = 1; i <= 15; i++) {
+  var t = i / 15;
+  await page.mouse.move(Math.round(50+(mx-50)*t), Math.round(100+(my-100)*t));
+  await new Promise(function(r){ setTimeout(r, 60); });
+}
+// 双击：两次点击间隔 150ms
+await page.mouse.click(mx, my);
+await new Promise(function(r){ setTimeout(r, 150); });
+await page.mouse.click(mx, my);
+await new Promise(function(r){ setTimeout(r, 2000); });
 ```
 
-**维度 2 — 事件处理器**：
+排序图标在列头区域，需要计算精确的视口坐标后使用鼠标轨迹点击。`scanColumns()` 的输出中 `icons[].viewportX/Y` 已算好坐标，直接使用：
 
 ```javascript
-// 检查 VTable 内部事件配置
-const props = vt.internalProps || {};
-// eventOptions: 单元格 click/dblclick/mousedown 等事件
-// menu/menuHandler: 右键上下文菜单
-// dataSourceEventIds: 数据变更事件
-const eventKeys = Object.keys(props).filter(k =>
-  k.toLowerCase().includes('click') || k.toLowerCase().includes('menu') ||
-  k.toLowerCase().includes('event') || k.toLowerCase().includes('dbl')
-);
+var icon = scanResult[col].icons[0]; // 排序图标
+// 多步鼠标轨迹
+for (var i = 1; i <= 15; i++) {
+  var t = i / 15;
+  await page.mouse.move(
+    Math.round(50 + (icon.viewportX - 50) * t),
+    Math.round(100 + (icon.viewportY - 100) * t)
+  );
+  await new Promise(function(r){ setTimeout(r, 60); });
+}
+await page.mouse.click(icon.viewportX, icon.viewportY);
 ```
 
-**维度 3 — 列头交互**：
-
-```javascript
-// 列头点击 → 排序
-// 列头下拉 → 筛选（按值筛选/按条件筛选）
-// 列头拖拽 → 列宽调整
-// 列头右键 → 列操作菜单
-// 判断：点击列头区域 → 检查 .ant-dropdown 或 .vtable-menu 出现
-```
-
-**维度 4 — 行选择与行操作**：
-
-```javascript
-// 复选框列 → 勾选/全选 → 检查工具栏新按钮
-// 行双击 → 详情页跳转
-// 行悬停 → tooltip
-#### VTable API 速查表
-
-| API 方法 | 用途 | 返回值 | 验证用途 |
-|---------|------|--------|---------|
-| `vt.isHasEditorDefine(col)` | 列是否有编辑器 | boolean | ✅ 数据探测 |
-| `vt.startEditCell(col, row)` | 触发单元格编辑（仅探测用） | boolean | ⚠️ 仅探测编辑器是否存在，**不用于验证** |
-| `vt.completeEditCell()` / `vt.cancelEditCell()` | 完成/取消编辑 | void | ⚠️ 同上 |
-| `vt.getCellValue(col, row)` / `vt.getCellRawValue(col, row)` | 获取单元格值 | any | ✅ 数据读取 |
-| `vt.getCellRect(col, row)` | **单元格在 Canvas 中的边界** | `{bounds: {x1,y1,x2,y2}}` | ✅ **坐标计算核心**，与 `document.querySelector('.vtable').getBoundingClientRect()` 结合转换为视口坐标 |
-| `vt.getCellIcons(col, row)` | **获取单元格内交互图标信息**（排序、下拉等） | `[{funcType, positionType, width, height, marginLeft, hover, ...}]` | ✅ **坐标计算核心**，用于精确定位排序图标/下拉图标的热区 |
-| `vt.getHeaderDefine(col, row)` | 列头配置（sort, filter 等标志位） | `{title, field, sort, filter}` | ✅ 交互能力探测，确认列头是否可排序/筛选 |
-| `vt._canResizeColumn(col, row)` | 列是否可拖拽调整宽度 | boolean | ✅ 交互能力探测。签名 `(col, row)`，表头传 `row=0` |
-| `vt._canDragHeaderPosition(col)` | 列头是否可拖拽重排 | boolean | ✅ 交互能力探测 |
-| `vt.getColWidth(col)` | 获取列宽（px） | number | ✅ 数据读取 |
-| `vt.isFrozenColumn(col)` | 是否为冻结列 | boolean | ✅ 数据读取 |
-| `vt.getFrozenColsWidth()` | 左侧冻结列总宽度 | number | ✅ 用于计算冻结分隔线位置 |
-| `vt.getScrollLeft()` / `vt.getScrollTop()` | 当前滚动偏移 | number | ✅ 辅助判断可视区域 |
-| `vt.getBodyVisibleCellRange()` | 当前可视区域的单元格范围 | `{rowStart, colStart, rowEnd, colEnd}` | ✅ 判断单元格是否在视口内 |
-| `vt.scrollToCell({col, row})` | 滚动到指定单元格 | void | ⚠️ 辅助滚动，**不用于验证交互** |
-| `vt.selectCell(col, row)` / `vt.selectCells(ranges)` | 选择单元格 | void | ❌ **禁止**：走 page.mouse.click |
-| `vt.getSelectedCellInfos()` | 获取选中单元格信息 | array | ✅ 读取选中状态 |
-| `vt.getCheckboxState()` | 复选框选中状态 | array | ✅ 数据读取 |
-| `vt.updateSortState([{field, order}])` | 更新排序状态 | void | ⚠️ **验证用 API**：SCM VTable 的排序图标场景图 `pickable: false`，Puppeteer `page.mouse.click` 无法触发。排错/测试时可直接调用此 API 验证排序逻辑，但测试用例中需注明「通过 API 触发」 |
-| `vt.rowCount` / `vt.colCount` | 行列数 | number | ✅ 数据读取 |
-| `vt.getCellOriginRecord(col, row)` | 获取行原始数据 | object | ✅ 数据提取 |
-| `vt.showTooltip(text)` | 显示 tooltip | void | ✅ 测试 tooltip 功能 |
-| `vt.showDropDownMenu(col, row)` | 显示列头下拉菜单 | void | ❌ **禁止**：走 page.mouse.click |
-| `vt.getMenuInfo(col, row)` | 获取右键菜单上下文 | object | ✅ 数据探测 |
-
-#### 产出物
-
-| 列名 | hasEditor | editorType | 列头交互 | 行交互 |
-|------|-----------|-----------|---------|--------|
-| _vtable_checkbox | false | checkbox(header) | 全选/取消 | 行勾选 |
-| 订单状态 | false | — | 按值筛选/排序 | — |
-| 采购数量 | false | — | 按条件筛选(大于/小于/等于) | — |
-
+**关键约束**（MUST）：
+- 所有可交互列的结论 MUST 来自 `scanColumns()` 的输出，禁止猜测
+- `bodyBehavior='文本'` 且 `icons.length=0` 的列**不做任何点击交互**
+- 每次点击后 MUST 等待 ≥2 秒
 ### Phase 2 — 用例生成
 
-每张用例必须包含 **18 个字段**（对齐 Excel 输出列结构）：
+每个用例 18 个字段：
 
-| # | 字段 | 说明 | 要求 |
-|---|------|------|------|
-| A | 用例编号 | `{ENTERPRISE_PREFIX}_{MODULE_PINYIN}_{分组字母}{3位数字}` | 全局唯一。示例：`NB_TGDD_F001`（托工订单筛选用例）。分组字母约定：A=新增/添加、F=筛选查询、E=编辑、C=配置/流程设置、I=行内/弹窗交互、B=批量操作/导出/打印、P=页面级别（标签切换/刷新/布局） |
-| B | 用例标题 | 动宾结构，简明概括 | 如「采购订单转单成功」 |
-| C | 优先级 | P0~P3 | P0=阻塞；P1=核心；P2=一般；P3=低优 |
-| D | 验证点 | 简明验证目标描述 | 必须有明确的可验证内容 |
-| E | 一级模块 | 功能模块名，如「采购管理」。**注意与 DOMAIN 区分：DOMAIN=MOM 是系统领域，一级模块是具体的功能模块** | 准确归类 |
-| F | 二级模块 | 子功能模块，如「物料申请单」。这是 MODULE_PINYIN 的来源 | 必填 |
-| G | 测试类型 | 功能/边界值/兼容性/压力 | 必须标注 |
-| H | 功能 | 新增/查询/修改/审批/… | 描述具体动作 |
-| I | 前置条件 | 系统状态、数据准备 | 编号列表，`\\n` 换行。**每条写独立完整入口条件，禁止「同上」「同前」「见上文」等指代写法** |
-| J | 测试步骤 | 编号列表，步骤清晰可执行 | 每一步都是具体动作 |
-| K | 测试数据 | 字段名:值 键值对 | 具体数值，`\\n` 换行 |
-| L | 预期结果 | 可验证断言式描述 | 含界面提示、状态/数据变化 |
-| M | 测试结果 | 初始为空 | 执行时填写 |
-| N | 执行人 | 初始为空 | 执行时填写 |
-| O | 执行时间 | 初始为空 | 格式 `YYYY-MM-DD` |
-| P | 编写人 | `DEFAULT_AUTHOR` | 自动填充 |
-| Q | 编写时间 | 当前日期 | 用例设计时间 |
-| R | 备注 | 初始为空 | 骨架用例的待确认项。**非骨架用例保持为空，编写人不在此列写入说明** |
+| # | 字段 | 要求 |
+|---|------|------|
+| A | 用例编号 | `{前缀}_{拼音}_{分组字母}{3位数字}`，分组：F=筛选 I=交互 P=页面 B=导出 |
+| B | 用例标题 | 动宾结构 |
+| C | 级别 | 高级=阻塞 中级=核心 低级=一般 |
+| D | 验证点 | 简明扼要的验证目标，必须有明确的可验证内容 |
+| E~F | 模块 | 如「生产管理」「制造排产」 |
+| G | 测试类型 | 功能/边界值/兼容性 |
+| L | 预期结果 | 筛选用例：用纯中文描述验证结论，如「所有制令单号均包含 MO202606」。AI 内部用 `getColumnValuesByTitle()` 验证后再转换为中文。非筛选用例：可验证断言，纯 UI 描述，无技术术语 |
+| I | 前置条件 | 编号列表，**只描述测试开始前的初始状态**，不含任何操作步骤。如：1. 已登录系统\n2. 在制造排产页面\n3. 表格已加载。禁止写「已通过XX操作到达XX状态」——这类中间操作必须放在测试步骤中。 |
+| J | 测试步骤 | 编号列表，**包含从初始状态到验证前的所有操作**，每一步是具体动作。如：1. 勾选一行待排产记录\n2. 点击「批量排产」\n3. 等待页面切换到排产详情视图\n4. 点击「返回」\n5. 观察页面 |
 
-**必须覆盖 4 类场景**：正常流程（Happy Path）、异常流程、业务规则验证、数据状态流转。
+必须覆盖：正常流程、异常流程、业务规则验证、数据状态流转。
 
-**批量建议**：单次 5~30 条。超过 30 条主动建议按子功能分批。
+#### VTable 测试用例生成规则
 
-**→ 推进条件**：
-1. ✅ 至少 1 条完整 Happy Path 用例（18 字段齐全）
-2. ✅ 至少 1 条异常流程用例
-3. ✅ 用例编号无重复
-4. ✅ 步骤编号从 1 开始连续递增
+VTable 相关用例**严格基于 `scanColumns()` 的真实输出 + 实际点击验证**，禁止凭空猜测。
 
-### Phase 3 — 迭代优化
+**流程**：
 
-#### 展示规则（强制）
+```
+Step 1: scanColumns() 获取列分类
+Step 2: 逐列执行实际点击操作：
+  复选框列 → 单点击 → 验证 getCellInfo(0,row).value
+  链接/按钮列 → 双击单元格 → 观察弹窗/跳转并记录
+  排序列 → 单击排序图标 → 观察排序状态并记录
+Step 3: 基于实际观察生成用例：
+  弹窗 → DFS 衍生用例
+  跳转 → 页面跳转型衍生用例
+  排序 → 排序用例
+  无反应 → 不生成
+```
 
-3. **逐功能/按钮模拟执行（强制鼠标/键盘模拟）**：每个操作按钮必须先用 `browser` 工具实际点击执行（`page.mouse.click`），观察交互流程后再设计用例，不得靠推测写用例。**对于 VTable Canvas 渲染表格**，必须使用 `page.mouse.click/move/down/up` 基于 `getCellRect` 坐标进行交互验证，禁止走 VTable 内部 API（`startEditCell`, `selectCell`, `updateSortState` 等）。测试人员最终是与真实页面交互的，AI 探索阶段必须模拟真实操作路径。
-4. **用户确认后方可导出**：在用户未明确说「导出」「生成 Excel」或「可以了」之前，不得执行 `wb.save()` 等保存逻辑
+**实际测试结果**：运行 scanner 并逐列点击验证后，将结果记录到 Excel 的「3.4 VTable 列定义一览表」中，不在 SKILL 中硬编码。不同模块的 VTable 列行为可能完全不同。
 
-#### 迭代流程
 
-- 用 Markdown 表格展示关键列给用户
-- 逐条或批量收集反馈：遗漏场景？步骤贴合实际？预期结果正确？
-- 根据反馈就地修订，保持编号连续
-- 可重复多轮直到用户口头确认「用例已完整」
 
-**→ 推进条件（强制门禁）**：通过 §8 全部 P0 检查项 + 用户口头确认。
+#### 衍生用例规则（DFS 子节点扩展——弹窗 / 页面跳转 / 内容变更）
+
+按钮点击后，无论触发的是**弹窗**（`.ant-modal-content`）、**页面跳转**（iframe URL 变化或 tabpanel 切换）还是**内容变更**（同 iframe 同 tabpanel 内 DOM 改变），出现的新交互面都应作为 DFS 子节点处理，生成至少一条**衍生测试用例**。每条衍生用例独立编写，前置条件与主用例相同（仅门户级初始状态），测试步骤从初始状态到最终验证完整描述所有操作：
+```
+主用例（以批量排产为例）:
+  前置条件：1. 已登录系统 2. 在制造排产页面 3. 表格已加载
+  步骤：1. 切换至「全部」页签 2. 勾选同部门同成品待排产行 3. 点击批量排产
+  预期：进入排产详情视图，显示工序列表
+
+每条衍生用例独立编写，前置条件同上不再重复，步骤须从初始状态开始完整描述所有操作：
+
+  衍生用例 1（查看工序）：
+    步骤：1. 切换至「全部」页签 2. 勾选同部门同成品待排产行 3. 点击批量排产 4. 查看工序列表各列数据
+    预期：工序列表显示序号、工艺类型、工序编码、工序名称、设备类型、生产日期、生产设备等列
+  
+  衍生用例 2（选择设备）：
+    步骤：1~3 同上 4. 为某工序下拉选择生产设备
+    预期：设备可选，选择后该行显示已选设备
+  
+  衍生用例 3（确认排产）：
+    步骤：1~3 同上 4. 选择设备 5. 点击确认排产
+    预期：排产操作成功执行
+
+  衍生用例 4（撤销排产）：
+    步骤：1~3 同上 4. 点击撤销排产 5. 在确认弹窗中点击确定
+    预期：排产撤销成功
+
+  衍生用例 5（返回列表）：
+    步骤：1~3 同上 4. 点击返回
+    预期：返回制造排产列表视图
+```
+
+**前置条件写法**：**只描述门户级初始状态**，如「1. 已登录系统\n2. 在制造排产页面\n3. 表格已加载」。**禁止**写「已勾选行」「已打开弹窗」「已跳转到XX页面」等操作结果——触发到当前状态的所有操作必须完整写在**测试步骤**中。前置条件与测试步骤之间不重复、不继承。
+**步骤写法**：**包含从初始状态到验证前的所有操作**，每一步是具体动作。每条用例必须独立完整，不依赖父用例或前序用例的上下文。
+**预期结果**：只验证当前操作的结果，不验证父操作的结果。
+### Phase 3 — 分区域迭代探索（对话驱动）
+
+**核心原则**：不一次性生成全部用例，而是通过不断对话，按用户指示逐步覆盖各个区域。
+
+#### 工作模式
+
+```
+用户 → 指令（如「测一下批量排产按钮」）
+  Agent → 执行（点击按钮、观察弹窗、记录结果）
+  Agent → 汇报结果 + 询问下一步
+用户 → 继续指令或调整方向
+```
+
+#### 覆盖策略：按区域分解
+
+DOM 结构俯瞰后，将页面拆为独立区域逐个击破：
+
+| 区域 | 内容 |
+|------|------|
+| **页签切换** | radio-tabs、sub-tabs |
+| **筛选区** | 字段+运算符+值输入 |
+| **工具栏按钮** | 业务操作按钮组 |
+| **VTable 表头** | 排序、筛选图标 |
+| **VTable 行选择** | 复选框、双击 |
+| **VTable 链接列** | customLayout 跳转 |
+| **页面级** | 折叠、刷新 |
+
+**每个区域探索完后向用户汇报并提供下一步选项，不擅自继续。用户可随时切换方向。**
 
 ### Phase 4 — Excel 导出
 
-1. 确认 `MODULE_NAME`、`ENTERPRISE_PREFIX`、`DEFAULT_AUTHOR`
-2. 把 §10 模板代码与 `test_cases` 真实数据组装好
-3. **MUST 按页面视觉布局排序后再写入 Excel**（见下方 §4-a 排序规则）
-4. 在 `eval` 中直接执行模板代码
-5. 告知用户文件路径
+1. 按 `scripts/excel-export-template.py` 模板组装数据
+2. MUST 按视觉布局排序（筛选区 → 工具栏 → VTable → 弹窗 → 页面级）
+3. 在 `eval` 中执行
+4. 告知文件路径
 
-**异常处理**：
-
-| 异常 | 处理策略 |
-|------|---------|
-| `openpyxl` 未安装 | 在 `eval` 前执行 `uv add openpyxl` |
-| 输出目录不存在 | 代码内置 `os.makedirs(OUTPUT_DIR, exist_ok=True)` |
-| 写入权限不足 | 降级到当前目录（`.`）保存 |
-
----
-
-### §4-a — 用例排序规则（视觉布局优先）
-
-> **核心原则**：Excel 中用例的排列顺序 MUST 遵循被测页面的**视觉布局**——从上到下、从左至右。功能相同的用例聚集在一起，保证测试人员逐行复验时不会在功能间跳跃。
-
-#### 通用页面排序模型
+#### 排序规则
 
 ```
-┌─ 页面顶部 ────────────────────────────┐
-│  [筛选区域]                            │  ← F系列 (查询)
-│    字段1  字段2  [展开▼] [重置] [查询]  │
-├─ 工具栏 ──────────────────────────────┤
-│  [新增] [设置] [导出] [打印] ...        │  ← 按钮从左至右
-├─ 主内容区 (VTable / 表格) ────────────│
-│  列头交互 / 行选择 / 单元格编辑          │  ← I系列 (行内交互)
-│  列头筛选 / 排序 / 右键菜单             │
-├─ 弹窗 (按主页面按钮触发顺序) ──────────│
-│  弹窗内: 筛选区 → 表格 → 按钮            │  ← 递归应用同规则
-└─ 子页面 (按主页面按钮触发顺序) ────────│
-   子页面内: 自上而下、自左而右             │  ← 递归应用同规则
+筛选区 (F) → 页签/按钮 (I) → VTable 交互 (I) → 页面级 (P)
 ```
 
-#### 排序算法
+## 4-a 用例编号分组约定
 
-```
-test_cases.sort(key = lambda case:
-    1. 页面层级 (0=主页列表, 1=新增页, 2=流程设置页)
-    2. 区域位置 (0=筛选区, 1=工具栏按钮(按从左至右), 2=VTable交互, 3=弹窗)
-    3. 区域内子位置 (按钮从左至右, 弹窗从上到下)
-    4. 功能类型 (查询 → 新增 → 导出 → 打印 → 配置 → 交互 → 页面)
-)
-```
+| 字母 | 含义 | 示例 |
+|------|------|------|
+| F | 筛选查询 | NB_ZZPC_F001 |
+| A | 新增/添加 | NB_ZZPC_A001 |
+| I | 交互（弹窗/按钮/表格操作） | NB_ZZPC_I001 |
+| B | 批量操作/导出/打印 | NB_ZZPC_B001 |
+| P | 页面级（刷新/布局/切换） | NB_ZZPC_P001 |
 
-#### 托工订单列表页具体排序
+## 5. 截图分析
 
-| 排序 | 区域 | 功能 | 用例系列 | 示例 |
-|------|------|------|---------|------|
-| 1 | 筛选区 | 查询 | F | F001-F029 |
-| 2 | 工具栏 | 新增 | A(列表入口) | 点击新增按钮进入新增页 |
-| 3 | 工具栏 | 导出 | B | B001-B002 |
-| 4 | 工具栏 | 打印 | B | B003 |
-| 5 | 工具栏 | 料件预计领用 | I(弹窗) | I003-I004 |
-| 6 | 工具栏 | 流程设置 | C | C001-C007 |
-| 7 | VTable | 行内交互 | I(表格) | I001-I002, I005, I008-I010 |
-| 8 | 新增页 | 表单 | A(表单) | A001-A016 |
-| 9 | 新增页 | 商品库弹窗 | G | G001-G010 |
-| 10 | 新增页 | 附件上传 | U | U001-U007 |
-| 11 | 新增页 | 提交流程 | S | S001-S003 |
-| 12 | 页面级 | 切换/刷新 | P | P001-P003 |
+用户提供截图时用 `read` 或 `inspect_image` 分析，识别页面标题、表单字段、按钮文字、表格列标题、状态标签。
 
-#### 排序代码模板
+## 6. 浏览器分析与辅助
 
-```python
-# 每个用例附加排序键，在 Excel 写入前排序
-SORT_ORDER = {
-    # 主页-筛选区
-    'F': 0,
-    # 主页-工具栏按钮 (按从左至右顺序)
-    '新增入口': 1,  # 新增按钮
-    '导出': 2,
-    '打印': 3,
-    '料件预计领用': 4,
-    '流程设置': 5,
-    # 主页-VTable交互
-    'VTable交互': 6,
-    # 新增页-表单
-    '新增表单': 7,
-    # 新增页-商品库弹窗
-    '商品库': 8,
-    # 新增页-附件
-    '附件': 9,
-    # 新增页-提交
-    '提交流程': 10,
-    # 页面级
-    '页面': 11,
-}
+### 6.1 浏览器连接
 
-# 按用例标题中的关键词匹配排序组
-def get_sort_key(case):
-    title = case[1]  # 用例标题
-    func = case[7]   # 功能
-    
-    if func == '查询': return (0, 0)        # 筛选区始终第一
-    if '导出' in title: return (1, 2)
-    if '打印' in title: return (1, 3)
-    if '料件预计领用' in title: return (1, 4)
-    if '流程设置' in title: return (1, 5)
-    if func in ('选择', '交互', '筛选'): return (2, 0)  # VTable
-    if func == '新增': return (3, 0)         # 新增表单
-    if '商品库' in title: return (4, 0)
-    if func == '附件' or '附件' in title: return (5, 0)
-    if '提交' in title or '完整流程' in title: return (6, 0)
-    if func == '页面': return (7, 0)
-    return (9, 0)
-
-test_cases.sort(key=get_sort_key)
-```
-
-## 5. 视觉模型选择（CAP_IMAGE_VISION）
-
-omp 用 `inspect_image` 工具分析截图。工具内部按以下优先级选择视觉模型：
-
-1. `modelRoles.vision`（用户配置的专用视觉模型）
-2. `modelRoles.default`
-3. 当前会话活跃模型
-4. 首个可用模型
-
-所选模型必须支持 `input: [text, image]`。通过 `~/.omp/agent/config.yml` 配置：
-
-```yaml
-modelRoles:
-  vision: "gpt-5.3-codex"   # 替换为你的多模态模型
-```
-
-视觉模型不可用时，降级为用户手动描述截图内容。
-
----
-
-## 6. 截图与浏览器分析
-
-### 截图分析
-
-用户提供截图时，按以下流程分析：
-
-1. **用 `read` 或 `inspect_image` 读取截图**：识别页面标题、表单字段标签、表格列标题、按钮文字、状态标签、筛选条件
-2. **异常信息**（红色提示、弹窗报错）：优先作为异常测试场景素材
-3. **VTable Canvas 表格数据提取**：见下方 §6.3
-4. **截图失败降级**：路径验证 → 切换 `read`/`inspect_image` → 提示用户手动描述
-
-### 浏览器分析（CDP attach）
-
-如果用户已启动 Chrome 并开放调试端口（9229），用 `browser` 工具连接并操作：
-
-1. **启动 Chrome**（让用户确认已启动）：
-   ```bash
-   # Linux
-   google-chrome --remote-debugging-port=9229 --no-first-run
-   # macOS
-   /Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome --remote-debugging-port=9229
-   # Windows PowerShell
-   & "C:\Program Files\Google\Chrome\Application\chrome.exe" --remote-debugging-port=9229
-   ```
-2. **验证连通性**：浏览器访问 `http://localhost:9229/json` 看到 JSON 列表即可
-3. **在 omp 中用 `browser` 工具**：`browser.open()` 连接后，用 `tab.observe()` 获取 DOM/Accessibility 树，`tab.screenshot()` 截图，点击/填充等交互
-4. **重点采集**：页面标题、按钮文字、表单字段、表格列标题、筛选条件、状态标签
-5. **无浏览器时**：用户手动截图后走截图分析流程
-
-
-### VTable Canvas 表格数据提取
-
-当页面使用 VTable（`@visactor/vtable`）Canvas 渲染表格时，DOM 中仅有 `<canvas>` 而无 `<tr>/<td>`。通过以下工具直接从 VTable 实例提取数据。
-
-#### 核心注入脚本（优化版）
+Chrome 以 `--remote-debugging-port=9222` 启动，通过 `browser.open()` 连接。
 
 ```javascript
-// 挂载 VTable 实例到 window._vtable
-// 直接路径：__reactInternalInstance$.return.return.return.return.stateNode.vtableInstance
-// 上层框架固定挂载方式，无需循环探测
-(function mountVTable() {
-  var el = document.querySelector('.vtable');
-  if (!el || !el.parentElement) return null;
-  var parent = el.parentElement;
-  var fk = Object.keys(parent).find(function(k) {
-    return k.startsWith('__reactFiber') || k.startsWith('__reactInternalInstance');
-  });
-  if (!fk) return null;
-  try {
-    var win = document.defaultView || document.contentWindow || window;
-    win._vtable = parent[fk].return.return.return.return.stateNode.vtableInstance;
-    return true;
-  } catch(e) { return null; }
-})();
+browser.open({ app: { cdp_url: "http://localhost:9222", target: "诺贝科技" } });
 ```
 
-#### 一键提取全部表格数据（browser.evaluate 内使用）
+### 6.2 VTable 数据提取
+
+运行 `scripts/vtable-scanner.js`：
 
 ```javascript
-var tableData = await tab.evaluate(function() {
-  // === 挂载 VTable（直接路径） ===
-  var el = document.querySelector('.vtable');
-  if (!el || !el.parentElement) return null;
-  var parent = el.parentElement;
-  var fk = Object.keys(parent).find(function(k) {
-    return k.startsWith('__reactFiber') || k.startsWith('__reactInternalInstance');
-  });
-  if (!fk) return null;
-  var instance;
-  try { instance = parent[fk].return.return.return.return.stateNode.vtableInstance; }
-  catch(e) { return null; }
-  
-  // === 遍历数据行，提取简化记录 ===
-  var records = [];
-  for (var r = 1; r < instance.rowCount - 1; r++) {
-    var rec = instance.getCellOriginRecord(0, r);
-    if (rec) records.push(rec);
+// 在 iframe evaluate 内
+mountVTable();
+var vt = window._vtable;
+
+// 获取列定义
+vt.columns.map(c => ({ field: c.field, title: c.title }));
+
+// 获取样本数据（行 1-5）
+for (var r = 1; r < 6; r++) { vt.getCellOriginRecord(0, r); }
+
+// 获取筛选后全部记录
+vt.getFilteredRecords();
+
+使用 `scripts/vtable-column-values.js` 中的 `getColumnValuesByTitle()` 按中文列名取全列数据：
+
+```javascript
+// 在 iframe evaluate 内（VTable 已挂载）
+var values = getColumnValuesByTitle(window._vtable, '制令单号');
+// → ['MO202606270041', 'MO202606260019', 'MO202606260018', ...]
+// 返回值与界面显示的排序、筛选、分页状态一致
+
+// 取原始值（未经格式化，如数字类型）
+var rawQty = getColumnValuesByTitle(window._vtable, '生产数量', true);
+// → [3, 2, 45, 36719, ...]
+```
+
+**用途**：筛选验证的核心工具。执行筛选操作后调用此函数提取某列所有值，逐一断言是否符合筛选条件（如「制令单号包含MO202606」或「生产数量 > 100」），替代人工肉眼检查。
+
+**标题匹配策略**：先精确匹配 `headerValue === title`，若不中再尝试包含匹配 `headerValue.indexOf(title) !== -1`。这样即使标题带后缀（如「生产需求单号 *」或「制令单号（必填）」），也能命中正确列。
+
+**视觉文本 vs 原始值**（raw 参数的关键区别）：
+
+```
+getColumnValuesByTitle(vt, '制令单类型', false)
+  → ['普通制令单', '普通制令单', '包装制令单', ...]  // 视觉文本（经过 customLayout 映射）
+
+getColumnValuesByTitle(vt, '制令单类型', true)
+  → ['0', '0', '1', ...]                           // 原始数据码
+```
+
+`raw=false`（默认）优先通过 VTable 场景图 API（`scenegraph.getCell`）读取 canvas 上实际渲染的文字，能正确获取 customLayout、cellType、formatter 处理后的视觉文本，与用户肉眼看到的完全一致。`raw=true` 读的是未经格式化的数据源原始值。
+
+**重要**：筛选验证时 MUST 使用 `raw=false`（视觉文本），因为筛选弹窗可能显示原始码而表格显示中文，必须用视觉文本做断言才与用户体验一致。视觉文本需单元格在视口内才能读到（场景图只渲染可见区域），若返回 `null` 则自动降级为 `getCellValue`。
+
+#### 场景图 API 的高级用途
+
+VTable 的场景图（scenegraph）反映了 canvas 上实际渲染的内容，是获取真实渲染状态的最可靠途径，尤其适用于以下场景：
+
+**1. 获取渲染后的视觉文本（customLayout 映射后的值）**
+
+```javascript
+var cellGroup = vt.scenegraph.getCell(col, row);
+var visualText = null;
+(function walk(node, depth){
+  if (!node || depth > 5 || visualText) return;
+  if (node.type === 'text' && node.attribute && node.attribute.text) {
+    visualText = node.attribute.text;
   }
-  return { total: records.length, rows: records };
+  if (node.children) node.children.forEach(function(c){ walk(c, depth+1); });
+})(cellGroup, 0);
+// visualText → '普通制令单'（而非原始数据 '0'）
+```
+
+**2. 获取实际渲染坐标（与视口坐标的转换）**
+
+场景图的 `globalAABBBounds` 已反映 auto-fill 压缩和 scrollToCell 滚动后的真实渲染位置，是**唯二可靠**的坐标来源（另一个见下方「getCellRect + scroll 修正」）。
+
+```javascript
+var bounds = cellGroup.globalAABBBounds;
+// 转换为视口坐标（场景图坐标已含 scroll 偏移，无需额外修正）：
+var viewportX = iframeRect.left + vtableRect.left + bounds.x1;
+var viewportY = iframeRect.top  + vtableRect.top  + bounds.y1;
+```
+
+**备选方案：getCellRect + scroll 修正（当场景图不可用时）**
+
+`getCellRect` 返回的是逻辑 canvas 坐标，**不包含 scrollLeft/scrollTop 偏移**。当 VTable 被 `scrollToCell` 滚动后，必须手动减去滚动偏移：
+
+```javascript
+var cr = vt.getCellRect(col, row);
+// 逻辑中心点
+var cx = cr.bounds.x1 + (cr.bounds.x2 - cr.bounds.x1) / 2;
+var cy = cr.bounds.y1 + (cr.bounds.y2 - cr.bounds.y1) / 2;
+// 修正 scroll 偏移 → 视口坐标
+var viewportX = iframeRect.left + vtableRect.left + cx - vt.scrollLeft;
+var viewportY = iframeRect.top  + vtableRect.top  + cy - vt.scrollTop;
+```
+
+未修正 `scrollLeft` 时，悬停点可能偏移数百像素（如 scrollLeft=1050 时，逻辑 x=1290 实际渲染在 x=240），导致气泡无法触发。
+
+⚠️ 注意：**切勿直接使用 `getCellRect` 的原始坐标作为视口坐标**——它既不反映 auto-fill 压缩，也不反映 scroll 偏移。
+
+**3. 定位列边框（用于列宽拖拽）**
+
+```javascript
+// 取 colN 的右边界 = colN 与 colN+1 之间的竖线
+var cgN  = vt.scenegraph.getCell(N, 0);
+var borderX = cgN.globalAABBBounds.x2;  // canvas 坐标
+// → 视口坐标: iframeRect.left + vtableRect.left + borderX
+```
+
+**4. 获取列顺序和实际列宽**
+
+```javascript
+for (var c = 0; c < vt.columns.length; c++) {
+  var cg = vt.scenegraph.getCell(c, 0);
+  var renderedWidth = cg.globalAABBBounds.x2 - cg.globalAABBBounds.x1;
+  var definedWidth = vt.columns[c].width;
+  // renderedWidth !== definedWidth → 该列被 auto-fill 压缩或手动拖拽过
+}
+```
+
+**5. 检查表头图标是否存在**
+
+```javascript
+var cg = vt.scenegraph.getCell(col, 0);
+var hasFilter = false, hasSort = false;
+(function walk(node, depth){
+  if (!node || depth > 3) return;
+  if (depth > 0) {
+    var name = (node.name || '').toLowerCase();
+    if (name.indexOf('filter') !== -1) hasFilter = true;
+    if (name.indexOf('sort') !== -1)   hasSort = true;
+  }
+  if (node.children) node.children.forEach(function(c){ walk(c, depth+1); });
+})(cg, 0);
+```
+
+**关键约束**：
+- 场景图只渲染视口内的可见区域，滚动后需重新读取
+- `getCell(col, row)` 的 col/row 是 VTable 内部行列索引，与 `getCellRect` 一致
+- `globalAABBBounds` 的坐标系原点在画布左上角，需加 iframe 偏移 + vtable 偏移转换为视口坐标
+
+
+### 6.3 鼠标轨迹
+
+注入 `scripts/mouse-trail-inject.js` 后：
+
+| 你说 | Agent 执行 |
+|------|-----------|
+| 「开启鼠标轨迹」 | 在主页面 + 所有 iframe 的 contentWindow 中同时执行 `window.mt.on()` |
+| 「关闭鼠标轨迹」 | 在主页面 + 所有 iframe 中同步执行 `window.mt.off()` |
+
+注入示例（必须同时注入主页面和 iframe）：
+
+```javascript
+// 1. 注入到主页面
+await page.evaluate(function(){
+  if(!window.__mt_injected){
+    // 注入鼠标轨迹 JS（注入后自动初始化）
+    // 然后开启
+    if(window.mt) window.mt.on();
+  }
+});
+
+// 2. 注入到 iframe
+var iframes = page.frames().filter(function(f){ return f.url().indexOf('makerTable') >= 0; });
+iframes.forEach(async function(f){
+  await f.evaluate(function(){
+    if(window.mt) window.mt.on();
+  });
 });
 ```
 
-#### VTable 可用 API 速查
+注入目标：**主页面 + 当前视口可见 iframe 的内容窗口**。由于 iframe 内的事件不会冒泡到主页面，必须分别在两个上下文中注册事件监听器才能同步显示红点。
+### 6.4 弹窗检测
 
-| 方法 | 说明 | 示例 |
-|------|------|------|
-| `getCellOriginRecord(col, row)` | 获取原始数据行对象 | `vt.getCellOriginRecord(0, 1)` → 完整行对象 |
-| `getCellValue(col, row)` | 获取单元格显示值 | `vt.getCellValue(3, 1)` → `"子件0301001"` |
-| `getFilteredRecords()` | 获取筛选后全部记录 | `vt.getFilteredRecords()` → 二维数组 |
-| `getRecordIndexByCell(col, row)` | 根据单元格获取记录索引 | `vt.getRecordIndexByCell(0, 1)` |
-| `getCellRect(col, row)` | 获取单元格位置（截图/点击用） | `vt.getCellRect(0, 1)` → `{x, y, width, height}` |
-| `rowCount` | 总行数（含表头/汇总行） | `vt.rowCount` → 116 |
-| `colCount` | 总列数 | `vt.colCount` → 23 |
+详见 `references/modal-types.md`。点击任意可交互元素后，必须进行**全量 DOM 扫描**检测是否出现弹窗，**不能仅搜索 ant-design 组件**——VTable 的筛选弹窗是自定义的 `.vtable-filter-menu`，不是 `.ant-dropdown`。
 
-#### 前置条件
-
-- 页面使用 VTable Canvas 渲染（DOM 中有 `.vtable` 元素）
-- React 类组件的 `stateNode` 上挂有 `vtableInstance` 属性
-- 注入脚本在 iframe 上下文中执行（`tab.evaluate` 包裹）
-
-#### 验证清单
-
-- [ ] `window._vtable` 不为 undefined
-- [ ] `vt.getCellRect` 是函数
-- [ ] `vt.rowCount` > 0
-- [ ] `vt.getCellOriginRecord(0, 1)` 返回有 `index` 字段的对象
-
-### VTable 单元格交互操作
-
-VTable 中某些列可编辑（启动编辑后单元格变为文本输入框、下拉选择框、日期选择框等）。
-
-> **核心交互原则**：数据提取走 VTable 实例 API，交互验证走鼠标/键盘模拟。
-> 
-> | 用途 | 允许方式 | 说明 |
-> |------|---------|------|
-> | **数据读取**（列定义、单元格值、行记录） | VTable 实例 API ✅ | `getCellValue`, `getCellOriginRecord`, `columns`, `rowCount`, `getCellRect` 等 |
-> | **交互验证**（点击、排序、选中、悬停、编辑） | 鼠标/键盘模拟 ✅ （`page.mouse.click/move/down/up`, `page.keyboard`） | `page.mouse.click(x, y)` 基于 `getCellRect` 坐标 |
-> | **交互验证**（走 VTable 内部 API） | ❌ **禁止** | `updateSortState`, `selectCell`, `startEditCell`/`completeEditCell` 等内部 API 跳过真实交互，测试人员无法复现 |
->
-> **原因**：最终导出的 Excel 测试用例是交由测试人员手动执行的。测试人员是软件交付的守门员，必须与实际的网页系统页面进行**所见即所得**的交互。VTable 框架内部 API 跳过 Canvas 事件管道，即使能触发功能也无法验证真实用户操作路径。AI 自动化在探索和设计用例阶段也必须使用模拟鼠标键盘操作，确保用例步骤贴合真实操作。
-
-> **例外**：`getCellRect` 用于获取单元格在 Canvas 中的坐标是允许的——它仅提供位置信息，不触发任何交互行为。
-
-提供 **两套交互方式**，按需选用：
-
----
-
-#### 0. 前置：VTable 坐标系统与精确命中计算
-
-VTable 用 Canvas 渲染所有单元格。DOM 中仅有 `<canvas>` 元素，单元格坐标需通过 VTable 实例 API 获取并转换为视口（viewport）坐标。
-
-##### 坐标系统
-
-```
-getCellRect(col, row) → { bounds: { x1, y1, x2, y2 } }
-```
-返回值是 **Canvas 画布坐标系**（相对于 Canvas 左上角），不是视口坐标。
+检测代码模板（MUST 使用）：
 
 ```javascript
-var vtRect = document.querySelector('.vtable').getBoundingClientRect();
-var cellRect = vt.getCellRect(col, row);
+// 点击后全量扫描所有可能的弹窗类型
+var popupSelectors = [
+  // ant-design 弹窗
+  '.ant-modal-content',            // 交互弹窗 / 业务确认弹窗
+  '.ant-modal-wrap',               // 弹窗遮罩层
+  '.ant-notification-notice',      // 通知提醒（需手动关闭）
+  '.ant-message-notice',           // 消息提醒（自动消失，500ms 内捕获）
+  '.ant-dropdown:not(.ant-dropdown-hidden)',         // 下拉菜单
+  '.ant-select-dropdown:not(.ant-select-dropdown-hidden)',  // 选择下拉
+  '.ant-popover:not(.ant-popover-hidden)',           // 气泡卡片
+  '.ant-tooltip:not(.ant-tooltip-hidden)',           // 提示文字
+  // VTable 自定义弹窗
+  '.vtable-filter-menu',           // VTable 列头筛选弹窗
+  '.vtable-header-menu',           // VTable 列头菜单
+  '.vtable-dropdown',              // VTable 下拉
+  // 其他通用
+  '[class*="filter-menu"]', '[class*="filter-panel"]',
+  '[class*="dropdown"]',  '[class*="popup"]',
+  '[class*="overlay"]'
+];
 
-// ⚠️ SCM 系统中 VTable 均在 iframe 内，page.mouse.click 使用主页面视口坐标，
-//    而 getBoundingClientRect 在 iframe 内返回的是 iframe 视口坐标。
-//    必须加上 iframe 在主页面中的偏移。
-//
-// 从主页面获取 iframe 偏移（选 aria-hidden="false" 的 tabpanel 下的 iframe）：
-// var iframeRect = await page.evaluate(() => {
-//   var panel = document.querySelector('[role="tabpanel"][aria-hidden="false"] iframe');
-//   return panel.getBoundingClientRect();
-// });
-//
-// 主页面视口坐标 = iframeRect + vtRectInIframe + cellBounds
-// page.mouse.click(
-//   iframeRect.left + vtRect.left + cellBounds.x2 - marginLeft - hoverHalf,
-//   iframeRect.top  + vtRect.top  + (y1 + y2) / 2
-// );
-
-var viewportX = vtRect.left + cellRect.bounds.x1;
-var viewportY = vtRect.top  + cellRect.bounds.y1;
-var viewportCX = vtRect.left + (cellRect.bounds.x1 + cellRect.bounds.x2) / 2;
-var viewportCY = vtRect.top  + (cellRect.bounds.y1 + cellRect.bounds.y2) / 2;
-var cellWidth  = cellRect.bounds.x2 - cellRect.bounds.x1;
-var cellHeight = cellRect.bounds.y2 - cellRect.bounds.y1;
-
-> **注意**：`getCellRect` 返回的坐标**已包含滚动偏移**，无需额外减去 `scrollLeft`/`scrollTop`。但如果需要判断单元格是否在可视区域内，可用 `getBodyVisibleCellRange()` 获取当前可视行列范围。
-
-##### 表头内图标坐标计算（排序、下拉菜单等）
-
-`getCellIcons(col, row)` 返回单元格内所有交互图标的信息数组。每个图标包含：
-
-| `funcType` | string | 功能类型 | `"sort"`, `"dropDown"`, `"frozen"` |
-| `positionType` | string | 图标定位区域 | `"contentRight"`（内容右侧）, `"right"`（单元格右侧） |
-| `name` | string | 图标名称 | `"sort_normal"`, `"dropdownIcon"` |
-| `width` / `height` | number | SVG 图标自身尺寸（px） | 16 / 16 |
-| `marginLeft` / `marginRight` | number | 图标与相邻内容的间距（px） | 3 / 4 |
-| **`hover.width` / `hover.height`** | number | **可点击热区尺寸（px）——比图标大，便于鼠标命中，点击目标为此热区中心** | **22 / 22** |
-| `cursor` | string | 鼠标样式 | `"pointer"` |
-| `visibleTime` | string | 显示时机 | `"always"`（始终）, `"hover"`（悬停时） |
-| `tooltip` | object | 提示信息 | `{ title, placement }` |
-
-**排序图标坐标**（`funcType === "sort"`，`positionType === "contentRight"`）：
-
-排序图标定位在单元格内容右侧。`getCellIcons` 返回的 `marginLeft` 是图标与右侧内容之间的间距，`hover.width/height` 是可点击热区尺寸。点击目标为 **hover 热区中心**（不是图标中心）：
-
-热区中心 X（canvas 坐标）= cellRect.bounds.x2 - marginLeft - hover.width（不需除 2）
-热区中心 Y（canvas 坐标）= (cellRect.bounds.y1 + cellRect.bounds.y2) / 2
-
-```javascript
-function getSortIconViewportCoords(col) {
-  var vt = window._vtable;
-  var vtEl = document.querySelector('.vtable');
-  if (!vtEl) return null;
-  var vtRect = vtEl.getBoundingClientRect();
-  var cellRect = vt.getCellRect(col, 0);
-  var icons = vt.getCellIcons(col, 0);
-  var icon = icons.find(function(i) { return i.funcType === 'sort'; });
-  if (!icon) return null;
-  // hover 热区中心 X = 单元格右边缘 - marginLeft - hover.width（不需除 2）
-  var cx = vtRect.left + cellRect.bounds.x2 - icon.marginLeft - icon.hover.width;
-  var cy = vtRect.top  + (cellRect.bounds.y1 + cellRect.bounds.y2) / 2;
-  // ⚠️ 此坐标是 iframe 内视口坐标。如果在主页面执行 page.mouse.click，
-  //    需加上 iframe 偏移：
-  //    var iframeRect = await page.evaluate(() =>
-  //      document.querySelector('[role="tabpanel"][aria-hidden="false"] iframe').getBoundingClientRect()
-  //    );
-  //    page.mouse.click(iframeRect.left + cx, iframeRect.top + cy);
-
-  return { viewportX: cx, viewportY: cy };
-}
-// 使用
-// var pos = getSortIconViewportCoords(3);
-// if (pos) await page.mouse.click(pos.viewportX, pos.viewportY);
-
-> **数值验证**（col 3 托外商品识别码）：`cellRect.bounds.x2=530`，`marginLeft=3`，`hover.width=22`
-> → 热区中心 X = `530 - 3 - 22 = 505`（canvas 坐标）
-> → 加 iframe 偏移后：`主页面 X = iframeRect.left(170) + vtRect.left(12) + 505 = 687`
-
-**下拉菜单图标坐标**（`funcType === "dropDown"`，`positionType === "right"`）：
-
-```javascript
-function getDropDownIconViewportCoords(col) {
-  var vt = window._vtable;
-  var vtEl = document.querySelector('.vtable');
-  if (!vtEl) return null;
-  var vtRect = vtEl.getBoundingClientRect();
-  var cellRect = vt.getCellRect(col, 0);
-  var icons = vt.getCellIcons(col, 0);
-  var icon = icons.find(function(i) { return i.funcType === 'dropDown'; });
-  if (!icon) return null;
-
-  // hover 热区中心 = 单元格右边缘 - marginRight - hover.width/2
-  var hw = icon.hover ? icon.hover.width / 2 : icon.width / 2;
-  var cx = vtRect.left + cellRect.bounds.x2 - (icon.marginRight || 0) - hw;
-  var cy = vtRect.top  + (cellRect.bounds.y1 + cellRect.bounds.y2) / 2;
-
-  return { viewportX: cx, viewportY: cy };
-}
-```
-在点击之前，通过以下 API 确认交互是否可用：
-
-| 探测方法 | 用途 | 返回 |
-|---------|------|------|
-| `vt.getCellIcons(col, 0)` | 获取表头所有图标 → 检查是否有 `funcType: 'sort'` 等 | icon 数组 |
-| `vt.getHeaderDefine(col, 0)` | 获取列配置 → `sort: true/false`, `filter: true/false` | object |
-| `vt._canResizeColumn(col)` | 列是否可拖拽调整宽度 | boolean |
-| `vt._canDragHeaderPosition(col)` | 列头是否可拖拽移动 | boolean |
-| `vt.isFrozenColumn(col)` | 是否为冻结列 | boolean |
-| `vt.options.frozenColDragHeaderMode` | 冻结列拖拽模式 | string |
-| `vt._canResizeColumn(col, row)` | 列是否可拖拽调整宽度 | boolean |
-
-```javascript
-function getCellViewportCoords(col, row) {
-  var vt = window._vtable;
-  var vtEl = document.querySelector('.vtable');
-  if (!vtEl) return null;
-  var vtRect = vtEl.getBoundingClientRect();
-  var cellRect = vt.getCellRect(col, row);
-  if (!cellRect || !cellRect.bounds) return null;
-  return {
-    x: vtRect.left + (cellRect.bounds.x1 + cellRect.bounds.x2) / 2,
-    y: vtRect.top  + (cellRect.bounds.y1 + cellRect.bounds.y2) / 2,
-    width: cellRect.bounds.x2 - cellRect.bounds.x1,
-    height: cellRect.bounds.y2 - cellRect.bounds.y1
-  };
-}
-```
-
-适用于自动化流程，不展示交互过程。
-
-```javascript
-var vt = window._vtable;
-
-// 检测可编辑列
-var editableCols = [];
-for (var c = 0; c < vt.colCount; c++) {
-  if (vt.isHasEditorDefine(c)) {
-    editableCols.push(c);
-  }
-}
-
-// 文本编辑
-vt.scrollToCell(3, 5);
-vt.startEditCell(3, 5);
-vt.getEditor(3, 5).setValue(888);
-vt.completeEditCell();
-
-// 下拉编辑
-vt.startEditCell(2, 5);
-vt.getEditor(2, 5).setValue('C1780021072303');
-vt.completeEditCell();
-
-// 日期编辑
-vt.startEditCell(4, 5);
-vt.getEditor(4, 5).setValue(new Date('2026-07-15').getTime());
-vt.completeEditCell();
-```
-
----
-
-#### B. 鼠标/键盘模拟方式（可见交互）
-
-适用于测试执行时观察者想看到操作过程。流程：
-
-```
-scrollToCell(col, row)  →  startEditCell(col, row)  →  定位编辑器DOM  →  聚焦/输入  →  回车确认
-```
-
-##### B1 文本输入列编辑
-
-```javascript
-// 1. 滚动使目标可见
-vt.scrollToCell(3, 5);
-
-// 2. 获取单元格视口坐标（用于后续定位编辑器）
-var coords = getCellViewportCoords(3, 5);
-
-// 3. 进入编辑模式（触发布局重绘，编辑器 DOM 出现在单元格位置）
-vt.startEditCell(3, 5);
-
-// 4. 查找编辑器 input（VTable 在单元格位置渲染的 DOM 元素）
-var inputs = document.querySelectorAll('.vtable input[type=text]:not([type=hidden])');
-var editorInput = null;
-for (var i = 0; i < inputs.length; i++) {
-  var r = inputs[i].getBoundingClientRect();
-  if (Math.abs(r.left - coords.x) < 100 && Math.abs(r.top - coords.y) < 50) {
-    editorInput = inputs[i];
-    break;
-  }
-}
-
-// 5. 聚焦并输入新值
-if (editorInput) {
-  editorInput.focus();
-  // 逐个字符输入（可观察）
-  editorInput.value = '888';
-  editorInput.dispatchEvent(new Event('input', { bubbles: true }));
-  editorInput.dispatchEvent(new Event('change', { bubbles: true }));
-
-  // 6. 回车确认（或 Tab）
-  editorInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
-}
-```
-
-##### B2 下拉选择列编辑
-
-```javascript
-// 1-3 同上，进入编辑模式
-vt.scrollToCell(2, 5);
-var coords = getCellViewportCoords(2, 5);
-vt.startEditCell(2, 5);
-
-// 4. 编辑器 input 出现后，找到下拉触发按钮并点击展开选项
-// 根据编辑器类型，下拉框可能是一个 ant-select 组件
-// 通过坐标查找附近的下拉 trigger
-var triggers = document.querySelectorAll('.ant-select-selection__rendered');
-for (var i = 0; i < triggers.length; i++) {
-  var r = triggers[i].getBoundingClientRect();
-  if (Math.abs(r.left - coords.x) < 150 && Math.abs(r.top - coords.y) < 50) {
-    triggers[i].click();  // 展开下拉
-    break;
-  }
-}
-
-// 5. 等待下拉选项出现，点击目标选项
-// 根据 editor.allOptions 的 label 文本查找
-setTimeout(function() {
-  var items = document.querySelectorAll('.ant-select-dropdown-menu-item');
-  for (var i = 0; i < items.length; i++) {
-    if (items[i].textContent.includes('测试企业33338')) {
-      items[i].click();
-      break;
+var found = [];
+popupSelectors.forEach(function(sel){
+  var els = document.querySelectorAll(sel);
+  els.forEach(function(el){
+    if (el.offsetParent !== null || el.classList.contains('ant-dropdown') || el.classList.contains('ant-select-dropdown')) {
+      found.push({selector: sel, text: el.textContent.replace(/\s+/g,' ').substring(0, 200)});
     }
-  }
-}, 300);
-
-// 6. 编辑自动确认（下拉选中后 VTable 自动完成编辑）
+  });
+});
+// 若 found.length === 0 → 无弹窗；否则逐条分析
 ```
 
----
-
-#### C. 快速 API 方式（通用工具函数）
-
-```javascript
-// 文本编辑
-function editTextCellFast(col, row, value) {
-  var vt = window._vtable;
-  vt.scrollToCell(col, row);
-  vt.startEditCell(col, row);
-  vt.getEditor(col, row).setValue(value);
-  vt.completeEditCell();
-  return vt.getCellValue(col, row);
-}
-
-// 下拉编辑
-function editDropdownCellFast(col, row, targetKey) {
-  var vt = window._vtable;
-  vt.scrollToCell(col, row);
-  vt.startEditCell(col, row);
-  vt.getEditor(col, row).setValue(targetKey);
-  vt.completeEditCell();
-  return vt.getCellValue(col, row);
-}
-```
+检测优先级：
+1. iframe 内检测各类弹窗 / 消息提醒
+2. top 层检测系统级确认弹窗
+3. 无 → 正常继续
 
 ## 7. 执行模式
 
-omp 提供 `eval`（持久 Python kernel），Phase 4 直接在 kernel 中逐 cell 运行模板代码，变量跨 cell 保持。`test_cases` 数据在 kernel 中赋值后，直接调用保存逻辑。
+omp `eval`（持久 Python kernel）用于 Phase 4 Excel 导出。`browser` 工具用于页面探索和交互。
 
----
+## 8. 质量管理
 
-## 8. 质量管理要求（强制门禁）
-
-### P0 — 阻塞项（必须 100% 通过）
-
+### 高级 — 阻塞项
 - [ ] 每张用例有可执行的具体步骤
 - [ ] 预期结果可观测/可断言
-- [ ] 全批用例同时覆盖正向和负向场景
+- [ ] 同时覆盖正向和负向场景
 - [ ] 用例编号全局唯一
-- [ ] 操作步骤编号从 1 开始连续递增
-- [ ] **每条用例前置条件为独立完整描述，无「同上」「同前」「见上文」等指代**
-- [ ] **备注列保持为空（骨架用例在备注标注待确认项除外）**
-- [ ] 用户已口头确认用例完整
+- [ ] 步骤编号从 1 开始连续递增
+- [ ] 前置条件为独立完整描述，无「同上」
+- [ ] 备注列为空（骨架用例除外）
+- [ ] 用户口头确认
 - [ ] 测试类型已标注
-### P1 — 重要项（建议修复，不阻塞进入 Phase 4）
 
+### 中级 — 重要项
 - [ ] 每条用例仅覆盖一个独立场景
 - [ ] 测试数据具体化
 - [ ] 验证点有明确的可验证内容
 
----
+## 9. 异常处理
 
-## 9. 异常处理手册
-
-| 异常场景 | 处理策略 |
-|---------|---------|
-| `openpyxl` 未安装 | `uv add openpyxl` |
-| 截图读取失败 | 验证路径 → 用 `inspect_image` 重试 → 让用户手动描述 |
-| 浏览器连接失败 | 检查 Chrome 是否以 `--remote-debugging-port=9229` 启动 → 验证 `http://localhost:9229/json` |
-| 需求描述不清晰 | 最多 3 轮追问 → 生成骨架用例，备注列标注 `[待确认]` |
-| SCM Cookie 过期/失效 | 重新执行 §0-b Step 1~2 获取新 Cookie → 注入 → 重新导航 |
-| SCM 模块页面加载为空白/404 | 检查 iframe URL 是否正确（`page.frames()` 列出所有 frame） → 检查侧边栏菜单是否正确点击 |
-| 高级搜索弹窗未弹出 | 确认「展开▼」按钮可点击（`btn.textContent.includes('展开')`）→ 如已展开则按钮显示为「收起▲」 |
-| 高级搜索下拉选项串扰 | 每次点击下拉后 MUST 先点击弹窗标题关闭再点下一个，否则读取到上一个下拉的缓存数据 |
-| 筛选字段 valueType 误判 | 人工复核：text_input 为 `<input>`，select_dropdown 为 `.ant-select`，date_range 为 `.ant-calendar-picker` |
-| SCM 侧边栏菜单未展开 | 先点击一级菜单项（`.ant-menu-submenu-title`），等待动画完成，再提取子菜单列表 |
-| 用例超过 30 条 | 建议按子功能分批生成导出 |
-| 输出目录不存在 | 代码自动创建 |
-| 写入权限不足 | 降级到当前工作目录（`.`） |
-| VTable 注入失败（`window._vtable` 为 undefined） | 检查 DOM 是否有 `.vtable` 元素 → 检查 iframe 上下文是否正确 → 尝试不同属性名 `vtableInstance/vTable/vtable/VTable` → 降级为截图+视觉分析 |
-| VTable 编辑失败（`startEditCell` 不生效） | 确认目标列 `isHasEditorDefine(col)` 为 true → 先 `scrollToCell` 确保可见 → 检查当前是否有其他编辑器未关闭（先 `completeEditCell` 或 `cancelEditCell`） |
-| 下拉编辑器 `allOptions` 为空 | 编辑器初始化需异步加载选项 → 先调用 `editor.openDropdown()` 触发加载 → 稍后重试 → 或用 `changeCellValue` 直接设置 |
-
----
-
-## 10. Excel 生成模板
-
-### 模板设计规范
-
-| 要素 | 内容 |
+| 异常 | 处理 |
 |------|------|
-| Sheet 1 名称 | `测试用例` |
-| Sheet 2 名称 | `测试数据` |
-| 首行样式 | 加粗 + 蓝色背景 `#4472C4` + 白色字体，居中 |
-| 列定义 | 共 18 列（见下表） |
-| 多行内容列 | 前置条件/测试步骤/测试数据/预期结果 支持换行 `wrap_text=True`，左对齐 |
-| 边框 | 全单元格细线边框 |
-| 冻结前 4 列 + 首行 | Sheet 1 `freeze_panes = "E2"`（A~D 列固定，首行固定） |
-| 优先级颜色 | P0 红底 `#FFD2D2` 深红字 `#9C0006`；P1 橙底 `#FFE8D0` 深橙字 `#9C6500`；P2 黄底 `#FFF5C0` 深黄字 `#806000`；P3 蓝底 `#DCE6F1` 深蓝字 `#1F497D` |
-| 文件命名 | `测试用例_{MODULE_NAME}_{YYYY-MM-DD}.xlsx` |
+| openpyxl 未安装 | `uv add openpyxl` |
+| 浏览器连接失败 | 检查 `http://localhost:9222/json` |
+| SCM Cookie 过期 | 运行 `scripts/scm-login.js` → `refreshSession()` |
+| VTable 挂载失败 | 检查 `.vtable` 元素 → 检查 iframe 上下文 → 降级截图 |
+| 需求信息不足 | 3 轮追问后生成骨架用例，备注 `[待确认]` |
+| 写入权限不足 | 降级到当前目录 |
 
-### 列定义
+## 10. Excel 模板
 
-| 列 | A | B | C | D | E | F | G | H | I | J | K | L | M | N | O | P | Q | R |
-|----|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| 字段名 | 用例编号 | 用例标题 | 优先级 | 验证点 | 一级模块 | 二级模块 | 测试类型 | 功能 | 前置条件 | 测试步骤 | 测试数据 | 预期结果 | 测试结果 | 执行人 | 执行时间 | 编写人 | 编写时间 | 备注 |
- | 最小列宽 | 18 | 42 | 12 | 42 | 18 | 18 | 18 | 12 | 42 | 42 | 42 | 42 | 10 | 10 | 12 | 12 | 12 | 0 |
+模板代码见 `scripts/excel-export-template.py`。直接在 `eval` kernel 中执行。
 
-### 数据区对齐规则
+### 列宽参考
 
-- **左对齐**：B 用例标题、D 验证点、I 前置条件、J 测试步骤、K 测试数据、L 预期结果
-- **居中**：其余列
+| 列 | 字段 | 最小宽 |
+|---|------|-------|
+| A | 用例编号 | 18 |
+| B | 用例标题 | 42 |
+| C | 级别 | 12 |
+| D | 验证点 | 42 |
+| E~H | 模块/类型/功能 | 12~18 |
+| I~L | 条件/步骤/数据/结果 | 42~50 |
+| M~R | 执行/编写信息 | 10~12 |
 
-### 参考实现代码
-
-以下代码直接在 `eval` 中执行（持久 kernel 模式）。按序粘贴运行即可。
-
-```python
-# ============================================================
-# 可配置变量 — Phase 4 执行时按实际项目修改
-# ============================================================
-ENTERPRISE_PREFIX = "NB"
-DEFAULT_AUTHOR    = "Hooplus1ce"
-MODULE_NAME       = "采购管理_物料申请单"
-OUTPUT_DIR        = "."
-# ============================================================
-
-import os
-import sys
-from datetime import date
-
-# openpyxl 依赖检查（未安装时提示）
-try:
-    import openpyxl
-    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
-except ImportError:
-    print("openpyxl 未安装，请在 eval 中执行：uv add openpyxl")
-    raise
-
-wb = openpyxl.Workbook()
-
-# ===================== Sheet 1: 测试用例 =====================
-ws1 = wb.active
-ws1.title = "测试用例"
-
-HEADERS_18 = [
-    "用例编号", "用例标题", "优先级", "验证点",
-    "一级模块", "二级模块", "测试类型", "功能",
-    "前置条件", "测试步骤", "测试数据", "预期结果",
-    "测试结果", "执行人", "执行时间", "编写人", "编写时间", "备注"
-]
-ws1.append(HEADERS_18)
-
-header_fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
-header_font = Font(bold=True, color="FFFFFF", size=11, name="微软雅黑")
-thin_border = Border(
-    left=Side(style="thin"),  right=Side(style="thin"),
-    top=Side(style="thin"),   bottom=Side(style="thin")
-)
-
-for cell in ws1[1]:
-    cell.fill      = header_fill
-    cell.font      = header_font
-    cell.alignment = Alignment(horizontal="center", vertical="center")
-    cell.border    = thin_border
-
-PRIORITY_STYLES = {
-    "P0": (PatternFill(start_color="FFD2D2", end_color="FFD2D2", fill_type="solid"),
-           Font(bold=True, color="9C0006", size=10)),
-    "P1": (PatternFill(start_color="FFE8D0", end_color="FFE8D0", fill_type="solid"),
-           Font(bold=True, color="9C6500", size=10)),
-    "P2": (PatternFill(start_color="FFF5C0", end_color="FFF5C0", fill_type="solid"),
-           Font(bold=True, color="806000", size=10)),
-    "P3": (PatternFill(start_color="DCE6F1", end_color="DCE6F1", fill_type="solid"),
-           Font(bold=True, color="1F497D", size=10)),
-}
-
-def apply_priority_style(cell):
-    style = PRIORITY_STYLES.get(cell.value)
-    if style:
-        cell.fill, cell.font = style
-
-# ============================================================
-# test_cases — AI 在 Phase 4 填入实际用例数据
-# 格式：每行 18 个字段，对应 HEADERS_18 顺序
-# 多行内容用 \n 连接，导出后自动换行显示
-# ============================================================
-test_cases = [
-    # 示例：
-    # [
-    #     f"{ENTERPRISE_PREFIX}_RKSHR_001",          # 用例编号
-    #     "正常收货流程—完整填写必填项提交成功",        # 用例标题
-    #     "P1",                                       # 优先级
-    #     "填写全部必填字段后提交，单据状态变为已完成且库存正确增加",  # 验证点
-    #     "仓储管理", "入库收货", "功能测试", "新增",   # 一级模块~功能
-    #     "1. 仓库WH001已启用\n2. 供应商SUP001已激活\n3. 物料MT001已录入\n4. 采购单PO20260618-001剩余量=100",  # 前置条件
-    #     "1. 登录系统，进入「仓储管理→入库收货」\n2. 点击「新建」\n3. 选择仓库WH001\n4. 选择供应商SUP001\n5. 添加物料MT001，数量100\n6. 关联采购单PO20260618-001\n7. 点击「提交」",  # 测试步骤
-    #     "仓库编码:WH001\n供应商编码:SUP001\n物料编码:MT001\n收货数量:100\n采购单号:PO20260618-001\n采购单剩余量:100",  # 测试数据
-    #     "1. 页面显示「操作成功」\n2. 收货单状态变为「已完成」\n3. MT001在WH001库存增加100\n4. 采购单剩余未到货量变为0\n5. 操作日志记录提交人和时间",  # 预期结果
-    #     "", "", "", DEFAULT_AUTHOR, date.today().isoformat(), ""  # 测试结果~备注
-    # ],
-]
-
-for row_data in test_cases:
-    ws1.append(row_data)
-    row_idx = ws1.max_row
-    for cell_idx, cell in enumerate(ws1[row_idx], 1):
-        cell.border = thin_border
-        if cell_idx in (2, 4, 9, 10, 11, 12):  # B/D/I/J/K/L 列左对齐
-            cell.alignment = Alignment(horizontal="left", vertical="center", wrap_text=True)
-        else:
-            cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-    apply_priority_style(ws1.cell(row=row_idx, column=3))  # 优先级列（C 列）
-
- COL_WIDTHS = [18, 42, 12, 42, 18, 18, 18, 12, 42, 42, 42, 42, 10, 10, 12, 12, 12, 0]
-for i, w in enumerate(COL_WIDTHS, 1):
-    ws1.column_dimensions[chr(64 + i)].width = w
-
-ws1.freeze_panes = "E2"  # 冻结前 4 列（A~D）和首行
-
-# ===================== Sheet 2: 测试数据 =====================
-ws2 = wb.create_sheet(title="测试数据")
-
-section_fill = PatternFill(start_color="D9E2F3", end_color="D9E2F3", fill_type="solid")
-section_font = Font(bold=True, size=11, name="微软雅黑")
-header2_font = Font(bold=True, size=10,  name="微软雅黑")
-
-def write_section(ws, start_row, title, headers, data_rows):
-    col_count = len(headers)
-    title_cell = ws.cell(row=start_row, column=1, value=title)
-    title_cell.font      = section_font
-    title_cell.fill      = section_fill
-    title_cell.alignment = Alignment(vertical="center")
-    ws.merge_cells(start_row=start_row, start_column=1,
-                   end_row=start_row,   end_column=col_count)
-    for c in range(1, col_count + 1):
-        cell = ws.cell(row=start_row, column=c)
-        cell.fill   = section_fill
-        cell.border = thin_border
-    hdr_row = start_row + 1
-    for c, h in enumerate(headers, 1):
-        cell = ws.cell(row=hdr_row, column=c, value=h)
-        cell.font      = header2_font
-        cell.border    = thin_border
-        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-    for r_offset, row_data in enumerate(data_rows, 1):
-        for c_idx, val in enumerate(row_data, 1):
-            cell = ws.cell(row=hdr_row + r_offset, column=c_idx, value=val)
-            cell.border    = thin_border
-            cell.alignment = Alignment(vertical="center", wrap_text=True)
-    return hdr_row + 1 + len(data_rows) + 2
-
-row = 1
-row = write_section(ws2, row,
-    "3.1 测试数据配置",
-    ["序号", "系统编号", "一级模块", "二级模块", "功能",
-     "用例标题", "优先级", "测试类型", "编写人", "编写日期"],
-    []
-)
-row = write_section(ws2, row,
-    "3.2 预置基础字段定义",
-    ["字段名称", "字段类型", "对应示例数据", "输入格式", "说明"],
-    []
-)
-row = write_section(ws2, row,
-    "3.3 测试用例输入设计数据对照表",
-    ["用例临时编号", "测试字段", "输入数据值", "字段类型", "预期校验与拦截结果"],
-    []
-)
-
-# ===================== 保存文件 =====================
-filename = f"测试用例_{MODULE_NAME}_{date.today().isoformat()}.xlsx"
-os.makedirs(OUTPUT_DIR, exist_ok=True)
-filepath = os.path.join(OUTPUT_DIR, filename)
-
-try:
-    wb.save(filepath)
-    print(f"✅ 已生成: {os.path.abspath(filepath)}")
-except PermissionError:
-    fallback = os.path.join(".", filename)
-    wb.save(fallback)
-    print(f"⚠️  写入 {OUTPUT_DIR} 权限不足，已降级保存至: {os.path.abspath(fallback)}")
-```
-
----
+### 数据区对齐
+- **左对齐**: B 标题、D 验证点、I 前置条件、J 测试步骤、K 测试数据、L 预期结果
+- **居中**: 其余列
 
 ## 11. 自检清单
 
 - [ ] `uv add openpyxl` 已执行
-- [ ] `browser` 工具可用（Chrome 以 `--remote-debugging-port=9229` 启动）
-- [ ] `inspect_image` 已启用（settings 中 `inspect_image.enabled=true`）
-- [ ] 用户已确认 `ENTERPRISE_PREFIX` / `DEFAULT_AUTHOR` / `MODULE_NAME`
+- [ ] 浏览器可连接（port 9222）
+- [ ] 用户已确认变量配置
 - [ ] 输出目录有写入权限
+
+### 0-d. 弹窗/通知关闭规则（MUST）
+
+每次交互操作后，无论弹窗（`.ant-modal-content`）、通知（`.ant-notification-notice`）还是消息（`.ant-message-notice`），在提取完必要数据后 **必须关闭**，不得残留：
+
+```javascript
+// 关闭弹窗：点击关闭×或取消按钮，禁止用 .remove() 绕过
+var modal = document.querySelector('.ant-modal-content');
+if (modal && modal.offsetParent !== null) {
+  var closeBtn = modal.querySelector('.ant-modal-close') ||
+                 modal.querySelector('button.ant-btn:contains(取消)') ||
+                 modal.querySelector('button.ant-btn:contains(返回)');
+  if (closeBtn) closeBtn.click();
+}
+
+// 关闭通知提醒（需手动点击×关闭）
+var notif = document.querySelector('.ant-notification-notice');
+if (notif && notif.offsetParent !== null) {
+  var closeBtn = notif.querySelector('.ant-notification-notice-close');
+  if (closeBtn) closeBtn.click();
+}
+
+// 消息提醒（ant-message）几秒后自动消失，可不清除
+```
+
+**禁止**使用 `el.remove()` 或 `el.parentNode.removeChild(el)` 直接移除 DOM 节点——必须模拟真实关闭交互，否则 React 状态不同步。

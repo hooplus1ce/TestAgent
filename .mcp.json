@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "drission-ui": {
+      "command": "uv",
+      "args": ["run", "python", "mcp-servers/drission-ui/server.py"]
+    }
+  }
+}

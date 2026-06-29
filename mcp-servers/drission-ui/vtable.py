@@ -1,0 +1,119 @@
+"""VTable 工具：把脆弱的页面内 JS 包成结构化 Python 工具。
+
+所有 VTable 操作都在活动 iframe(frame) 上下文执行（VTable 实例挂在 frame 的 window）。
+坐标换算：JS 产出帧内坐标 frameX/frameY → Python 叠加 frame 在顶层视口的偏移 →
+得到可供 tab.actions.move_to((x,y)) 点击的顶层视口坐标。
+"""
+import json
+
+import browser_session
+
+
+def _frame():
+    """取活动 frame，未就绪抛异常。"""
+    fr = browser_session.get_active_frame()
+    if fr is None:
+        raise RuntimeError("未找到活动业务 iframe，请先 enter_module 进入模块")
+    return fr
+
+
+def _run(js_file: str, call: str):
+    """在 frame 上下文注入脚本并执行 call 段（末尾 return ...），解析 JSON。"""
+    fr = _frame()
+    script = browser_session.load_js(js_file) + "\n" + call
+    res = fr.run_js(script)
+    if isinstance(res, str):
+        return json.loads(res) if res else None
+    return res
+
+
+def mount_vtable():
+    """挂载 VTable 实例到 frame 的 window._vtable。返回 {ok, levels|reason}。"""
+    return _run("vtable-scanner.js", "return JSON.stringify(mountVTable());")
+
+
+def scan_vtable_columns(max_col: int = 50):
+    """扫描列定义 + 表头图标（含顶层视口坐标 viewportX/viewportY）。
+
+    图标坐标已叠加 frame 偏移，可直接用于 click_xy / actions.move_to。
+    """
+    fr = _frame()
+    ox, oy = browser_session.frame_offset()
+    cols = _run("vtable-scanner.js", "return JSON.stringify(scanColumns(%d));" % int(max_col))
+    if not cols:
+        return None
+    # 把每个图标的帧内坐标换算为顶层视口坐标
+    for c in cols:
+        for ic in c.get("icons", []):
+            fx = ic.pop("frameX", None)
+            fy = ic.pop("frameY", None)
+            if fx is not None and fy is not None:
+                ic["viewportX"] = round(fx + ox, 1)
+                ic["viewportY"] = round(fy + oy, 1)
+    return cols
+
+
+def get_column_values(title: str, raw: bool = False):
+    """按中文列标题取该列所有单元格值（筛选断言用）。raw=True 返回原始字段值。"""
+    args = json.dumps(title, ensure_ascii=False)
+    call = "return JSON.stringify(getColumnValuesByTitle(window._vtable, %s, %s));" % (args, "true" if raw else "false")
+    return _run("vtable-column-values.js", call)
+
+
+def get_cell_rect(col: int, row: int):
+    """取单元格中心【顶层视口坐标】。先 scrollToCell 确保在视口内。"""
+    fr = _frame()
+    ox, oy = browser_session.frame_offset()
+    _run("vtable-column-values.js", "scrollToCell(%d, %d);" % (int(col), int(row)))
+    res = _run("vtable-column-values.js", "return JSON.stringify(getCellCenterFrame(%d, %d));" % (int(col), int(row)))
+    if not res:
+        return None
+    return {
+        "viewportX": round(res.get("frameX", 0) + ox, 1),
+        "viewportY": round(res.get("frameY", 0) + oy, 1),
+        "col": col, "row": row,
+    }
+
+
+def scroll_to_cell(col: int, row: int):
+    return _run("vtable-column-values.js", "return JSON.stringify(scrollToCell(%d, %d));" % (int(col), int(row)))
+
+
+def click_cell(col: int, row: int, icon_name: str = None, hover_first: bool = True, duration: float = 0.3):
+    """点击单元格或其图标。icon_name 给定时匹配该名称图标（如 'sort'），否则点单元格中心。
+
+    流程：scrollToCell → 取坐标 → actions.move_to(hover) → click。
+    """
+    fr = _frame()
+    ox, oy = browser_session.frame_offset()
+
+    if icon_name:
+        # 扫描该列 header，找匹配名称的图标
+        scan = _run(
+            "vtable-scanner.js",
+            "var r=scanColumns(%d);return r?JSON.stringify(r.filter(function(c){return c.col===%d&&c.isHeader;})):null;"
+            % (int(col) + 1, int(col)),
+        )
+        header_entry = scan[0] if isinstance(scan, list) and scan else None
+        icons = (header_entry or {}).get("icons", [])
+        low = (icon_name or "").lower()
+        match = next((i for i in icons if low in (i.get("name") or "").lower()), None)
+        if not match:
+            return {"ok": False, "reason": "图标未找到: %s（可用: %s）" % (
+                icon_name, [i.get("name") for i in icons])}
+        vx = match["frameX"] + ox
+        vy = match["frameY"] + oy
+    else:
+        # 点单元格中心
+        _run("vtable-column-values.js", "scrollToCell(%d, %d);" % (int(col), int(row)))
+        ctr = _run("vtable-column-values.js",
+                   "return JSON.stringify(getCellCenterFrame(%d, %d));" % (int(col), int(row)))
+        if not ctr:
+            return {"ok": False, "reason": "无法获取单元格坐标"}
+        vx = ctr["frameX"] + ox
+        vy = ctr["frameY"] + oy
+
+    tab = browser_session.get_tab()
+    tab.actions.move_to((vx, vy), duration=duration if hover_first else 0).click()
+    return {"ok": True, "viewportX": round(vx, 1), "viewportY": round(vy, 1),
+            "icon": icon_name, "col": col, "row": row}
