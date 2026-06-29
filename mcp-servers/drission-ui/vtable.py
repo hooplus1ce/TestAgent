@@ -3,6 +3,9 @@
 所有 VTable 操作都在活动 iframe(frame) 上下文执行（VTable 实例挂在 frame 的 window）。
 坐标换算：JS 产出帧内坐标 frameX/frameY → Python 叠加 frame 在顶层视口的偏移 →
 得到可供 tab.actions.move_to((x,y)) 点击的顶层视口坐标。
+
+JS 参数化：用 json.dumps 把 Python 参数列表序列化为 JS 数组字面量，
+通过 fn.apply(null, [...]) 调用，避免 %d / %s 字符串拼接的类型与转义陷阱。
 """
 import json
 
@@ -27,6 +30,11 @@ def _run(js_file: str, call: str):
     return res
 
 
+def _js_args(*args):
+    """把 Python 参数列表序列化为 JS 数组字面量，供 fn.apply(null, [...]) 调用。"""
+    return json.dumps(list(args), ensure_ascii=False)
+
+
 def mount_vtable():
     """挂载 VTable 实例到 frame 的 window._vtable。返回 {ok, levels|reason}。"""
     res = _run("vtable-scanner.js", "return JSON.stringify(mountVTable());")
@@ -44,10 +52,10 @@ def scan_vtable_columns(max_col: int = 50):
     """
     fr = _frame()
     ox, oy = browser_session.frame_offset()
-    cols = _run("vtable-scanner.js", "return JSON.stringify(scanColumns(%d));" % int(max_col))
+    cols = _run("vtable-scanner.js",
+                "return JSON.stringify(scanColumns.apply(null, %s));" % _js_args(max_col))
     if not cols:
         return {"ok": False, "reason": "scanColumns 返回空，可能未挂载 VTable 或无列"}
-    # 把每个图标的帧内坐标换算为顶层视口坐标
     for c in cols:
         for ic in c.get("icons", []):
             fx = ic.pop("frameX", None)
@@ -60,8 +68,8 @@ def scan_vtable_columns(max_col: int = 50):
 
 def get_column_values(title: str, raw: bool = False):
     """按中文列标题取该列所有单元格值（筛选断言用）。raw=True 返回原始字段值。"""
-    args = json.dumps(title, ensure_ascii=False)
-    call = "return JSON.stringify(getColumnValuesByTitle(window._vtable, %s, %s));" % (args, "true" if raw else "false")
+    call = ("return JSON.stringify(getColumnValuesByTitle.apply(null, "
+            "[window._vtable].concat(%s)));" % _js_args(title, raw))
     res = _run("vtable-column-values.js", call)
     if res is None:
         return {"ok": False, "reason": "getColumnValuesByTitle 返回空，列标题不存在或未挂载 VTable"}
@@ -72,8 +80,10 @@ def get_cell_rect(col: int, row: int):
     """取单元格中心【顶层视口坐标】。先 scrollToCell 确保在视口内。"""
     fr = _frame()
     ox, oy = browser_session.frame_offset()
-    _run("vtable-column-values.js", "scrollToCell(%d, %d);" % (int(col), int(row)))
-    res = _run("vtable-column-values.js", "return JSON.stringify(getCellCenterFrame(%d, %d));" % (int(col), int(row)))
+    _run("vtable-column-values.js",
+         "scrollToCell.apply(null, %s);" % _js_args(col, row))
+    res = _run("vtable-column-values.js",
+               "return JSON.stringify(getCellCenterFrame.apply(null, %s));" % _js_args(col, row))
     if not res:
         return {"ok": False, "reason": "无法获取单元格坐标，可能 col/row 越界或未挂载 VTable"}
     return {
@@ -85,7 +95,8 @@ def get_cell_rect(col: int, row: int):
 
 
 def scroll_to_cell(col: int, row: int):
-    res = _run("vtable-column-values.js", "return JSON.stringify(scrollToCell(%d, %d));" % (int(col), int(row)))
+    res = _run("vtable-column-values.js",
+               "return JSON.stringify(scrollToCell.apply(null, %s));" % _js_args(col, row))
     if res is None:
         return {"ok": False, "reason": "scrollToCell 返回空，可能未挂载 VTable 或 col/row 越界"}
     if isinstance(res, dict) and "ok" in res:
@@ -102,11 +113,11 @@ def click_cell(col: int, row: int, icon_name: str = None, hover_first: bool = Tr
     ox, oy = browser_session.frame_offset()
 
     if icon_name:
-        # 扫描该列 header，找匹配名称的图标
         scan = _run(
             "vtable-scanner.js",
-            "var r=scanColumns(%d);return r?JSON.stringify(r.filter(function(c){return c.col===%d&&c.isHeader;})):null;"
-            % (int(col) + 1, int(col)),
+            ("var a=%s;var r=scanColumns(a[0]);"
+             "return r?JSON.stringify(r.filter(function(c){return c.col===a[1]&&c.isHeader;})):null;")
+            % _js_args(col + 1, col),
         )
         header_entry = scan[0] if isinstance(scan, list) and scan else None
         icons = (header_entry or {}).get("icons", [])
@@ -118,10 +129,10 @@ def click_cell(col: int, row: int, icon_name: str = None, hover_first: bool = Tr
         vx = match["frameX"] + ox
         vy = match["frameY"] + oy
     else:
-        # 点单元格中心
-        _run("vtable-column-values.js", "scrollToCell(%d, %d);" % (int(col), int(row)))
+        _run("vtable-column-values.js",
+             "scrollToCell.apply(null, %s);" % _js_args(col, row))
         ctr = _run("vtable-column-values.js",
-                   "return JSON.stringify(getCellCenterFrame(%d, %d));" % (int(col), int(row)))
+                   "return JSON.stringify(getCellCenterFrame.apply(null, %s));" % _js_args(col, row))
         if not ctr:
             return {"ok": False, "reason": "无法获取单元格坐标"}
         vx = ctr["frameX"] + ox

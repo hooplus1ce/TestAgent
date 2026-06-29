@@ -34,7 +34,7 @@ uv add DrissionPage mcp ddddocr httpx openpyxl
 
 前置：Chrome 以 `--remote-debugging-port=9222` 启动。
 
-## 工具清单（27 个）
+## 工具清单（28 个）
 
 | 类别 | 工具 |
 |------|------|
@@ -42,20 +42,38 @@ uv add DrissionPage mcp ddddocr httpx openpyxl
 | 导航/frame | `enter_module` `reset_to_initial` `get_active_frame` |
 | 通用原语 | `scan_page_elements` `dom_overview` `click` `click_xy` `input` `insert_text` `hover` `screenshot` `run_js` |
 | VTable | `mount_vtable` `scan_vtable_columns` `get_column_values` `get_cell_rect` `scroll_to_cell` `click_cell` |
-| 弹窗/网络/调试 | `detect_modal` `listen_start` `listen_wait` `mouse_trail` |
+| 弹窗/网络/调试 | `detect_modal` `listen_start` `listen_wait` `listen_stop` `mouse_trail` |
 
 ## 模块
 
 ```
 server.py          FastMCP 入口，注册全部工具，mcp.run() (stdio)
-browser_session.py 单例 Chromium(9222)、活动 tab/frame 解析、坐标偏移、find()
+browser_session.py 单例 Chromium(9222)、活动 tab/frame 解析、坐标偏移、find()、list_tabs()
+config.py          配置外置：环境变量读 URL/域名/端口/截图目录，保留默认值
 vtable.py          VTable 工具：bundled JS 执行 + 帧内坐标→顶层视口换算
 session_auth.py    cookie 缓存(内存)、CDP 注入刷新、OCR 登录、过期检测
 modal.py           弹窗三级检测、鼠标轨迹注入
+scripts/           OCR 登录脚本（内部化，不再跨包引用）
+  scm-login-ocr.py
 js/                页面内 JS 载荷（移植自旧技能脚本，改 IIFE+return）
   vtable-scanner.js  vtable-column-values.js  element-scan.js
   modal-detect.js    mouse-trail-inject.js
 ```
+
+## 配置
+
+通过环境变量覆盖默认值（见 `config.py`）：
+
+| 变量 | 默认值 | 用途 |
+|------|--------|------|
+| `HL_SCM_URL` | `https://demo19-scm.hoolinks.com/...` | SCM Admin URL |
+| `HL_COOKIE_DOMAIN` | `.demo19-scm.hoolinks.com` | cookie 域 |
+| `HL_ACCESS_DOMAIN` | `.hoolinks.com` | CDP 注入 cookie 的域 |
+| `HL_TARGET_HINT` | `诺贝科技` | connect 时选 tab 的标题提示 |
+| `HL_REMOTE_PORT` | `9222` | Chrome 远程调试端口 |
+| `HL_SHOT_DIR` | `~/.drission-ui-shots` | screenshot 默认保存目录 |
+| `HL_SCM_USERNAME` | `Hooplus1ce` | OCR 登录用户名 |
+| `HL_SCM_USERPWD` | `Ac123456` | OCR 登录密码 |
 
 ## 坐标换算（关键）
 
@@ -77,6 +95,12 @@ async def m():
 asyncio.run(m())"
 ```
 
+## 单元测试
+
+```bash
+uv run pytest tests/ -v
+```
+
 ## 端到端验证
 
-见计划文件 `ancient-baking-crab.md` 的验证章节。最高优先级：VTable 链路 `mount_vtable → scan_vtable_columns → click_cell → 截图核对落点`。
+见 `verify_live.py`（需 Chrome 已在 9222 端口运行）。最高优先级：VTable 链路 `mount_vtable → scan_vtable_columns → click_cell → 截图核对落点`。

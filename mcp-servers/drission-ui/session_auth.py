@@ -10,23 +10,21 @@ import os
 import uuid
 
 import browser_session
+import config
 
 logger = logging.getLogger("drission-ui")
 
-SCM_ADMIN_URL = "https://demo19-scm.hoolinks.com/scm-static/scm-admin/scm-admin/#/"
-COOKIE_DOMAIN = ".demo19-scm.hoolinks.com"
-SCM_ACCESS_DOMAIN = ".hoolinks.com"
-
-NEEDED_COOKIES = ["SESSION", "UCTOKEN", "cookie_token"]
+SCM_ADMIN_URL = config.SCM_ADMIN_URL
+COOKIE_DOMAIN = config.COOKIE_DOMAIN
+SCM_ACCESS_DOMAIN = config.SCM_ACCESS_DOMAIN
+NEEDED_COOKIES = config.NEEDED_COOKIES
 
 # 内存缓存：{name: value}
 _cookie_cache: dict = {}
 
-# OCR 登录脚本路径（复用技能内 scm-login-ocr.py）
+# OCR 登录脚本路径（内部化：scripts/scm-login-ocr.py）
 _HERE = os.path.dirname(os.path.abspath(__file__))
-_OCR_PATH = os.path.normpath(os.path.join(
-    _HERE, "..", "..", ".claude", "skills", "test-case-generator-optimized", "scripts", "scm-login-ocr.py"
-))
+_OCR_PATH = os.path.normpath(os.path.join(_HERE, "scripts", "scm-login-ocr.py"))
 
 
 def _load_ocr_module():

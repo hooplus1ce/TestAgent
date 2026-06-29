@@ -17,6 +17,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from mcp.server.fastmcp import FastMCP
 
 import browser_session
+import config
 import vtable
 import session_auth
 import modal
@@ -45,18 +46,11 @@ def synchronized(fn):
 
 @mcp.tool()
 @synchronized
-def connect(port: int = 9222, target_hint: str = "诺贝科技") -> dict:
+def connect(port: int = config.DEFAULT_PORT, target_hint: str = config.DEFAULT_TARGET_HINT) -> dict:
     """接管 port 上已运行的 Chrome（不启动新实例），选中目标 tab。前置：Chrome 须以
     --remote-debugging-port=<port> 启动。返回当前 url/title 与所有 tab 列表。"""
     tab = browser_session.connect(port, target_hint)
-    tabs = []
-    try:
-        for tid in browser_session._browser.tab_ids:
-            t = browser_session._browser.get_tab(tid)
-            tabs.append({"url": (t.url or "")[:120], "title": (t.title or "")[:40]})
-    except Exception as e:
-        tabs = [{"error": str(e)}]
-    return {"ok": True, "url": tab.url, "title": tab.title, "tabs": tabs}
+    return {"ok": True, "url": tab.url, "title": tab.title, "tabs": browser_session.list_tabs()}
 
 
 @mcp.tool()
@@ -161,12 +155,12 @@ def dom_overview() -> dict:
 
 @mcp.tool()
 @synchronized
-def click(locator: str, in_frame: bool = True, by_js: bool = False) -> dict:
+def click(locator: str, in_frame: bool = True, by_js: bool = False, timeout: float = 5) -> dict:
     """点击元素。locator 为 DrissionPage 定位符(#id/.cls/@attr=v/text:文/css:选择器)。
-    in_frame 优先在活动 iframe 内查找。by_js=True 用 JS 点击(绕过遮挡)。"""
-    ele = browser_session.find(locator, in_frame=in_frame)
+    in_frame 优先在活动 iframe 内查找。by_js=True 用 JS 点击(绕过遮挡)。timeout 为查找超时秒数。"""
+    ele = browser_session.find(locator, in_frame=in_frame, timeout=timeout)
     if not ele:
-        return {"ok": False, "reason": "元素未找到: %s" % locator}
+        return {"ok": False, "reason": "元素未找到: %s（等待 %.1fs）" % (locator, timeout)}
     ele.click(by_js=by_js)
     return {"ok": True, "locator": locator}
 
@@ -182,11 +176,11 @@ def click_xy(x: float, y: float, hover_first: bool = True, duration: float = 0.3
 
 @mcp.tool()
 @synchronized
-def input(locator: str, text: str, in_frame: bool = True, clear: bool = True) -> dict:
-    """向输入框填入文本。clear=True 先清空。"""
-    ele = browser_session.find(locator, in_frame=in_frame)
+def input(locator: str, text: str, in_frame: bool = True, clear: bool = True, timeout: float = 5) -> dict:
+    """向输入框填入文本。clear=True 先清空。timeout 为查找超时秒数。"""
+    ele = browser_session.find(locator, in_frame=in_frame, timeout=timeout)
     if not ele:
-        return {"ok": False, "reason": "元素未找到: %s" % locator}
+        return {"ok": False, "reason": "元素未找到: %s（等待 %.1fs）" % (locator, timeout)}
     if clear:
         try:
             ele.clear()
@@ -207,13 +201,13 @@ def insert_text(text: str) -> dict:
 
 @mcp.tool()
 @synchronized
-def hover(locator: str = None, x: float = None, y: float = None, in_frame: bool = True, duration: float = 0.3) -> dict:
-    """鼠标悬停。给 locator 悬停元素；或给 x,y 悬停坐标。"""
+def hover(locator: str = None, x: float = None, y: float = None, in_frame: bool = True, duration: float = 0.3, timeout: float = 5) -> dict:
+    """鼠标悬停。给 locator 悬停元素；或给 x,y 悬停坐标。timeout 为查找超时秒数。"""
     tab = browser_session.get_tab()
     if locator:
-        ele = browser_session.find(locator, in_frame=in_frame)
+        ele = browser_session.find(locator, in_frame=in_frame, timeout=timeout)
         if not ele:
-            return {"ok": False, "reason": "元素未找到: %s" % locator}
+            return {"ok": False, "reason": "元素未找到: %s（等待 %.1fs）" % (locator, timeout)}
         tab.actions.move_to(ele)
     else:
         tab.actions.move_to((x, y), duration=duration)
@@ -222,14 +216,16 @@ def hover(locator: str = None, x: float = None, y: float = None, in_frame: bool 
 
 @mcp.tool()
 @synchronized
-def screenshot(path: str = None, locator: str = None, in_frame: bool = True) -> dict:
-    """截图。locator 给定则截元素，否则截全页。path 为空则存当前目录 shot_<时间戳>.png。"""
+def screenshot(path: str = None, locator: str = None, in_frame: bool = True, timeout: float = 5) -> dict:
+    """截图。locator 给定则截元素，否则截全页。path 为空则存 ~/.drission-ui-shots/shot_<时间戳>.png。timeout 为查找超时秒数。"""
     tab = browser_session.get_tab()
-    path = path or "shot_%d.png" % int(time.time())
+    if not path:
+        os.makedirs(config.SHOT_DIR, exist_ok=True)
+        path = os.path.join(config.SHOT_DIR, "shot_%d.png" % int(time.time()))
     if locator:
-        ele = browser_session.find(locator, in_frame=in_frame)
+        ele = browser_session.find(locator, in_frame=in_frame, timeout=timeout)
         if not ele:
-            return {"ok": False, "reason": "元素未找到: %s" % locator}
+            return {"ok": False, "reason": "元素未找到: %s（等待 %.1fs）" % (locator, timeout)}
         ele.get_screenshot(path=path)
     else:
         tab.get_screenshot(path=path)

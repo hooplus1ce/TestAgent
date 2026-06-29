@@ -1,9 +1,9 @@
 [project]
 name = "testagent"
 version = "0.1.0"
-description = "Add your description here"
+description = "drission-ui MCP server: structured browser automation tools for WMS/MOM/ERP testing"
 readme = "README.md"
-requires-python = ">=3.14"
+requires-python = ">=3.11"
 dependencies = [
     "ddddocr>=1.6.1",
     "drissionpage>=4.1.1.4",
@@ -12,6 +12,18 @@ dependencies = [
     "openpyxl>=3.1.5",
 ]
 
+[project.scripts]
+drission-ui-mcp = "drission_ui_mcp:main"
+
 [[tool.uv.index]]
 url = "https://mirrors.aliyun.com/pypi/simple/"
 default = true
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["mcp-servers/drission-ui"]
+testpaths = ["tests"]

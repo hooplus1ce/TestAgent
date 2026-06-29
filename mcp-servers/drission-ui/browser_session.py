@@ -9,6 +9,8 @@ import threading
 
 from DrissionPage import Chromium
 
+import config
+
 logger = logging.getLogger("drission-ui")
 
 _JS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "js")
@@ -16,14 +18,14 @@ _JS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "js")
 # 模块级单例
 _browser = None
 _tab = None
-_port = 9222
-_target_hint = "诺贝科技"
+_port = config.DEFAULT_PORT
+_target_hint = config.DEFAULT_TARGET_HINT
 
 # 并发锁：FastMCP 支持并发调用，所有浏览器操作串行化避免竞态
 _lock = threading.RLock()
 
 # 活动业务 iframe 选择器（SCM：可见 tabpanel 内的 iframe）
-ACTIVE_FRAME_LOC = 'css:[role="tabpanel"][aria-hidden="false"] iframe'
+ACTIVE_FRAME_LOC = config.ACTIVE_FRAME_LOC
 
 
 def load_js(name: str) -> str:
@@ -56,7 +58,7 @@ def _pick_tab(browser, hint):
     return browser.latest_tab
 
 
-def connect(port: int = 9222, target_hint: str = "诺贝科技"):
+def connect(port: int = config.DEFAULT_PORT, target_hint: str = config.DEFAULT_TARGET_HINT):
     """接管 port 上已运行的 Chrome（不启新实例），选中目标 tab。"""
     with _lock:
         global _browser, _tab, _port, _target_hint
@@ -67,6 +69,21 @@ def connect(port: int = 9222, target_hint: str = "诺贝科技"):
         _tab = _pick_tab(_browser, target_hint)
         logger.info("connected tab url=%s", (_tab.url or "")[:120])
         return _tab
+
+
+def list_tabs():
+    """列出所有 tab 的 url/title（供 server.py connect 工具使用，避免读 _browser 私有变量）。"""
+    with _lock:
+        if _browser is None:
+            return []
+        tabs = []
+        try:
+            for tid in _browser.tab_ids:
+                t = _browser.get_tab(tid)
+                tabs.append({"url": (t.url or "")[:120], "title": (t.title or "")[:40]})
+        except Exception as e:
+            logger.warning("list_tabs 失败: %s", e)
+        return tabs
 
 
 def get_tab():
