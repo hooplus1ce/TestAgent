@@ -8,7 +8,7 @@ def test_tool_count():
     """应注册 28 个工具。"""
     import server
     tools = asyncio.run(server.mcp.list_tools())
-    assert len(tools) == 28, "工具数应为 28（原 27 + listen_stop）"
+    assert len(tools) == 33, "工具数应为 33（28 + 5 个 4.2 新增: download_by_browser/listen_ws_start/listen_ws_wait/new_context/set_permission）"
 
 
 def test_listen_stop_registered():
@@ -19,6 +19,11 @@ def test_listen_stop_registered():
     assert "listen_stop" in names
     assert "listen_start" in names
     assert "listen_wait" in names
+    assert "listen_ws_start" in names
+    assert "listen_ws_wait" in names
+    assert "download_by_browser" in names
+    assert "new_context" in names
+    assert "set_permission" in names
 
 
 def test_synchronized_serializes():

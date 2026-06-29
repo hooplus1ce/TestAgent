@@ -101,6 +101,15 @@ def get_tab():
         return _tab
 
 
+def get_browser():
+    """取浏览器实例，连接失效则自愈重连。"""
+    with _lock:
+        global _browser
+        if _browser is None:
+            connect(_port, _target_hint)
+        return _browser
+
+
 def get_active_frame(tab=None):
     """取当前可见 tabpanel 内的业务 iframe（ChromiumFrame）；无则返回 None。"""
     with _lock:

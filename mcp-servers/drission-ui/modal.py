@@ -66,23 +66,21 @@ def detect_modal(timeout: float = 0):
 
 
 def mouse_trail(on: bool = True):
-    """开启/关闭鼠标轨迹可视化。首次注入 mouse-trail-inject.js（主页面 + 可见 iframe）。"""
+    """开启/关闭鼠标轨迹可视化（使用 DrissionPage 4.2 原生 tab.set.show_trail()）。"""
     tab = browser_session.get_tab()
-    code = browser_session.load_js("mouse-trail-inject.js")
-    # 注入到主页面
-    tab.run_js(code)
-    # 注入到活动 iframe
-    fr = browser_session.get_active_frame(tab)
-    if fr is not None:
-        try:
-            fr.run_js(code)
-        except Exception as e:
-            logger.warning("iframe 内注入 mouse-trail 失败: %s", e)
-    cmd = "window.mt.on();" if on else "window.mt.off();"
-    tab.run_js(cmd)
-    if fr is not None:
-        try:
-            fr.run_js(cmd)
-        except Exception as e:
-            logger.warning("iframe 内切换 mouse-trail 状态失败: %s", e)
+    try:
+        if on:
+            tab.set.show_trail()
+        else:
+            # 关闭轨迹：刷新页面清除（4.2 无原生 off 方法）
+            tab.run_js(
+                "try{document.querySelectorAll('.mt-d').forEach(function(d){d.remove();});"
+                "if(window.mt){window.mt.off();}}catch(e){}"
+            )
+    except Exception as e:
+        logger.warning("show_trail 失败，回退 JS 注入: %s", e)
+        code = browser_session.load_js("mouse-trail-inject.js")
+        tab.run_js(code)
+        cmd = "window.mt.on();" if on else "window.mt.off();"
+        tab.run_js(cmd)
     return {"ok": True, "on": on}

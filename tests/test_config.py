@@ -12,6 +12,12 @@ def test_defaults():
     assert config.DEFAULT_PORT == 9222
     assert config.DEFAULT_TARGET_HINT == "诺贝科技"
     assert "drission-ui-shots" in config.SHOT_DIR
+    assert hasattr(config, "CHROME_PATH")
+    assert hasattr(config, "EDGE_MODE")
+    assert hasattr(config, "PROXY")
+    assert hasattr(config, "DISABLE_PDF_PREVIEW")
+    assert hasattr(config, "REMOVE_TEST_TYPE")
+    assert callable(config.make_chromium_options)
 
 
 def test_env_override(monkeypatch):

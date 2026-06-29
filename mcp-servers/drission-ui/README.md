@@ -34,7 +34,7 @@ uv add DrissionPage mcp ddddocr httpx openpyxl
 
 前置：Chrome 以 `--remote-debugging-port=9222` 启动。
 
-## 工具清单（28 个）
+## 工具清单（33 个）
 
 | 类别 | 工具 |
 |------|------|
@@ -42,7 +42,8 @@ uv add DrissionPage mcp ddddocr httpx openpyxl
 | 导航/frame | `enter_module` `reset_to_initial` `get_active_frame` |
 | 通用原语 | `scan_page_elements` `dom_overview` `click` `click_xy` `input` `insert_text` `hover` `screenshot` `run_js` |
 | VTable | `mount_vtable` `scan_vtable_columns` `get_column_values` `get_cell_rect` `scroll_to_cell` `click_cell` |
-| 弹窗/网络/调试 | `detect_modal` `listen_start` `listen_wait` `listen_stop` `mouse_trail` |
+| 弹窗/网络/调试 | `detect_modal` `listen_start` `listen_wait` `listen_stop` `listen_ws_start` `listen_ws_wait` `mouse_trail` `download_by_browser` `set_permission` |
+| 上下文 | `new_context` |
 
 ## 模块
 

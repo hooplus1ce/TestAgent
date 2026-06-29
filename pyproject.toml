@@ -6,7 +6,7 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "ddddocr>=1.6.1",
-    "drissionpage>=4.1.1.4",
+    "drissionpage>=4.2.0b20",
     "httpx>=0.28.1",
     "mcp[cli]>=1.28.1",
     "openpyxl>=3.1.5",

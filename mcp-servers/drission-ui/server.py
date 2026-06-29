@@ -336,10 +336,9 @@ def detect_modal(timeout: float = 0) -> dict:
 def listen_start(targets: str, method: str = None) -> dict:
     """启动网络监听。targets 为 URL 特征(支持多个用逗号或列表)。method 可选 'POST'/'GET'。"""
     tab = browser_session.get_tab()
-    kwargs = {}
     if method:
-        kwargs["method"] = method
-    tab.listen.start(targets, **kwargs)
+        tab.listen.set_method(method)
+    tab.listen.start(targets)
     return {"ok": True, "targets": targets}
 
 
@@ -382,6 +381,87 @@ def listen_stop() -> dict:
 def mouse_trail(on: bool = True) -> dict:
     """开启/关闭鼠标轨迹可视化(红色圆点跟踪 mousemove/click)。调试 canvas 点击落点用。"""
     return modal.mouse_trail(on)
+
+
+# ==================== 4.2 新增工具 ====================
+
+@mcp.tool()
+@synchronized
+def download_by_browser(url: str, save_path: str = None, rename: str = None,
+                        suffix: str = None, timeout: float = 30,
+                        file_exists: str = "rename") -> dict:
+    """浏览器触发下载(4.2 新增)。用于 blob / 难以直接 fetch 的 URL。
+    file_exists: 'rename'/'overwrite'/'skip' 或 'r'/'o'/'s'。
+    返回 {ok, path, file_size, url}。
+    """
+    tab = browser_session.get_tab()
+    kwargs = {"url": url, "timeout": timeout, "file_exists": file_exists}
+    if save_path:
+        kwargs["save_path"] = save_path
+    if rename:
+        kwargs["rename"] = rename
+    if suffix:
+        kwargs["suffix"] = suffix
+    try:
+        mission = tab.download.by_browser(**kwargs)
+        mission.wait()
+        return {"ok": True, "path": mission.path, "file_size": mission.file_size, "url": url}
+    except Exception as e:
+        return {"ok": False, "reason": "下载失败: %s" % e}
+
+
+@mcp.tool()
+@synchronized
+def listen_ws_start(targets: str = None) -> dict:
+    """启动 WebSocket 监听(4.2 新增)。targets 可选 URL 特征过滤；不传则监听所有 WS 帧。"""
+    tab = browser_session.get_tab()
+    kwargs = {"ws_only": True}
+    if targets:
+        kwargs["targets"] = targets
+    tab.listen.start(**kwargs)
+    return {"ok": True, "targets": targets or "(all)"}
+
+
+@mcp.tool()
+@synchronized
+def listen_ws_wait(count: int = 1, timeout: float = 10) -> dict:
+    """等待 WebSocket 数据包。返回 {ok, packets:[{is_sent, payload, timestamp}]}。"""
+    tab = browser_session.get_tab()
+    pkt = tab.listen.wait(count=count, timeout=timeout)
+    if not pkt:
+        return {"ok": False, "reason": "timeout", "hint": "确认 listen_ws_start 的 targets 是否正确，或增大 timeout"}
+
+    def conv(p):
+        return {
+            "is_sent": getattr(p, "is_sent", None),
+            "payload": getattr(p, "payload", None),
+            "timestamp": getattr(p, "timestamp", None),
+        }
+
+    if isinstance(pkt, list):
+        return {"ok": True, "packets": [conv(p) for p in pkt]}
+    return {"ok": True, **conv(pkt)}
+
+
+@mcp.tool()
+@synchronized
+def new_context(proxy: str = None) -> dict:
+    """创建独立浏览器上下文(4.2 BrowserContext)。隔离 cookie/代理，用于多账号或干净测试环境。
+    proxy 格式: 'http://user:password@ip:port'。
+    返回 {ok, context_id, tab_ids}。
+    """
+    browser = browser_session.get_browser()
+    ctx = browser.new_context(proxy=proxy) if proxy else browser.new_context()
+    return {"ok": True, "context_id": id(ctx), "tab_ids": ctx.tab_ids}
+
+
+@mcp.tool()
+@synchronized
+def set_permission(perm: str, allow: bool = True) -> dict:
+    """设置浏览器权限(4.2 新增)。perm: 'camera'/'geolocation'/'notifications'/'midi' 等。"""
+    browser = browser_session.get_browser()
+    getattr(browser.set.perm, perm)() if allow else None
+    return {"ok": True, "perm": perm, "allow": allow}
 
 
 if __name__ == "__main__":

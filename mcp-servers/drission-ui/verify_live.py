@@ -59,4 +59,36 @@ if fr is not None:
 else:
     print("  无活动 iframe，跳过")
 
+print("\n==== 8. 4.2 新增: mouse_trail (原生 tab.set.show_trail) ====")
+try:
+    tab.set.show_trail()
+    print("  show_trail() 调用成功")
+except Exception as e:
+    print("  show_trail() 失败(可能版本不支持): %s" % e)
+    modal.mouse_trail(True)
+
+print("\n==== 9. 4.2 新增: listen 链式 API ====")
+try:
+    tab.listen.set_method("GET")
+    tab.listen.start("hoolinks")
+    print("  listen.set_method + start 调用成功")
+    tab.listen.stop()
+except Exception as e:
+    print("  listen 新 API 失败: %s" % e)
+
+print("\n==== 10. 4.2 新增: BrowserContext ====")
+try:
+    browser = B.get_browser()
+    print("  get_browser() 成功, browser=%s" % type(browser).__name__)
+except Exception as e:
+    print("  get_browser() 失败: %s" % e)
+
+print("\n==== 11. 4.2 新增: ChromiumOptions ====")
+try:
+    import config
+    co = config.make_chromium_options()
+    print("  make_chromium_options() 成功, type=%s" % type(co).__name__)
+except Exception as e:
+    print("  make_chromium_options() 失败: %s" % e)
+
 print("\n==== 验证完成 ====")

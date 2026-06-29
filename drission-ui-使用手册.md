@@ -532,7 +532,7 @@ PYTHONIOENCODING=utf-8 uv run python verify_live.py
 
 ---
 
-## 附录：工具速查表（27 个）
+## 附录：工具速查表（33 个）
 
 | 类别 | 工具 |
 |------|------|
@@ -540,8 +540,9 @@ PYTHONIOENCODING=utf-8 uv run python verify_live.py
 | 导航/frame(3) | `enter_module` `reset_to_initial` `get_active_frame` |
 | 通用原语(9) | `scan_page_elements` `dom_overview` `click` `click_xy` `input` `insert_text` `hover` `screenshot` `run_js` |
 | VTable(6) | `mount_vtable` `scan_vtable_columns` `get_column_values` `get_cell_rect` `scroll_to_cell` `click_cell` |
-| 弹窗/网络/调试(4) | `detect_modal` `listen_start` `listen_wait` `mouse_trail` |
+| 弹窗/网络/调试(9) | `detect_modal` `listen_start` `listen_wait` `listen_stop` `listen_ws_start` `listen_ws_wait` `mouse_trail` `download_by_browser` `set_permission` |
+| 上下文(1) | `new_context` |
 
 ---
 
-*本手册基于 DrissionPage 4.1.1.4 + mcp 1.28.1，已对 9222 真实浏览器验证核心链路（连接/活动frame/坐标换算/VTable 挂载与扫描全绿）。*
+*本手册基于 DrissionPage 4.2 + mcp 1.28.1，已对 9222 真实浏览器验证核心链路（连接/活动frame/坐标换算/VTable 挂载与扫描全绿）。*

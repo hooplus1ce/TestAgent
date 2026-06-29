@@ -90,3 +90,14 @@ def test_get_active_frame_returns_none_on_error():
         result = browser_session.get_active_frame(mock_tab)
 
     assert result is None
+
+
+def test_get_browser_returns_browser():
+    """get_browser 返回 _browser 实例。"""
+    import browser_session
+
+    mock_browser = MagicMock()
+    with patch.object(browser_session, "_browser", mock_browser), \
+         patch.object(browser_session, "_lock"):
+        result = browser_session.get_browser()
+    assert result is mock_browser

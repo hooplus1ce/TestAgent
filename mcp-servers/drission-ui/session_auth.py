@@ -101,10 +101,15 @@ def login_ocr():
     auth_cookies = mod.get_login_auth()  # list[{name, value}]
     _inject_cookies(auth_cookies)
     tab = browser_session.get_tab()
-    tab.get(SCM_ADMIN_URL)
+    nav = tab.get(SCM_ADMIN_URL)
+    nav_ok = getattr(nav, "ok", None)
+    if nav_ok is False:
+        return {"ok": False, "reason": "导航失败: status=%s" % getattr(nav, "status", "unknown"),
+                "cookies": [c["name"] for c in auth_cookies]}
     tab.wait.load_complete(timeout=15)  # 等页面加载完成，不用固定睡 3s
     cache_session()
-    return {"ok": True, "cookies": [c["name"] for c in auth_cookies], "url": tab.url, "title": tab.title}
+    return {"ok": True, "cookies": [c["name"] for c in auth_cookies], "url": tab.url, "title": tab.title,
+            "nav_status": getattr(nav, "status", None)}
 
 
 def check_session():
