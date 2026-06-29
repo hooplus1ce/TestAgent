@@ -3,8 +3,11 @@
 移植自 references/modal-types.md 的检测代码模板。
 """
 import json
+import logging
 
 import browser_session
+
+logger = logging.getLogger("drission-ui")
 
 
 def _detect_in_doc(run_js_target):
@@ -48,13 +51,13 @@ def mouse_trail(on: bool = True):
     if fr is not None:
         try:
             fr.run_js(code)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("iframe 内注入 mouse-trail 失败: %s", e)
     cmd = "window.mt.on();" if on else "window.mt.off();"
     tab.run_js(cmd)
     if fr is not None:
         try:
             fr.run_js(cmd)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("iframe 内切换 mouse-trail 状态失败: %s", e)
     return {"ok": True, "on": on}

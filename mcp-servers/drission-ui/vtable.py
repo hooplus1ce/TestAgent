@@ -29,7 +29,12 @@ def _run(js_file: str, call: str):
 
 def mount_vtable():
     """挂载 VTable 实例到 frame 的 window._vtable。返回 {ok, levels|reason}。"""
-    return _run("vtable-scanner.js", "return JSON.stringify(mountVTable());")
+    res = _run("vtable-scanner.js", "return JSON.stringify(mountVTable());")
+    if not isinstance(res, dict):
+        return {"ok": False, "reason": "mountVTable 返回非 dict: %r" % (res,)}
+    if "ok" not in res:
+        res["ok"] = True
+    return res
 
 
 def scan_vtable_columns(max_col: int = 50):
@@ -41,7 +46,7 @@ def scan_vtable_columns(max_col: int = 50):
     ox, oy = browser_session.frame_offset()
     cols = _run("vtable-scanner.js", "return JSON.stringify(scanColumns(%d));" % int(max_col))
     if not cols:
-        return None
+        return {"ok": False, "reason": "scanColumns 返回空，可能未挂载 VTable 或无列"}
     # 把每个图标的帧内坐标换算为顶层视口坐标
     for c in cols:
         for ic in c.get("icons", []):
@@ -50,14 +55,17 @@ def scan_vtable_columns(max_col: int = 50):
             if fx is not None and fy is not None:
                 ic["viewportX"] = round(fx + ox, 1)
                 ic["viewportY"] = round(fy + oy, 1)
-    return cols
+    return {"ok": True, "columns": cols}
 
 
 def get_column_values(title: str, raw: bool = False):
     """按中文列标题取该列所有单元格值（筛选断言用）。raw=True 返回原始字段值。"""
     args = json.dumps(title, ensure_ascii=False)
     call = "return JSON.stringify(getColumnValuesByTitle(window._vtable, %s, %s));" % (args, "true" if raw else "false")
-    return _run("vtable-column-values.js", call)
+    res = _run("vtable-column-values.js", call)
+    if res is None:
+        return {"ok": False, "reason": "getColumnValuesByTitle 返回空，列标题不存在或未挂载 VTable"}
+    return {"ok": True, "values": res, "title": title, "raw": raw}
 
 
 def get_cell_rect(col: int, row: int):
@@ -67,8 +75,9 @@ def get_cell_rect(col: int, row: int):
     _run("vtable-column-values.js", "scrollToCell(%d, %d);" % (int(col), int(row)))
     res = _run("vtable-column-values.js", "return JSON.stringify(getCellCenterFrame(%d, %d));" % (int(col), int(row)))
     if not res:
-        return None
+        return {"ok": False, "reason": "无法获取单元格坐标，可能 col/row 越界或未挂载 VTable"}
     return {
+        "ok": True,
         "viewportX": round(res.get("frameX", 0) + ox, 1),
         "viewportY": round(res.get("frameY", 0) + oy, 1),
         "col": col, "row": row,
@@ -76,7 +85,12 @@ def get_cell_rect(col: int, row: int):
 
 
 def scroll_to_cell(col: int, row: int):
-    return _run("vtable-column-values.js", "return JSON.stringify(scrollToCell(%d, %d));" % (int(col), int(row)))
+    res = _run("vtable-column-values.js", "return JSON.stringify(scrollToCell(%d, %d));" % (int(col), int(row)))
+    if res is None:
+        return {"ok": False, "reason": "scrollToCell 返回空，可能未挂载 VTable 或 col/row 越界"}
+    if isinstance(res, dict) and "ok" in res:
+        return res
+    return {"ok": True, "result": res}
 
 
 def click_cell(col: int, row: int, icon_name: str = None, hover_first: bool = True, duration: float = 0.3):

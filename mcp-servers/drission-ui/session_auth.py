@@ -5,10 +5,13 @@ cookie 缓存从原 page.__scmCookieCache（JS 对象属性）改为模块级内
 """
 import importlib.util
 import json
+import logging
 import os
 import uuid
 
 import browser_session
+
+logger = logging.getLogger("drission-ui")
 
 SCM_ADMIN_URL = "https://demo19-scm.hoolinks.com/scm-static/scm-admin/scm-admin/#/"
 COOKIE_DOMAIN = ".demo19-scm.hoolinks.com"
@@ -41,7 +44,8 @@ def cache_session():
     # 兼容 cookies() 返回 dict 或 Cookie 对象两种形态
     try:
         cookies_map = dict(tab.cookies(as_dict=True))
-    except Exception:
+    except Exception as e:
+        logger.debug("cookies(as_dict=True) 失败，回退到列表模式: %s", e)
         cookies = list(tab.cookies())
 
         def _gname(c):
