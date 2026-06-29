@@ -90,8 +90,7 @@ def refresh_session():
     _inject_cookies(cookies)
     tab = browser_session.get_tab()
     tab.refresh()
-    import time
-    time.sleep(3)
+    tab.wait.load_complete(timeout=10)  # 等页面加载完成，不用固定睡 3s
     cache_session()  # 服务端可能轮换 cookie，重新缓存
     return {"ok": True}
 
@@ -103,8 +102,7 @@ def login_ocr():
     _inject_cookies(auth_cookies)
     tab = browser_session.get_tab()
     tab.get(SCM_ADMIN_URL)
-    import time
-    time.sleep(3)
+    tab.wait.load_complete(timeout=15)  # 等页面加载完成，不用固定睡 3s
     cache_session()
     return {"ok": True, "cookies": [c["name"] for c in auth_cookies], "url": tab.url, "title": tab.title}
 

@@ -85,9 +85,15 @@ def check_session() -> dict:
 
 @mcp.tool()
 @synchronized
-def enter_module(menu_text: str) -> dict:
-    """点击左侧菜单进入模块（按菜单文字匹配），并轮询等待业务 iframe 加载完成。"""
+def enter_module(menu_text: str, timeout: float = 20) -> dict:
+    """点击左侧菜单进入模块（按菜单文字匹配），并等待业务 iframe 导航完成。
+    点击后用 iframe.wait.url_change 原生等待，比固定轮询更高效。
+    """
     tab = browser_session.get_tab()
+    # 1. 先记录点击前的 iframe URL（如果已有）
+    old_fr = browser_session.get_active_frame(tab)
+    old_url = old_fr.url if old_fr else None
+    # 2. JS 查找并点击菜单
     js = (
         "var items=[].slice.call(document.querySelectorAll('.ant-menu-item, li[class*=\"ant-menu\"]'));"
         "var m=items.find(function(el){return el.textContent.trim().indexOf(%s)>=0;});"
@@ -98,17 +104,33 @@ def enter_module(menu_text: str) -> dict:
     res = json.loads(res) if isinstance(res, str) else res
     if not res.get("ok"):
         return res
-    # 轮询等待 iframe
-    for _ in range(40):
-        time.sleep(0.5)
+    # 3. 等待新 iframe 加载：
+    # - 如果是首次进入（没有旧 iframe），轮询等待 iframe 出现
+    # - 如果已有旧 iframe，用原生 wait.url_change 等待导航完成
+    if old_url is None:
+        for _ in range(int(timeout * 5)):  # 0.2s 间隔，最多 timeout 秒
+            time.sleep(0.2)
+            if browser_session.get_active_frame(tab) is not None:
+                return {"ok": True, "entered": menu_text, "iframe_ready": True}
+    else:
+        try:
+            new_fr = browser_session.get_active_frame(tab)
+            if new_fr:
+                new_fr.wait.url_change(old_url, timeout=int(timeout))
+                return {"ok": True, "entered": menu_text, "iframe_ready": True}
+        except Exception as e:
+            logger.warning("wait.url_change 失败: %s，回退轮询", e)
+    # 4. 超时兜底：如果原生等待失败，回退轮询
+    for _ in range(int(timeout * 5)):
+        time.sleep(0.2)
         if browser_session.get_active_frame(tab) is not None:
             return {"ok": True, "entered": menu_text, "iframe_ready": True}
-    return {"ok": True, "entered": menu_text, "iframe_ready": False, "reason": "iframe 未在 20s 内出现"}
+    return {"ok": True, "entered": menu_text, "iframe_ready": False, "reason": "iframe 未在 %.0fs 内出现" % timeout}
 
 
 @mcp.tool()
 @synchronized
-def reset_to_initial(module_text: str) -> dict:
+def reset_to_initial(module_text: str, timeout: float = 20) -> dict:
     """重置到初始状态：关闭当前业务 tab → 重进模块 → 等 iframe+VTable 就绪。用例间隔离用。"""
     tab = browser_session.get_tab()
     tab.run_js(
@@ -116,8 +138,12 @@ def reset_to_initial(module_text: str) -> dict:
         "if(b){b.click();return JSON.stringify({closed:true});}"
         "return JSON.stringify({closed:false});"
     )
-    time.sleep(2)
-    return enter_module(module_text)
+    # 不要盲等 2s：轮询直到 iframe 消失，说明 tab 已关闭，最多 10s
+    for _ in range(50):
+        time.sleep(0.2)
+        if browser_session.get_active_frame(tab) is None:
+            break
+    return enter_module(module_text, timeout=timeout)
 
 
 @mcp.tool()
@@ -297,9 +323,12 @@ def click_cell(col: int, row: int, icon_name: str = None, hover_first: bool = Tr
 
 @mcp.tool()
 @synchronized
-def detect_modal() -> dict:
-    """点击后检测弹窗(三级优先级)：iframe 业务弹窗/消息 → top 层系统确认 → none。每次点击后必调。"""
-    return modal.detect_modal()
+def detect_modal(timeout: float = 0) -> dict:
+    """点击后检测弹窗(三级优先级)：iframe 业务弹窗/消息 → top 层系统确认 → none。每次点击后必调。
+
+    timeout>0 时轮询直到弹窗出现或超时，找到就立即返回（智能等待），不用盲等。
+    """
+    return modal.detect_modal(timeout=timeout)
 
 
 @mcp.tool()

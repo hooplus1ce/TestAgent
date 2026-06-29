@@ -132,14 +132,26 @@ def frame_offset(tab=None):
         return float(d.get("x", 0)), float(d.get("y", 0))
 
 
-def find(locator: str, in_frame: bool = True, timeout: float = 5):
-    """按 DrissionPage 定位符查找元素：优先在活动 iframe 内，否则在 top 文档。"""
+def find(locator: str, in_frame: bool = True, timeout: float = 5, wait_clickable: bool = True):
+    """按 DrissionPage 定位符查找元素：优先在活动 iframe 内，否则在 top 文档。
+
+    Args:
+        locator: DrissionPage 定位符
+        in_frame: 优先在活动 iframe 内查找
+        timeout: 查找超时秒数
+        wait_clickable: 找到后是否等待 ele.wait.clickable() (默认 True，确保元素可点击)
+    """
     with _lock:
         tab = get_tab()
         if in_frame:
             fr = get_active_frame(tab)
             if fr is not None:
                 ele = fr.ele(locator, timeout=timeout)
+                if ele and wait_clickable:
+                    ele.wait.clickable(wait_stop=False)
                 if ele:
                     return ele
-        return tab.ele(locator, timeout=timeout)
+        ele = tab.ele(locator, timeout=timeout)
+        if ele and wait_clickable:
+            ele.wait.clickable(wait_stop=False)
+        return ele
