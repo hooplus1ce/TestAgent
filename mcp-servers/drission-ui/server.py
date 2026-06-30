@@ -17,6 +17,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from mcp.server.fastmcp import FastMCP
 
 import browser_session
+import filter_area
 import config
 import vtable
 import session_auth
@@ -82,50 +83,78 @@ def check_session() -> dict:
 
 
 # ==================== 导航与 frame ====================
+@mcp.tool()
+@synchronized
+def expand_filter_area() -> dict:
+    """展开筛选区：将弹窗模式切换为内联模式，并展开所有折叠筛选字段。
+    使所有筛选字段、运算符、下拉选项暴露在 DOM 中，供后续 click/input 交互。
+    若当前已是内联模式或已展开，则自动跳过。
+    """
+    return filter_area.expand_filter_area()
+
+
 
 @mcp.tool()
 @synchronized
-def enter_module(menu_text: str, timeout: float = 20) -> dict:
+def enter_module(menu_text: str, timeout: float = 8, expand_filter: bool = True) -> dict:
     """点击左侧菜单进入模块（按菜单文字匹配），并等待业务 iframe 导航完成。
-    点击后用 iframe.wait.url_change 原生等待，比固定轮询更高效。
+
+    优先用 DrissionPage 原生 click 模拟鼠标点击；
+    当元素不可见（无位置/大小）时自动降级为 JS click。
     """
     tab = browser_session.get_tab()
-    # 1. 先记录点击前的 iframe URL（如果已有）
     old_fr = browser_session.get_active_frame(tab)
     old_url = old_fr.url if old_fr else None
-    # 2. JS 查找并点击菜单
-    js = (
-        "var items=[].slice.call(document.querySelectorAll('.ant-menu-item, li[class*=\"ant-menu\"]'));"
-        "var m=items.find(function(el){return el.textContent.trim().indexOf(%s)>=0;});"
-        "if(m){m.click();return JSON.stringify({ok:true,text:m.textContent.trim()});}"
-        "return JSON.stringify({ok:false,reason:'menu not found'});"
-    ) % json.dumps(menu_text, ensure_ascii=False)
-    res = tab.run_js(js)
-    res = json.loads(res) if isinstance(res, str) else res
-    if not res.get("ok"):
-        return res
-    # 3. 等待新 iframe 加载：
-    # - 如果是首次进入（没有旧 iframe），轮询等待 iframe 出现
-    # - 如果已有旧 iframe，用原生 wait.url_change 等待导航完成
+
+    # 1. 点击菜单项
+    ele = tab.ele(f'text:{menu_text}', timeout=3)
+    if not ele:
+        # 降级：JS 查找点击
+        import json as _json
+        _safe_chars = menu_text.replace('\\', '\\\\').replace("'", "\\'")
+        res = tab.run_js(
+            "var items=[].slice.call(document.querySelectorAll('.ant-menu-item, li[class*=\"ant-menu\"]'));"
+            + f"var m=items.find(function(el){{return el.textContent.trim().indexOf('{_safe_chars}')>=0;}});"
+            + "if(m){m.click();return JSON.stringify({ok:true});}"
+            + "return JSON.stringify({ok:false});"
+        )
+        if isinstance(res, str):
+            res = _json.loads(res)
+        if not res or not res.get("ok"):
+            return {"ok": False, "reason": "menu not found"}
+    else:
+        try:
+            ele.click()
+        except Exception:
+            # 无位置/大小，用 JS 点击
+            tab.run_js("arguments[0].click();", ele)
+
+    # 2. 等待 iframe
+    wait_seconds = int(timeout)
     if old_url is None:
-        for _ in range(int(timeout * 5)):  # 0.2s 间隔，最多 timeout 秒
+        for _ in range(wait_seconds * 5):
             time.sleep(0.2)
             if browser_session.get_active_frame(tab) is not None:
-                return {"ok": True, "entered": menu_text, "iframe_ready": True}
+                break
     else:
         try:
             new_fr = browser_session.get_active_frame(tab)
             if new_fr:
-                new_fr.wait.url_change(old_url, timeout=int(timeout))
-                return {"ok": True, "entered": menu_text, "iframe_ready": True}
-        except Exception as e:
-            logger.warning("wait.url_change 失败: %s，回退轮询", e)
-    # 4. 超时兜底：如果原生等待失败，回退轮询
-    for _ in range(int(timeout * 5)):
-        time.sleep(0.2)
-        if browser_session.get_active_frame(tab) is not None:
-            return {"ok": True, "entered": menu_text, "iframe_ready": True}
-    return {"ok": True, "entered": menu_text, "iframe_ready": False, "reason": "iframe 未在 %.0fs 内出现" % timeout}
+                new_fr.wait.url_change(old_url, timeout=wait_seconds)
+        except Exception:
+            for _ in range(wait_seconds * 5):
+                time.sleep(0.2)
+                if browser_session.get_active_frame(tab) is not None:
+                    break
+
+    if browser_session.get_active_frame(tab) is None:
+        return {"ok": True, "entered": menu_text, "iframe_ready": False, "reason": "iframe 未在 %.0fs 内出现" % timeout}
+
+    expand_result = {}
+    if expand_filter:
+        expand_result = filter_area.expand_filter_area(tab)
+        logger.info("expand_filter_area: %s", expand_result.get("reason", ""))
+    return {"ok": True, "entered": menu_text, "iframe_ready": True, "expand_filter": expand_result}
 
 
 @mcp.tool()
@@ -145,6 +174,14 @@ def reset_to_initial(module_text: str, timeout: float = 20) -> dict:
             break
     return enter_module(module_text, timeout=timeout)
 
+@mcp.tool()
+@synchronized
+def scan_filter_fields() -> dict:
+    """扫描筛选区所有字段，返回完整字段矩阵（字段名/操作符/输入类型/下拉待选项）。
+    自动展开每个下拉字段获取待选项。需先 enter_module 并展开筛选区。
+    """
+    return filter_area.scan_filter_fields()
+
 
 @mcp.tool()
 @synchronized
@@ -155,6 +192,104 @@ def get_active_frame() -> dict:
         return {"ok": False, "reason": "未找到活动 iframe，请先 enter_module"}
     return {"ok": True, "url": getattr(fr, "url", "") or ""}
 
+
+@mcp.tool()
+@synchronized
+def dom_tree(selector: str = "", max_depth: int = 6, text: bool = False, save_path: str = "", save_format: str = "yml") -> dict:
+    """打印页面或元素的 DOM 树结构（结构化 JSON，便于 AI 识别）。
+    
+    Args:
+        selector: CSS 选择器，为空则从 body 开始
+        max_depth: 最大递归深度（默认 6）
+        text: 是否包含元素文本内容
+        save_path: 指定文件路径则同时写入磁盘（如 "screenshots/dom-tree.json"）
+        save_format: 输出格式，"json" 或 "yml"（默认 yml，更省 token）
+    """
+    fr = browser_session.get_active_frame()
+    target = fr if fr is not None else browser_session.get_tab()
+    try:
+        if selector:
+            root = target.ele(f'css:{selector}', timeout=3)
+            if not root:
+                return {"ok": False, "reason": f"selector 未匹配: {selector}"}
+        else:
+            root = target
+        find_el_js = "var el = document.querySelector('" + selector.replace("'", "\\'") + "');" if selector else "var el = document.body;"
+        
+        js = r"""
+        (function walk(el, depth, maxD, showText) {
+            if (!el || depth > maxD) return null;
+            var node = { tag: (el.tagName || '#text').toLowerCase() };
+            if (el.id) node.id = el.id;
+            if (el.className && typeof el.className === 'string') {
+                var cls = el.className.trim().split(/\s+/).filter(Boolean);
+                if (cls.length > 0) node.classes = cls.slice(0, 5);
+            }
+            var role = el.getAttribute('role');
+            if (role) node.role = role;
+            if (showText && el.childNodes && el.childNodes.length === 1 && el.childNodes[0].nodeType === 3) {
+                var t = (el.textContent || '').trim().substring(0, 80);
+                if (t) node.text = t;
+            }
+            if (depth < maxD && el.children && el.children.length > 0) {
+                var children = [];
+                for (var i = 0; i < el.children.length && children.length < 20; i++) {
+                    var child = walk(el.children[i], depth + 1, maxD, showText);
+                    if (child) children.push(child);
+                }
+                if (children.length > 0) node.children = children;
+                if (el.children.length > 20) node._more = el.children.length - 20;
+            }
+            return node;
+        })(el, 0, MAXD, SHOWTEXT)
+        """
+        js = find_el_js + "return JSON.stringify(" + js.replace('MAXD', str(max_depth)).replace('SHOWTEXT', 'true' if text else 'false') + ")"
+        res = target.run_js(js)
+        
+        import json as _json, os as _os
+        tree_dict = _json.loads(res) if isinstance(res, str) else res
+        result = {"ok": True, "save_format": save_format}
+        
+        if save_format == "yml":
+            def _yaml(obj, i=0):
+                p = "  " * i
+                if isinstance(obj, dict):
+                    r = []
+                    for k, v in obj.items():
+                        if isinstance(v, (dict, list)) and v:
+                            r.append(f"{p}{k}:")
+                            r.append(_yaml(v, i + 1))
+                        elif isinstance(v, list) and not v:
+                            r.append(f"{p}{k}: []")
+                        else:
+                            x = _yaml(v, i + 1).strip()
+                            r.append(f"{p}{k}: {x}")
+                    return "\n".join(r)
+                elif isinstance(obj, list):
+                    r = []
+                    for x in obj:
+                        if isinstance(x, (dict, list)):
+                            r.append(f"{p}-")
+                            r.append(_yaml(x, i + 1))
+                        else:
+                            r.append(f"{p}- {_yaml(x, 0).strip()}")
+                    return "\n".join(r)
+                else:
+                    s = str(obj)
+                    return f"'{s}'" if (" " in s or s == "") else s
+            result["tree"] = _yaml(tree_dict)
+        else:
+            result["tree"] = tree_dict
+        
+        if save_path:
+            _os.makedirs(_os.path.dirname(save_path) or ".", exist_ok=True)
+            with open(save_path, "w", encoding="utf-8") as f:
+                f.write(result["tree"] if save_format == "yml" else _json.dumps(tree_dict, ensure_ascii=False, indent=2))
+            result["saved_to"] = _os.path.abspath(save_path)
+        
+        return result
+    except Exception as e:
+        return {"ok": False, "reason": str(e)}
 
 # ==================== 通用 DOM 原语 ====================
 
@@ -183,8 +318,27 @@ def dom_overview() -> dict:
 @synchronized
 def click(locator: str, in_frame: bool = True, by_js: bool = False, timeout: float = 5) -> dict:
     """点击元素。locator 为 DrissionPage 定位符(#id/.cls/@attr=v/text:文/css:选择器)。
-    in_frame 优先在活动 iframe 内查找。by_js=True 用 JS 点击(绕过遮挡)。timeout 为查找超时秒数。"""
+    in_frame 优先在活动 iframe 内查找。by_js=True 用 JS 点击(绕过遮挡)。timeout 为查找超时秒数。
+    text: 定位含空格文本（如「新 增」）时，DP 匹配失败会自动降级为 JS textContent 宽松匹配。"""
     ele = browser_session.find(locator, in_frame=in_frame, timeout=timeout)
+    if not ele and locator.startswith("text:") and in_frame and " " in locator[5:]:
+        # text: 定位含空格文本（如「新 增」）时 DP 可能匹配不到，降级 JS 宽松查找
+        import json as _json
+        safe_text = locator[5:].replace("\\", "\\\\").replace("'", "\\'")
+        target = browser_session.get_active_frame() or browser_session.get_tab()
+        res = target.run_js(
+            "var els=document.querySelectorAll('*');"
+            "for(var i=0;i<els.length;i++){"
+            "var t=els[i].textContent.trim().replace(/\\s+/g,'');"
+            "if(t==='"+safe_text.replace(" ", "")+"'){els[i].click();return JSON.stringify({ok:true});}"
+            "}"
+            "return JSON.stringify({ok:false});"
+        )
+        if isinstance(res, str):
+            res = _json.loads(res)
+        if res and res.get("ok"):
+            return {"ok": True, "locator": locator, "fallback": "js-text"}
+        return {"ok": False, "reason": "元素未找到: %s（等待 %.1fs，JS 降级也失败）" % (locator, timeout)}
     if not ele:
         return {"ok": False, "reason": "元素未找到: %s（等待 %.1fs）" % (locator, timeout)}
     ele.click(by_js=by_js)
@@ -198,6 +352,24 @@ def click_xy(x: float, y: float, hover_first: bool = True, duration: float = 0.3
     tab = browser_session.get_tab()
     tab.actions.move_to((x, y), duration=duration if hover_first else 0).click()
     return {"ok": True, "x": x, "y": y}
+
+@mcp.tool()
+@synchronized
+def select_date_range(field_name: str, start_date: str, end_date: str) -> dict:
+    """选择筛选区中 Ant Design RangePicker 日期范围。
+    
+    支持字段名匹配（如「领料时间」「发料时间」「创建时间」），自动导航
+    到目标年/月，通过 title 属性精确点击开始/结束日期。
+    
+    Args:
+        field_name: 筛选字段名称，如「领料时间」「发料时间」「创建时间」
+        start_date: 开始日期，格式 "yyyy/MM/dd"，如 "2026/05/01"
+        end_date: 结束日期，格式 "yyyy/MM/dd"，如 "2026/05/31"
+    
+    Returns:
+        {ok, startValue, endValue, reason}
+    """
+    return filter_area.select_date_range(field_name, start_date, end_date)
 
 
 @mcp.tool()
@@ -300,9 +472,16 @@ def get_column_values(title: str, raw: bool = False) -> dict:
 
 @mcp.tool()
 @synchronized
-def get_cell_rect(col: int, row: int) -> dict:
-    """取单元格中心顶层视口坐标(先 scrollToCell 确保可见)。返回 {viewportX, viewportY}。"""
-    return vtable.get_cell_rect(col, row)
+def get_cell_rect(col: int, row: int, scroll: bool = True) -> dict:
+    """取单元格中心顶层视口坐标(先 scrollToCell 确保可见)。返回 {viewportX, viewportY}。
+    
+    Args:
+        col: 列索引
+        row: 行索引
+        scroll: True（默认）先滚动到该单元格再取坐标；
+                False 不滚动，取当前位置坐标（可能为负值或超出视口，用于判断是否需要 scroll）。
+    """
+    return vtable.get_cell_rect(col, row, scroll=scroll)
 
 
 @mcp.tool()
@@ -312,11 +491,34 @@ def scroll_to_cell(col: int, row: int) -> dict:
     return vtable.scroll_to_cell(col, row)
 
 
+@synchronized
+@mcp.tool()
+def click_cell(col: int, row: int, icon_name: str = None, hover_first: bool = True, duration: float = 0.3, double_click: bool = False) -> dict:
+    """点击 VTable 单元格或其图标。icon_name(如 'sort')给定时点该图标(先 hover 再 click)；否则点单元格中心。
+
+    Args:
+        col: 列索引
+        row: 行索引
+        icon_name: 图标名称，如 'sort'、'filter-icon'
+        hover_first: 是否先 hover（排序/筛选图标需要）
+        duration: hover 动画时长
+        double_click: 是否双击（用于 bodyBehavior='链接/按钮' 的单元格）
+    """
+    return vtable.click_cell(col, row, icon_name, hover_first, duration, double_click)
+
 @mcp.tool()
 @synchronized
-def click_cell(col: int, row: int, icon_name: str = None, hover_first: bool = True, duration: float = 0.3) -> dict:
-    """点击 VTable 单元格或其图标。icon_name(如 'sort')给定时点该图标(先 hover 再 click)；否则点单元格中心。"""
-    return vtable.click_cell(col, row, icon_name, hover_first, duration)
+def resize_column(col: int, width: int) -> dict:
+    """拖拽调整 VTable 列宽（模拟鼠标拖拽列头右边框）。
+    
+    Args:
+        col: 列索引（从 0 开始，含复选框列）
+        width: 目标宽度（像素）
+    
+    Returns:
+        {ok, col, old_width, new_width, delta}
+    """
+    return vtable.resize_column(col, width)
 
 
 # ==================== 弹窗检测 / 网络 / 轨迹 ====================
@@ -329,6 +531,16 @@ def detect_modal(timeout: float = 0) -> dict:
     timeout>0 时轮询直到弹窗出现或超时，找到就立即返回（智能等待），不用盲等。
     """
     return modal.detect_modal(timeout=timeout)
+
+@mcp.tool()
+@synchronized
+def close_modal() -> dict:
+    """关闭当前残留的弹窗/通知/消息，避免积累在 DOM 中干扰后续交互。
+    每次 detect_modal() 返回非 none 后调用此函数清理。
+    通知类 → 点×关闭；业务确认弹窗 → 点取消或×。
+    """
+    modal.close_modal()
+    return {"ok": True}
 
 
 @mcp.tool()

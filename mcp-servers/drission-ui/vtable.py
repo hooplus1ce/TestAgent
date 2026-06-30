@@ -76,12 +76,21 @@ def get_column_values(title: str, raw: bool = False):
     return {"ok": True, "values": res, "title": title, "raw": raw}
 
 
-def get_cell_rect(col: int, row: int):
-    """取单元格中心【顶层视口坐标】。先 scrollToCell 确保在视口内。"""
+def get_cell_rect(col: int, row: int, scroll: bool = True):
+    """取单元格中心【顶层视口坐标】。
+    
+    Args:
+        col: 列索引
+        row: 行索引
+        scroll: 是否先滚动到该单元格再取坐标。
+            True（默认）— 先 scrollToCell 确保在视口内，返回可见区域的坐标。
+            False — 不滚动，返回当前渲染位置的坐标（可能在视口外，用于判断是否需要 scroll）。
+    """
     fr = _frame()
     ox, oy = browser_session.frame_offset()
-    _run("vtable-column-values.js",
-         "scrollToCell.apply(null, %s);" % _js_args(col, row))
+    if scroll:
+        _run("vtable-column-values.js",
+             "scrollToCell.apply(null, %s);" % _js_args(col, row))
     res = _run("vtable-column-values.js",
                "return JSON.stringify(getCellCenterFrame.apply(null, %s));" % _js_args(col, row))
     if not res:
@@ -91,6 +100,7 @@ def get_cell_rect(col: int, row: int):
         "viewportX": round(res.get("frameX", 0) + ox, 1),
         "viewportY": round(res.get("frameY", 0) + oy, 1),
         "col": col, "row": row,
+        "scrolled": scroll,
     }
 
 
@@ -104,10 +114,18 @@ def scroll_to_cell(col: int, row: int):
     return {"ok": True, "result": res}
 
 
-def click_cell(col: int, row: int, icon_name: str = None, hover_first: bool = True, duration: float = 0.3):
+def click_cell(col: int, row: int, icon_name: str = None, hover_first: bool = True, duration: float = 0.3, double_click: bool = False):
     """点击单元格或其图标。icon_name 给定时匹配该名称图标（如 'sort'），否则点单元格中心。
 
     流程：scrollToCell → 取坐标 → actions.move_to(hover) → click。
+
+    Args:
+        col: 列索引
+        row: 行索引
+        icon_name: 图标名称（如 'sort'、'filter-icon'），不传则点单元格中心
+        hover_first: 是否先 hover 再点击（排序/筛选图标需要 hover 才出现）
+        duration: hover 动画时长
+        double_click: 是否双击（用于 bodyBehavior='链接/按钮' 的单元格，单击无效）
     """
     fr = _frame()
     ox, oy = browser_session.frame_offset()
@@ -140,5 +158,83 @@ def click_cell(col: int, row: int, icon_name: str = None, hover_first: bool = Tr
 
     tab = browser_session.get_tab()
     tab.actions.move_to((vx, vy), duration=duration if hover_first else 0).click()
+    if double_click:
+        import time
+        time.sleep(0.15)  # 150ms 双击间隔，VTable 原生双击识别所需
+        tab.actions.click()
     return {"ok": True, "viewportX": round(vx, 1), "viewportY": round(vy, 1),
             "icon": icon_name, "col": col, "row": row}
+
+def resize_column(col: int, width: int):
+    """拖拽调整 VTable 列宽（DrissionPage actions 模拟鼠标拖拽）。
+    
+    判断流程：
+      1. 取列头右边框的场景图坐标（帧内坐标）
+      2. 若超出当前 iframe 视口 → scrollToCell 滚动 → 重新取坐标
+      3. DrissionPage actions.move_to → hold → move_to → release
+    
+    Args:
+        col: 列索引（从 0 开始，含复选框列）
+        width: 目标宽度（像素）
+    """
+    fr = _frame()
+    ox, oy = browser_session.frame_offset()
+    
+    def _get_bounds():
+        """读取列头右边框的帧内坐标（仅数据读取，非 UI 操作）。"""
+        js = (
+            "var t=window._vtable;"
+            "if(!t||!t.scenegraph)return JSON.stringify({error:'no vtable'});"
+            "var cg=t.scenegraph.getCell(%d,0);"
+            "if(!cg)return JSON.stringify({error:'no cell'});"
+            "var b=cg.globalAABBBounds;"
+            "if(!b)return JSON.stringify({error:'no bounds'});"
+            "var vtEl=document.querySelector('.vtable')||document.querySelector('[class*=\"vtable\"]');"
+            "var vr=vtEl?vtEl.getBoundingClientRect():{left:0,top:0};"
+            "var rightEdge=Math.round((vr.left+b.x2)*10)/10;"
+            "return JSON.stringify({"
+            "  rightEdge:rightEdge,"
+            "  centerY:Math.round((vr.top+(b.y1+b.y2)/2)*10)/10,"
+            "  oldWidth:Math.round(b.x2-b.x1),"
+            "  viewportW:window.innerWidth});"
+        ) % col
+        return _run("vtable-column-values.js", js)
+    
+    # 1. 读取列头右边框坐标
+    info = _get_bounds()
+    if not info or not isinstance(info, dict) or "rightEdge" not in info:
+        return {"ok": False, "reason": "无法获取列宽信息"}
+    
+    old_width = info["oldWidth"]
+    delta = width - old_width
+    if delta == 0:
+        return {"ok": True, "reason": "列宽已是目标值", "width": old_width}
+    
+    # 2. 检查列是否在视口内（超出右侧或滑出左侧都需要滚动）
+    viewport_w = info["viewportW"]
+    right_edge = info["rightEdge"]
+    if right_edge > viewport_w or right_edge < 0:
+        _run("vtable-column-values.js",
+             "scrollToCell.apply(null, %s);" % _js_args(col, 0))
+        import time; time.sleep(0.3)
+        info = _get_bounds()
+        if not info or not isinstance(info, dict) or "rightEdge" not in info:
+            return {"ok": False, "reason": "滚动后仍无法获取列宽信息"}
+        old_width = info["oldWidth"]
+        delta = width - old_width
+        if delta == 0:
+            return {"ok": True, "reason": "滚动后列宽已是目标值", "width": old_width}
+    
+    # 3. 视口坐标 = 帧内坐标 + iframe 偏移
+    start_x = round(info["rightEdge"] + ox)
+    center_y = round(info["centerY"] + oy)
+    
+    # 4. DrissionPage 动作链拖拽
+    tab = browser_session.get_tab()
+    tab.actions.move_to((start_x - 100, center_y), duration=0.1)
+    tab.actions.move_to((start_x - 3, center_y), duration=0.15)
+    tab.actions.hold()
+    tab.actions.move_to((start_x - 3 + delta, center_y), duration=0.5)
+    tab.actions.release()
+    
+    return {"ok": True, "col": col, "old_width": old_width, "new_width": width, "delta": delta}

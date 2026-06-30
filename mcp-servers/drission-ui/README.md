@@ -34,15 +34,16 @@ uv add DrissionPage mcp ddddocr httpx openpyxl
 
 前置：Chrome 以 `--remote-debugging-port=9222` 启动。
 
-## 工具清单（33 个）
+## 工具清单（39 个）
 
 | 类别 | 工具 |
 |------|------|
 | 连接/会话 | `connect` `cache_session` `refresh_session` `login_ocr` `check_session` |
 | 导航/frame | `enter_module` `reset_to_initial` `get_active_frame` |
-| 通用原语 | `scan_page_elements` `dom_overview` `click` `click_xy` `input` `insert_text` `hover` `screenshot` `run_js` |
-| VTable | `mount_vtable` `scan_vtable_columns` `get_column_values` `get_cell_rect` `scroll_to_cell` `click_cell` |
-| 弹窗/网络/调试 | `detect_modal` `listen_start` `listen_wait` `listen_stop` `listen_ws_start` `listen_ws_wait` `mouse_trail` `download_by_browser` `set_permission` |
+| 通用原语 | `scan_page_elements` `dom_overview` `click` `click_xy` `input` `insert_text` `hover` `screenshot` `run_js` `dom_tree` |
+| VTable | `mount_vtable` `scan_vtable_columns` `get_column_values` `get_cell_rect` `scroll_to_cell` `click_cell` `resize_column` |
+| 筛选区 | `expand_filter_area` `scan_filter_fields` `select_date_range` |
+| 弹窗/网络/调试 | `detect_modal` `close_modal` `listen_start` `listen_wait` `listen_stop` `listen_ws_start` `listen_ws_wait` `mouse_trail` `download_by_browser` `set_permission` |
 | 上下文 | `new_context` |
 
 ## 模块
@@ -52,8 +53,9 @@ server.py          FastMCP 入口，注册全部工具，mcp.run() (stdio)
 browser_session.py 单例 Chromium(9222)、活动 tab/frame 解析、坐标偏移、find()、list_tabs()
 config.py          配置外置：环境变量读 URL/域名/端口/截图目录，保留默认值
 vtable.py          VTable 工具：bundled JS 执行 + 帧内坐标→顶层视口换算
+filter_area.py     筛选区操作：展开/模式切换、日期范围选择、字段矩阵扫描
 session_auth.py    cookie 缓存(内存)、CDP 注入刷新、OCR 登录、过期检测
-modal.py           弹窗三级检测、鼠标轨迹注入
+modal.py           弹窗三级检测、鼠标轨迹注入、弹窗关闭
 scripts/           OCR 登录脚本（内部化，不再跨包引用）
   scm-login-ocr.py
 js/                页面内 JS 载荷（移植自旧技能脚本，改 IIFE+return）

@@ -1,0 +1,299 @@
+tag: div
+classes:
+  - legions-pro-quick-filter
+children:
+  - tag: div
+    classes:
+      - ant-row
+      - legions-pro-quick-filter-row
+    children:
+      - tag: div
+        classes:
+          - ant-col-xs-24
+          - ant-col-sm-12
+          - ant-col-md-8
+          - ant-col-lg-8
+          - ant-col-xl-6
+        children:
+          - tag: div
+            classes:
+              - ant-row
+            children:
+              - tag: div
+                classes:
+                  - ant-col-8
+              - tag: div
+                classes:
+                  - ant-col-8
+              - tag: div
+                classes:
+                  - ant-col-8
+      - tag: div
+        classes:
+          - ant-col-xs-24
+          - ant-col-sm-12
+          - ant-col-md-8
+          - ant-col-lg-8
+          - ant-col-xl-6
+        children:
+          - tag: div
+            classes:
+              - ant-row
+            children:
+              - tag: div
+                classes:
+                  - ant-col-8
+              - tag: div
+                classes:
+                  - ant-col-8
+              - tag: div
+                classes:
+                  - ant-col-8
+      - tag: div
+        classes:
+          - ant-col-xs-24
+          - ant-col-sm-12
+          - ant-col-md-8
+          - ant-col-lg-8
+          - ant-col-xl-6
+        children:
+          - tag: div
+            classes:
+              - ant-row
+            children:
+              - tag: div
+                classes:
+                  - ant-col-8
+              - tag: div
+                classes:
+                  - ant-col-8
+              - tag: div
+                classes:
+                  - ant-col-8
+      - tag: div
+        classes:
+          - ant-col-xs-24
+          - ant-col-sm-12
+          - ant-col-md-8
+          - ant-col-lg-8
+          - ant-col-xl-6
+        children:
+          - tag: div
+            classes:
+              - legions-pro-quick-filter-actions
+            children:
+              - tag: button
+                classes:
+                  - ant-btn
+                  - ant-btn-primary
+                  - ant-btn-sm
+                  - ant-btn-icon-only
+              - tag: button
+                classes:
+                  - ant-btn
+                  - ant-btn-primary
+                  - ant-btn-sm
+                  - ant-btn-icon-only
+              - tag: button
+                classes:
+                  - ant-btn
+                  - ant-btn-sm
+              - tag: button
+                classes:
+                  - ant-btn
+                  - ant-dropdown-trigger
+                  - ant-btn-sm
+              - tag: button
+                classes:
+                  - ant-btn
+                  - ant-btn-sm
+  - tag: div
+    classes:
+      - legions-pro-quick-filter-remaining
+    children:
+      - tag: div
+        classes:
+          - ant-row
+          - legions-pro-quick-filter-row
+        children:
+          - tag: div
+            classes:
+              - ant-col-xs-24
+              - ant-col-sm-12
+              - ant-col-md-8
+              - ant-col-lg-8
+              - ant-col-xl-6
+            children:
+              - tag: div
+                classes:
+                  - ant-row
+          - tag: div
+            classes:
+              - ant-col-xs-24
+              - ant-col-sm-12
+              - ant-col-md-8
+              - ant-col-lg-8
+              - ant-col-xl-6
+            children:
+              - tag: div
+                classes:
+                  - ant-row
+          - tag: div
+            classes:
+              - ant-col-xs-24
+              - ant-col-sm-12
+              - ant-col-md-8
+              - ant-col-lg-8
+              - ant-col-xl-6
+            children:
+              - tag: div
+                classes:
+                  - ant-row
+          - tag: div
+            classes:
+              - ant-col-xs-24
+              - ant-col-sm-12
+              - ant-col-md-8
+              - ant-col-lg-8
+              - ant-col-xl-6
+            children:
+              - tag: div
+                classes:
+                  - ant-row
+      - tag: div
+        classes:
+          - ant-row
+          - legions-pro-quick-filter-row
+        children:
+          - tag: div
+            classes:
+              - ant-col-xs-24
+              - ant-col-sm-12
+              - ant-col-md-8
+              - ant-col-lg-8
+              - ant-col-xl-6
+            children:
+              - tag: div
+                classes:
+                  - ant-row
+          - tag: div
+            classes:
+              - ant-col-xs-24
+              - ant-col-sm-12
+              - ant-col-md-8
+              - ant-col-lg-8
+              - ant-col-xl-6
+            children:
+              - tag: div
+                classes:
+                  - ant-row
+          - tag: div
+            classes:
+              - ant-col-xs-24
+              - ant-col-sm-12
+              - ant-col-md-8
+              - ant-col-lg-8
+              - ant-col-xl-6
+            children:
+              - tag: div
+                classes:
+                  - ant-row
+          - tag: div
+            classes:
+              - ant-col-xs-24
+              - ant-col-sm-12
+              - ant-col-md-8
+              - ant-col-lg-8
+              - ant-col-xl-6
+            children:
+              - tag: div
+                classes:
+                  - ant-row
+          - tag: div
+            classes:
+              - ant-col-xs-24
+              - ant-col-sm-12
+              - ant-col-md-8
+              - ant-col-lg-8
+              - ant-col-xl-6
+            children:
+              - tag: div
+                classes:
+                  - ant-row
+          - tag: div
+            classes:
+              - ant-col-xs-24
+              - ant-col-sm-12
+              - ant-col-md-8
+              - ant-col-lg-8
+              - ant-col-xl-6
+            children:
+              - tag: div
+                classes:
+                  - ant-row
+          - tag: div
+            classes:
+              - ant-col-xs-24
+              - ant-col-sm-12
+              - ant-col-md-8
+              - ant-col-lg-8
+              - ant-col-xl-6
+            children:
+              - tag: div
+                classes:
+                  - ant-row
+          - tag: div
+            classes:
+              - ant-col-xs-24
+              - ant-col-sm-12
+              - ant-col-md-8
+              - ant-col-lg-8
+              - ant-col-xl-6
+            children:
+              - tag: div
+                classes:
+                  - ant-row
+          - tag: div
+            classes:
+              - ant-col-xs-24
+              - ant-col-sm-12
+              - ant-col-md-8
+              - ant-col-lg-8
+              - ant-col-xl-6
+            children:
+              - tag: div
+                classes:
+                  - ant-row
+          - tag: div
+            classes:
+              - ant-col-xs-24
+              - ant-col-sm-12
+              - ant-col-md-8
+              - ant-col-lg-8
+              - ant-col-xl-6
+            children:
+              - tag: div
+                classes:
+                  - ant-row
+          - tag: div
+            classes:
+              - ant-col-xs-24
+              - ant-col-sm-12
+              - ant-col-md-8
+              - ant-col-lg-8
+              - ant-col-xl-6
+            children:
+              - tag: div
+                classes:
+                  - ant-row
+          - tag: div
+            classes:
+              - ant-col-xs-24
+              - ant-col-sm-12
+              - ant-col-md-8
+              - ant-col-lg-8
+              - ant-col-xl-6
+            children:
+              - tag: div
+                classes:
+                  - ant-row

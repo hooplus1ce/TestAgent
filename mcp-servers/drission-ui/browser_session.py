@@ -68,7 +68,6 @@ def connect(port: int = config.DEFAULT_PORT, target_hint: str = config.DEFAULT_T
         _browser = Chromium(port)
         _tab = _pick_tab(_browser, target_hint)
         logger.info("connected tab url=%s", (_tab.url or "")[:120])
-        return _tab
 
 
 def list_tabs():
@@ -111,12 +110,43 @@ def get_browser():
 
 
 def get_active_frame(tab=None):
-    """取当前可见 tabpanel 内的业务 iframe（ChromiumFrame）；无则返回 None。"""
+    """取当前可见 tabpanel 内的业务 iframe（ChromiumFrame）；无则返回 None。
+    
+    修复: 两步策略——先用 JS document.querySelector 获取 iframe name，
+    再用 DrissionPage get_frame(name) 按名称查找，避免 CSS 选择器
+    因 ChromiumFrame 类型检查失败而返回 NoneElement。
+    """
     with _lock:
         tab = tab or get_tab()
         try:
-            fr = tab.get_frame(ACTIVE_FRAME_LOC, timeout=3)
-            return fr or None
+            # Step 1: JS 查找 iframe 元素并获取 name/id
+            js = (
+                "var f=document.querySelector('[role=\"tabpanel\"][aria-hidden=\"false\"] iframe');"
+                "if(!f)return JSON.stringify({found:false});"
+                "return JSON.stringify({found:true, name:f.name||'', id:f.id||''});"
+            )
+            res = tab.run_js(js)
+            d = json.loads(res) if isinstance(res, str) else (res or {})
+            name = d.get("name") or d.get("id") or ""
+            
+            # Step 2: 优先按 name 查找 frame（DrissionPage 对 name 查找更可靠）
+            if name:
+                try:
+                    fr = tab.get_frame(name, timeout=3)
+                    if fr and not isinstance(fr, str) and getattr(fr, '_type', None) == 'ChromiumFrame':
+                        return fr
+                except Exception:
+                    pass
+            
+            # Step 3: 降级到原始 CSS 选择器
+            try:
+                fr = tab.get_frame(ACTIVE_FRAME_LOC, timeout=3)
+                if fr and not isinstance(fr, str) and getattr(fr, '_type', None) == 'ChromiumFrame':
+                    return fr
+            except Exception:
+                pass
+            
+            return None
         except Exception as e:
             logger.debug("get_active_frame 失败: %s", e)
             return None
@@ -164,3 +194,5 @@ def find(locator: str, in_frame: bool = True, timeout: float = 5, wait_clickable
         if ele and wait_clickable:
             ele.wait.clickable(wait_stop=False)
         return ele
+
+

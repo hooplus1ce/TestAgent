@@ -32,6 +32,11 @@ var cookieToken = cookies.find(function(c){ return c.name === 'cookie_token'; })
 
 // ============ Session 维持（Cookie 注入） ============
 // 当检测到系统级确认弹窗（提示「您还未登录或登录信息过期，请重新登录」）时执行
+//
+// ⚠️ 参数来源（v2 优化）：
+//   savedSessionValue / savedUcToken / savedCookieToken 三参优先从 cookie-cache.js
+//   在 Phase 1 缓存的 page.__scmCookieCache 读取（调用 getRefreshSessionArgs(page)）。
+//   避免探索到一半 session 过期却无 cookie 可注入。详见 scripts/cookie-cache.js。
 async function refreshSession(page, savedSessionValue, savedUcToken, savedCookieToken) {
   var cdp = await page.createCDPSession();
   await cdp.send('Network.setCookie', {

@@ -119,31 +119,3 @@ if (modalInfo.type === 'none') {
 | **业务确认弹窗** | 1. 记录弹窗标题、提示文字、按钮 → 2. 点击「取消」或关闭× → 弹窗关闭，数据无变化 → 3. 点击「确定」→ 执行操作，表格刷新 |
 | **消息提醒** | 1. 提取消息文字写入预期结果 → 2. 点击关闭×或等待自动消失 → 3. 继续下一步操作 |
 | **系统级确认弹窗** | 1. 记录弹窗提示文字 → 2. 通过 CDP Cookie 注入刷新 session（见 scripts/scm-login.js） → 3. 刷新页面后继续操作 → 4. 在用例备注标注「需重新登录」 |
-
-## 弹窗 / 通知关闭规则（MUST）
-
-每次交互操作后，无论弹窗（`.ant-modal-content`）、通知（`.ant-notification-notice`）还是消息（`.ant-message-notice`），在提取完必要数据后 **必须关闭，不得残留**：
-
-```javascript
-// 关闭弹窗：点击关闭×或取消按钮，禁止用 .remove() 绕过
-var modal = document.querySelector('.ant-modal-content');
-if (modal && modal.offsetParent !== null) {
-  var closeBtn = modal.querySelector('.ant-modal-close') ||
-                 [...modal.querySelectorAll('button.ant-btn')].find(function(b){ return /取消|返回/.test(b.textContent.trim()); }) ||
-                 [...modal.querySelectorAll('button.ant-btn')].find(function(b){ return b.textContent.trim() === '取消'; });
-  if (closeBtn) closeBtn.click();
-}
-
-// 关闭通知提醒（需手动点击×关闭）
-var notif = document.querySelector('.ant-notification-notice');
-if (notif && notif.offsetParent !== null) {
-  var nClose = notif.querySelector('.ant-notification-notice-close');
-  if (nClose) nClose.click();
-}
-
-// 消息提醒（ant-message）几秒后自动消失，可不清除
-```
-
-> ⚠️ 原代码用 jQuery 伪选择器 `button.ant-btn:contains(取消)`，在 `evaluate` 中不可用，已改为等价的 `querySelectorAll` + 文本匹配。
-
-**禁止**使用 `el.remove()` 或 `el.parentNode.removeChild(el)` 直接移除 DOM 节点——必须模拟真实关闭交互，否则 React 状态不同步。

@@ -1,7 +1,7 @@
 // VTable 列行为分类 + 图标坐标扫描器
 // 用法: 在 iframe 上下文中执行
 // 1. 调用 mountVTable() 挂载
-// 2. 调用 __scanColumns(maxCol) 获取结果
+// 2. 调用 scanColumns(maxCol) 获取结果
 // 3. 使用输出中的 视口点击X/Y 进行 page.mouse.click
 
 // ============ 1. 挂载 VTable 实例 ============

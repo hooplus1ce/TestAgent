@@ -6,60 +6,59 @@
 
 定位 iframe 后扫描所有筛选行。两种模式：
 
-```python
-# 模式 A：内联筛选（scm-spo 旧版）— field/operator/value 三列
-scan_filter_fields()
-# 返回筛选字段数组：[{field, operator, value_options, ...}]
+```javascript
+// 模式 A：内联筛选（scm-spo 旧版）— field/operator/value 三列
+var selects = document.querySelectorAll('.ant-select');
+// selects[0]=字段名, selects[1]=运算符, selects[2]=值输入
 
-# 模式 B：高级搜索弹窗 — 点击「展开▼」弹出
-expand_filter_area()
-# 弹窗展开后，再用 scan_filter_fields() 扫描
+// 模式 B：高级搜索弹窗 — 点击「展开▼」弹出
+// 弹窗内 .ant-row .ant-col-xs-12 每行一个筛选条件
 ```
 
 穷尽每个字段的运算符（包含/等于/介于/为空…）和下拉选项后，产出**筛选字段矩阵**。检测代码模板见 `modal-types.md`。
 
 ## 二、筛选验证方法（MUST，AI 内部使用，不出现在 Excel）
 
-生成筛选用例时，AI **必须先用 `get_column_values()` 在浏览器中执行验证**，确认筛选逻辑正确后，再将验证结论转化为**纯中文描述**写入 Excel 预期结果列(L)。
+生成筛选用例时，AI **必须先用 `getColumnValuesByTitle()` 在浏览器中执行验证**，确认筛选逻辑正确后，再将验证结论转化为**纯中文描述**写入 Excel 预期结果列(L)。
 
 > ⚠️ 这一步是筛选用例可信度的根基。不经验证直接写预期结果 = 凭空臆测，违反技能核心原则。
 
 ### 验证流程
 
-```python
-# Step 1: 执行筛选操作（input 填写值 → click 点查询）
-# Step 2: 用 get_column_values 取目标列所有值
-values = get_column_values('制令单号', raw=False)
-# Step 3: 内部断言
-all_match = all(v and 'MO202606' in v for v in values)
-# Step 4: 将结论转化为中文写入 Excel L 列
+```javascript
+// Step 1: 执行筛选操作（输入值 → 点查询）
+// Step 2: 用 getColumnValuesByTitle 取目标列所有值（scripts/vtable-column-values.js）
+var values = getColumnValuesByTitle(window._vtable, '制令单号');
+// Step 3: 内部断言
+var allMatch = values.every(function(v){ return v && v.indexOf('MO202606') !== -1; });
+// Step 4: 将结论转化为中文写入 Excel L 列
 ```
 
 ### 内部结论 → Excel 预期结果映射
 
 | 内部验证结论 | Excel 预期结果(L) 写入内容 |
 |-------------|--------------------------|
-| `all_match is True` | 「表格所有制令单号均包含『MO202606』，无不符合的记录」 |
-| `all_match is False` | 「存在不符合筛选条件的记录，需确认筛选逻辑」 |
+| `allMatch === true` | 「表格所有制令单号均包含『MO202606』，无不符合的记录」 |
+| `allMatch === false` | 「存在不符合筛选条件的记录，需确认筛选逻辑」 |
 
 ### 组合查询（多列分别断言后合并）
 
-```python
-ok1 = all(v and 'MO' in v for v in get_column_values('制令单号'))
-ok2 = all(v == '冲压车间' for v in get_column_values('生产部门'))
-# → Excel L 列: 「所有制令单号包含 MO，且所有生产部门为『冲压车间』」
+```javascript
+var ok1 = getColumnValuesByTitle(vt, '制令单号').every(v => v && v.indexOf('MO') !== -1);
+var ok2 = getColumnValuesByTitle(vt, '生产部门').every(v => v === '冲压车间');
+// → Excel L 列: 「所有制令单号包含 MO，且所有生产部门为『冲压车间』」
 ```
 
-## 三、get_column_values 用法详解
+## 三、getColumnValuesByTitle 用法详解
 
-```python
-# 视觉文本（默认，经 customLayout 映射，与用户肉眼一致）
-get_column_values('制令单号')
-# → ['MO202606270041', 'MO202606260019', ...]
+```javascript
+// 视觉文本（默认，经 customLayout 映射，与用户肉眼一致）
+getColumnValuesByTitle(window._vtable, '制令单号')
+// → ['MO202606270041', 'MO202606260019', ...]
 
-# 原始值（未经格式化，如数字类型/数据码）
-get_column_values('生产数量', raw=True)
-# → [3, 2, 45, 36719, ...]
+// 原始值（未经格式化，如数字类型/数据码）
+getColumnValuesByTitle(window._vtable, '生产数量', true)
+// → [3, 2, 45, 36719, ...]
 ```
 
 **标题匹配策略**：先精确匹配 `headerValue === title`，不中再包含匹配 `headerValue.indexOf(title) !== -1`。即使标题带后缀（「制令单号 *」「制令单号（必填）」）也能命中。
@@ -67,10 +66,10 @@ get_column_values('生产数量', raw=True)
 ### raw 参数的关键区别
 
 ```
-get_column_values('制令单类型', raw=False)
+getColumnValuesByTitle(vt, '制令单类型', false)
   → ['普通制令单', '普通制令单', '包装制令单']   // 视觉文本（customLayout 映射后）
 
-get_column_values('制令单类型', raw=True)
+getColumnValuesByTitle(vt, '制令单类型', true)
   → ['0', '0', '1']                            // 原始数据码
 ```
 
@@ -91,4 +90,4 @@ get_column_values('制令单类型', raw=True)
 | 空结果 | 输入不存在的值，验证空状态展示 |
 | 级别 | 主字段筛选 中级，组合/重置 低级，边界/空结果 低级 |
 
-**预期结果必须基于实际 `get_column_values` 验证结论**，禁止写「筛选结果正确」这类不可验证表述。
+**预期结果必须基于实际 `getColumnValuesByTitle` 验证结论**，禁止写「筛选结果正确」这类不可验证表述。

@@ -64,52 +64,44 @@
 
 ## 检测代码模板
 
-```javascript
-// Step 1: iframe 内检测
-var f = page.frames().find(function(fr){ return fr.url().includes('makerTable'); });
-var modalInfo = await f.evaluate(function(){
-  var modal = document.querySelector('.ant-modal-content');
-  if (modal && modal.offsetParent !== null) {
-    var isConfirm = !!modal.querySelector('.ant-confirm-body-wrapper');
-    return {
-      type: isConfirm ? 'business_confirm' : 'interactive',
-      title: (modal.querySelector('.ant-modal-title') || modal.querySelector('.ant-confirm-title'))?.textContent?.trim() || '',
-      content: modal.querySelector('.ant-confirm-content')?.textContent?.trim().replace(/\s+/g, ' ') || '',
-      buttons: [...modal.querySelectorAll('.ant-btn, button')].filter(function(b){ return b.offsetParent !== null; }).map(function(b){ return b.textContent.trim().replace(/\s+/g, ''); }),
-      hasClose: !!modal.querySelector('.ant-modal-close')
-    };
-  }
-  // 消息提醒 - notification
-  var notif = document.querySelector('.ant-notification-notice');
-  if (notif && notif.offsetParent !== null) {
-    return { type: 'notification', message: notif.querySelector('.ant-notification-notice-message')?.textContent?.trim() || '' };
-  }
-  // 消息提醒 - message
-  var msg = document.querySelector('.ant-message-notice');
-  if (msg && msg.offsetParent !== null) {
-    return { type: 'message', text: msg.textContent.trim().substring(0, 100) };
-  }
-  return { type: 'none' };
-});
+MCP `detect_modal()` 单次调用即可完成 iframe 内 + top 层两级检测，无需手动查 frame、evaluate DOM。
 
-// Step 2: top 层检测系统级确认弹窗（iframe 内无弹窗时）
-if (modalInfo.type === 'none') {
-  var topModal = await page.evaluate(function(){
-    var m = document.querySelector('.ant-modal-content');
-    if (m && m.offsetParent !== null && m.querySelector('.ant-confirm-body-wrapper')) {
-      return {
-        type: 'system_confirm',
-        message: m.querySelector('.ant-confirm-body')?.textContent?.trim().replace(/\s+/g, ' ') || '',
-        buttons: [...m.querySelectorAll('.ant-btn, button')].filter(function(b){ return b.offsetParent !== null; }).map(function(b){ return b.textContent.trim().replace(/\s+/g, ''); })
-      };
-    }
-    return { type: 'none' };
-  });
-  if (topModal.type === 'system_confirm') {
-    // 处理 session 超时：见 scripts/scm-login.js -> refreshSession()
-  }
-}
+```python
+# Step 1: 调用 detect_modal() — 自动处理 iframe 内 + top 层两级检测
+result = detect_modal()
+
+# 返回值结构：
+# {
+#   "type": "none" | "notification" | "message" | "interactive" | "business_confirm" | "system_confirm",
+#   "title": str,           # 弹窗标题（可能为空）
+#   "content": str,         # 弹窗正文
+#   "buttons": [str],       # 按钮文字数组
+#   "hasClose": bool,       # 是否有关闭×按钮
+#   "message": str          # 仅 notification 类型
+# }
+
+# Step 2: 按 type 分支处理
+if result["type"] == "none":
+    # 无弹窗，正常继续下一步
+    pass
+elif result["type"] in ("interactive", "business_confirm"):
+    # → 交互弹窗 / 业务确认弹窗：DFS 探索
+    # 记录 title / content / buttons，穷尽弹窗内所有可交互元素
+    # 探索完成后 close_modal() 关闭
+    pass
+elif result["type"] in ("notification", "message"):
+    # → 消息提醒：提取文字 → close_modal() 或等待自动消失
+    pass
+elif result["type"] == "system_confirm":
+    # → 系统级确认弹窗：检查 session 是否过期
+    # 处理流程：check_session() → refresh_session() → 失败则 login_ocr()
+    pass
 ```
+
+> **⚠️ 幽灵元素误报**：`detect_modal()` 偶尔返回 `type: "system_confirm"` 但 `title`、`content`、`buttons` 全部为空。这是 DOM 残留的幽灵元素，并非真实弹窗。处理方式：
+> 1. 先调用 `close_modal()` 尝试清除
+> 2. 重新调用 `detect_modal()` 确认
+> 3. 若仍返回相同幽灵结果，忽略并继续下一步操作
 
 ## 各类型处理逻辑
 
@@ -118,4 +110,4 @@ if (modalInfo.type === 'none') {
 | **交互弹窗** | 1. 记录弹窗标题和内容 → 2. DFS 探索弹窗内所有下拉字段、输入框、子按钮 → 3. 测试弹窗「取消」和「关闭×」行为 → 4. 关闭后回到列表页 |
 | **业务确认弹窗** | 1. 记录弹窗标题、提示文字、按钮 → 2. 点击「取消」或关闭× → 弹窗关闭，数据无变化 → 3. 点击「确定」→ 执行操作，表格刷新 |
 | **消息提醒** | 1. 提取消息文字写入预期结果 → 2. 点击关闭×或等待自动消失 → 3. 继续下一步操作 |
-| **系统级确认弹窗** | 1. 记录弹窗提示文字 → 2. 通过 CDP Cookie 注入刷新 session（见 scripts/scm-login.js） → 3. 刷新页面后继续操作 → 4. 在用例备注标注「需重新登录」 |
+| **系统级确认弹窗** | 1. 记录弹窗提示文字 → 2. `check_session()` 检测 → 过期则 `refresh_session()`（缓存 Cookie 注入）→ 失败则 `login_ocr()`（重新免登） → 3. 刷新页面后继续操作 → 4. 在用例备注标注「需重新登录」 |

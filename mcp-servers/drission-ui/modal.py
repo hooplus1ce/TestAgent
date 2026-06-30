@@ -13,74 +13,122 @@ import browser_session
 logger = logging.getLogger("drission-ui")
 
 
-def _detect_in_doc(run_js_target):
-    """在给定对象(frame 或 tab)的 document 内运行检测脚本。"""
-    script = browser_session.load_js("modal-detect.js") + "\nreturn JSON.stringify(detectModalInDoc());"
-    res = run_js_target.run_js(script)
-    if isinstance(res, str):
-        return json.loads(res) if res else {"type": "none"}
-    return res or {"type": "none"}
+def _detect_in_target(target):
+    """用 DrissionPage 原生方法检测 target（tab/frame）内的弹窗。返回 {type, ...} 或 {type: "none"}。"""
+    try:
+        modal = target.ele('css:.ant-modal-content', timeout=0.3)
+        if modal:
+            # 二次确认：ghost element（已销毁但 DP 缓存未 GC）返回 false
+            try:
+                if not modal.states.is_displayed:
+                    return {"type": "none"}
+            except Exception:
+                pass
+        if modal:
+            title_el = modal.ele('css:.ant-modal-title', timeout=0.2)
+            content_el = modal.ele('css:.ant-modal-body', timeout=0.2)
+            buttons = [b.text for b in modal.eles('css:.ant-btn', timeout=0.2) if b.text]
+            has_close = modal.ele('css:.ant-modal-close', timeout=0.2) is not None
+            is_confirm = modal.ele('css:.ant-confirm-body', timeout=0.1) is not None
+            return {
+                "type": "confirm" if is_confirm else "interactive",
+                "title": title_el.text if title_el else "",
+                "content": content_el.text[:200] if content_el else "",
+                "buttons": buttons,
+                "hasClose": has_close,
+            }
+
+        notif = target.ele('css:.ant-notification-notice', timeout=0.2)
+        if notif:
+            msg_el = notif.ele('css:.ant-notification-notice-message', timeout=0.1)
+            desc_el = notif.ele('css:.ant-notification-notice-description', timeout=0.1)
+            return {
+                "type": "notification",
+                "message": (msg_el.text if msg_el else "") or (desc_el.text if desc_el else ""),
+            }
+
+        msg = target.ele('css:.ant-message-notice', timeout=0.2)
+        if msg:
+            text_el = msg.ele('css:.ant-message-notice-content', timeout=0.1)
+            return {"type": "message", "message": text_el.text[:200] if text_el else ""}
+
+    except Exception:
+        pass
+    return {"type": "none"}
 
 
 def detect_modal(timeout: float = 0):
     """按优先级检测弹窗：①活动 iframe 内业务弹窗/消息 ②top 层系统确认弹窗 ③none。
-
-    Args:
-        timeout: 等待弹窗出现的秒数。
-          - 0 (默认): 只检测一次，不等待，立即返回结果
-          - > 0: 轮询直到弹窗出现或超时，找到就立即返回，不等满超时
-
-    Returns:
-        {type, title?, content?, buttons?, hasClose?, message?, scope?} 或 {type: "none"}
-        type 取值: interactive / confirm / system_confirm / notification / message / none
+    使用 DrissionPage 原生 ele() 检测，不依赖 JS 注入。
     """
     deadline = time.time() + timeout if timeout > 0 else None
     while True:
         tab = browser_session.get_tab()
         fr = browser_session.get_active_frame(tab)
-        # ① 优先在 iframe 内检测
         if fr is not None:
-            info = _detect_in_doc(fr)
+            info = _detect_in_target(fr)
             if info.get("type") != "none":
                 info["scope"] = "iframe"
-                if timeout > 0:
-                    info["waited"] = round(time.time() - (time.time() - timeout), 2)
                 return info
-        # ② top 层系统级确认弹窗
-        top = _detect_in_doc(tab)
-        # top 层只把含 .ant-confirm-body-wrapper 的视为系统级确认弹窗
-        if top.get("type") in ("confirm", "interactive"):
-            if top.get("type") == "confirm":
-                top["type"] = "system_confirm"
-                top["scope"] = "top"
-                if timeout > 0:
-                    top["waited"] = round(time.time() - (time.time() - timeout), 2)
-                return top
+        top = _detect_in_target(tab)
+        if top.get("type") == "confirm":
+            top["type"] = "system_confirm"
+            top["scope"] = "top"
+            return top
         if deadline is None or time.time() >= deadline:
-            result = {"type": "none"}
-            if timeout > 0:
-                result["waited"] = timeout
-            return result
-        # 没找到还在 deadline 内，等一小会儿再试
+            waited = round(time.time() - (deadline - timeout), 2) if deadline else timeout
+            return {"type": "none", "waited": waited}
         time.sleep(0.15)
 
 
 def mouse_trail(on: bool = True):
-    """开启/关闭鼠标轨迹可视化（使用 DrissionPage 4.2 原生 tab.set.show_trail()）。"""
+    """开启/关闭鼠标轨迹可视化(红色圆点跟踪 mousemove/click)。同时开启 top 层和活动 iframe。"""
     tab = browser_session.get_tab()
-    try:
-        if on:
-            tab.set.show_trail()
-        else:
-            # 关闭轨迹：刷新页面清除（4.2 无原生 off 方法）
-            tab.run_js(
-                "try{document.querySelectorAll('.mt-d').forEach(function(d){d.remove();});"
-                "if(window.mt){window.mt.off();}}catch(e){}"
-            )
-    except Exception as e:
-        logger.warning("show_trail 失败，回退 JS 注入: %s", e)
-        code = browser_session.load_js("mouse-trail-inject.js")
-        tab.run_js(code)
-        cmd = "window.mt.on();" if on else "window.mt.off();"
-        tab.run_js(cmd)
+    tab.set.show_trail(on)
+    fr = browser_session.get_active_frame(tab)
+    if fr is not None:
+        try:
+            fr.set.show_trail(on)
+        except Exception as e:
+            logger.debug("iframe show_trail 失败: %s", e)
     return {"ok": True, "on": on}
+
+def close_modal(tab=None):
+    """关闭当前残留的弹窗/通知/消息，避免积累在 DOM 中干扰后续操作。
+    通知→点×关闭；业务弹窗→点取消或×。
+    使用 DrissionPage 原生方法 + wait.ele_deleted 等待关闭完成。
+    """
+    tab = tab or browser_session.get_tab()
+    fr = browser_session.get_active_frame(tab)
+    target = fr if fr is not None else tab
+    try:
+        # 关闭通知
+        notices = target.eles('css:.ant-notification-notice', timeout=0.5)
+        for n in notices:
+            btn = n.ele('css:.ant-notification-notice-close', timeout=0.3)
+            if btn:
+                btn.click()
+                n.wait.ele_deleted(timeout=2)
+
+        # 关闭消息
+        for m in target.eles('css:.ant-message-notice', timeout=0.3):
+            btn = m.ele('css:.ant-message-notice-close', timeout=0.3)
+            if btn:
+                btn.click()
+            else:
+                m.run_js("this.remove()")
+
+        # 关闭业务弹窗（点取消优先，其次×）
+        modal = target.ele('css:.ant-modal-content', timeout=0.5)
+        if modal:
+            cancel = modal.ele('css:.ant-btn:not(.ant-btn-primary)', timeout=0.3)
+            if cancel:
+                cancel.click()
+                modal.wait.ele_deleted(timeout=3)
+            else:
+                close_x = modal.ele('css:.ant-modal-close', timeout=0.3)
+                if close_x:
+                    close_x.click()
+                    modal.wait.ele_deleted(timeout=3)
+    except Exception as e:
+        logger.debug("close_modal 失败: %s", e)
