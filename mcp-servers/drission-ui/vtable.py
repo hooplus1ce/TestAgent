@@ -35,6 +35,56 @@ def _js_args(*args):
     return json.dumps(list(args), ensure_ascii=False)
 
 
+def _ensure_vtable():
+    """检查 window._vtable 是否仍有效（iframe 未导航走导致实例陈旧）。
+
+    enter_module 切模块会让 iframe 重新加载，旧 _vtable 指向已卸载实例。
+    本函数用轻量 JS 校验：实例存在、scenegraph 存在、.vtable 元素仍在 DOM。
+    失效则自动重新 mount；仍失败返回 False（调用方应提示重新 mount_vtable）。
+    """
+    fr = _frame()
+    check = (
+        "var t=window._vtable;return JSON.stringify({valid:!!(t&&t.scenegraph&&"
+        "(document.querySelector('.vtable')||document.querySelector('[class*=\"vtable\"]')))});"
+    )
+    res = fr.run_js(check)
+    d = json.loads(res) if isinstance(res, str) else (res or {})
+    if d.get("valid"):
+        return True
+    mv = mount_vtable()
+    return bool(mv and mv.get("ok"))
+
+
+def _wait_stable(reader, timeout=3):
+    """轮询 reader() 返回值，连续两次相等即认为稳定，返回稳定值；超时返回最后一次（可能仍在变化，但优于立即取）。
+
+    reader 返回 None 表示尚未就绪，继续轮询不中止。用于 scrollToCell 后等待场景图动画停止。
+    """
+    import time as _time
+    prev, last, deadline = None, None, _time.time() + timeout
+    while _time.time() < deadline:
+        cur = reader()
+        if cur is not None:
+            if prev is not None and cur == prev:
+                return cur
+            prev = cur
+            last = cur
+        _time.sleep(0.05)
+    return last
+
+
+def _wait_cell_center_stable(col, row, timeout=3):
+    """scrollToCell 后轮询单元格中心帧内坐标至稳定（场景图停止动画），返回稳定的坐标 dict 或 None。"""
+    def reader():
+        ctr = _run("vtable-column-values.js",
+                   "return JSON.stringify(getCellCenterFrame.apply(null, %s));" % _js_args(col, row))
+        if not ctr:
+            return None
+        return (round(ctr.get("frameX", 0), 1), round(ctr.get("frameY", 0), 1)), ctr
+    stable = _wait_stable(reader, timeout)
+    return stable[1] if stable else None
+
+
 def mount_vtable():
     """挂载 VTable 实例到 frame 的 window._vtable。返回 {ok, levels|reason}。"""
     res = _run("vtable-scanner.js", "return JSON.stringify(mountVTable());")
@@ -50,6 +100,8 @@ def scan_vtable_columns(max_col: int = 50):
 
     图标坐标已叠加 frame 偏移，可直接用于 click_xy / actions.move_to。
     """
+    if not _ensure_vtable():
+        return {"ok": False, "reason": "VTable 实例失效且自动重挂载失败，请显式调用 mount_vtable"}
     fr = _frame()
     ox, oy = browser_session.frame_offset()
     cols = _run("vtable-scanner.js",
@@ -68,6 +120,8 @@ def scan_vtable_columns(max_col: int = 50):
 
 def get_column_values(title: str, raw: bool = False):
     """按中文列标题取该列所有单元格值（筛选断言用）。raw=True 返回原始字段值。"""
+    if not _ensure_vtable():
+        return {"ok": False, "reason": "VTable 实例失效且自动重挂载失败，请显式调用 mount_vtable"}
     call = ("return JSON.stringify(getColumnValuesByTitle.apply(null, "
             "[window._vtable].concat(%s)));" % _js_args(title, raw))
     res = _run("vtable-column-values.js", call)
@@ -88,11 +142,16 @@ def get_cell_rect(col: int, row: int, scroll: bool = True):
     """
     fr = _frame()
     ox, oy = browser_session.frame_offset()
+    if not _ensure_vtable():
+        return {"ok": False, "reason": "VTable 实例失效且自动重挂载失败，请显式调用 mount_vtable"}
     if scroll:
         _run("vtable-column-values.js",
              "scrollToCell.apply(null, %s);" % _js_args(col, row))
-    res = _run("vtable-column-values.js",
-               "return JSON.stringify(getCellCenterFrame.apply(null, %s));" % _js_args(col, row))
+        # 智能等待：轮询单元格中心坐标至稳定（场景图停止动画），避免取到动画中途坐标导致落点偏
+        res = _wait_cell_center_stable(col, row)
+    else:
+        res = _run("vtable-column-values.js",
+                   "return JSON.stringify(getCellCenterFrame.apply(null, %s));" % _js_args(col, row))
     if not res:
         return {"ok": False, "reason": "无法获取单元格坐标，可能 col/row 越界或未挂载 VTable"}
     return {
@@ -105,6 +164,8 @@ def get_cell_rect(col: int, row: int, scroll: bool = True):
 
 
 def scroll_to_cell(col: int, row: int):
+    if not _ensure_vtable():
+        return {"ok": False, "reason": "VTable 实例失效且自动重挂载失败，请显式调用 mount_vtable"}
     res = _run("vtable-column-values.js",
                "return JSON.stringify(scrollToCell.apply(null, %s));" % _js_args(col, row))
     if res is None:
@@ -129,6 +190,8 @@ def click_cell(col: int, row: int, icon_name: str = None, hover_first: bool = Tr
     """
     fr = _frame()
     ox, oy = browser_session.frame_offset()
+    if not _ensure_vtable():
+        return {"ok": False, "reason": "VTable 实例失效且自动重挂载失败，请显式调用 mount_vtable"}
 
     if icon_name:
         scan = _run(
@@ -149,19 +212,19 @@ def click_cell(col: int, row: int, icon_name: str = None, hover_first: bool = Tr
     else:
         _run("vtable-column-values.js",
              "scrollToCell.apply(null, %s);" % _js_args(col, row))
-        ctr = _run("vtable-column-values.js",
-                   "return JSON.stringify(getCellCenterFrame.apply(null, %s));" % _js_args(col, row))
+        # 智能等待：滚动后轮询单元格中心坐标至稳定，避免取到动画中途坐标导致落点偏
+        ctr = _wait_cell_center_stable(col, row)
         if not ctr:
             return {"ok": False, "reason": "无法获取单元格坐标"}
         vx = ctr["frameX"] + ox
         vy = ctr["frameY"] + oy
 
     tab = browser_session.get_tab()
-    tab.actions.move_to((vx, vy), duration=duration if hover_first else 0).click()
     if double_click:
-        import time
-        time.sleep(0.15)  # 150ms 双击间隔，VTable 原生双击识别所需
-        tab.actions.click()
+        # 双击：模拟测试人员两次物理鼠标点击，.wait(0.15) 在动作链内保持 150ms 间隔（VTable 原生 dblclick 识别所需）
+        tab.actions.move_to((vx, vy), duration=duration if hover_first else 0).click().wait(0.15).click()
+    else:
+        tab.actions.move_to((vx, vy), duration=duration if hover_first else 0).click()
     return {"ok": True, "viewportX": round(vx, 1), "viewportY": round(vy, 1),
             "icon": icon_name, "col": col, "row": row}
 
@@ -179,7 +242,9 @@ def resize_column(col: int, width: int):
     """
     fr = _frame()
     ox, oy = browser_session.frame_offset()
-    
+    if not _ensure_vtable():
+        return {"ok": False, "reason": "VTable 实例失效且自动重挂载失败，请显式调用 mount_vtable"}
+
     def _get_bounds():
         """读取列头右边框的帧内坐标（仅数据读取，非 UI 操作）。"""
         js = (
@@ -216,10 +281,16 @@ def resize_column(col: int, width: int):
     if right_edge > viewport_w or right_edge < 0:
         _run("vtable-column-values.js",
              "scrollToCell.apply(null, %s);" % _js_args(col, 0))
-        import time; time.sleep(0.3)
-        info = _get_bounds()
-        if not info or not isinstance(info, dict) or "rightEdge" not in info:
+        # 智能等待：轮询列头右边框坐标至稳定（场景图停止动画），复用 _wait_stable
+        def _edge_reader():
+            b = _get_bounds()
+            if not b or not isinstance(b, dict) or "rightEdge" not in b:
+                return None
+            return round(b["rightEdge"], 1), b
+        stable = _wait_stable(_edge_reader, timeout=3)
+        if not stable:
             return {"ok": False, "reason": "滚动后仍无法获取列宽信息"}
+        info = stable[1]
         old_width = info["oldWidth"]
         delta = width - old_width
         if delta == 0:

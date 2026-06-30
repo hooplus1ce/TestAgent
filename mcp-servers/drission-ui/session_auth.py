@@ -22,6 +22,11 @@ NEEDED_COOKIES = config.NEEDED_COOKIES
 # 内存缓存：{name: value}
 _cookie_cache: dict = {}
 
+# cookie 注入参数：secure 按 SCM_ADMIN_URL 的 scheme 决定（http 下必须 False，否则 CDP 静默写入失败）；
+# sameSite 可经 HL_COOKIE_SAMESITE 覆盖（默认 Lax）。
+_COOKIE_SECURE = SCM_ADMIN_URL.lower().startswith("https://")
+_COOKIE_SAMESITE = os.environ.get("HL_COOKIE_SAMESITE", "Lax")
+
 # OCR 登录脚本路径（内部化：scripts/scm-login-ocr.py）
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _OCR_PATH = os.path.normpath(os.path.join(_HERE, "scripts", "scm-login-ocr.py"))
@@ -70,13 +75,13 @@ def get_cached_cookies():
 
 
 def _inject_cookies(cookies: list):
-    """通过 CDP 把 cookies 注入到 tab。"""
+    """通过 CDP 把 cookies 注入到 tab。secure 按 SCM_ADMIN_URL 的 scheme 决定（http 下 False，避免静默写入失败）。"""
     tab = browser_session.get_tab()
     for c in cookies:
         tab.run_cdp("Network.setCookie",
                     name=c["name"], value=c["value"],
                     domain=SCM_ACCESS_DOMAIN, path="/",
-                    secure=True, sameSite="Lax")
+                    secure=_COOKIE_SECURE, sameSite=_COOKIE_SAMESITE)
 
 
 def refresh_session():

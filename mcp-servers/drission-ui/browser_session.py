@@ -172,27 +172,76 @@ def frame_offset(tab=None):
 
 
 def find(locator: str, in_frame: bool = True, timeout: float = 5, wait_clickable: bool = True):
-    """按 DrissionPage 定位符查找元素：优先在活动 iframe 内，否则在 top 文档。
+    """按 DrissionPage 定位符查找元素：优先在活动 iframe 内，未命中再回退到 top 文档。
 
     Args:
         locator: DrissionPage 定位符
-        in_frame: 优先在活动 iframe 内查找
+        in_frame: 优先在活动 iframe 内查找，未命中再回退 top 文档
         timeout: 查找超时秒数
-        wait_clickable: 找到后是否等待 ele.wait.clickable() (默认 True，确保元素可点击)
+        wait_clickable: True 时找到后等待元素可点击；若超时仍不可点击则返回 None
+            （click/input 需可交互元素；截图/hover 等只读场景应传 False 跳过此校验）
     """
     with _lock:
         tab = get_tab()
+        ele = None
+        # 优先在活动 iframe 内查找，未命中再回退 top 文档
         if in_frame:
             fr = get_active_frame(tab)
             if fr is not None:
                 ele = fr.ele(locator, timeout=timeout)
-                if ele and wait_clickable:
-                    ele.wait.clickable(wait_stop=False)
-                if ele:
-                    return ele
-        ele = tab.ele(locator, timeout=timeout)
-        if ele and wait_clickable:
-            ele.wait.clickable(wait_stop=False)
+        if not ele:
+            ele = tab.ele(locator, timeout=timeout)
+        if not ele:
+            return None
+        if wait_clickable:
+            try:
+                ele.wait.clickable(wait_stop=False)  # 轮询至可点击或超时（超时不抛错）
+                if not ele.states.is_clickable:
+                    logger.debug("元素已找到但不可点击: %s", locator)
+                    return None
+            except Exception:
+                # 某些元素无 clickable 概念（如纯展示节点），忽略校验返回元素
+                pass
         return ele
+
+
+# ==================== BrowserContext 注册表 ====================
+# 稳定自增 id → BrowserContext，供 new_context / switch_context / list_contexts 复用。
+# 注意：单全局 _tab 锁决定同一时刻只能在一个 context 内操作（多账号并行需多进程）。
+_contexts = {}
+_context_seq = 0
+
+
+def register_context(ctx):
+    """注册一个 BrowserContext，返回稳定自增 id（跨调用可复现，不依赖 Python id()）。"""
+    global _context_seq
+    _context_seq += 1
+    cid = _context_seq
+    _contexts[cid] = ctx
+    return cid
+
+
+def list_contexts():
+    """列出所有已注册上下文的 id 与 tab 列表。"""
+    return [{"context_id": cid, "tab_ids": list(getattr(ctx, "tab_ids", []) or [])}
+            for cid, ctx in _contexts.items()]
+
+
+def switch_context(cid):
+    """切换活动 tab 到指定 context 的首个 tab；context 不存在或无 tab 返回 None。"""
+    with _lock:
+        global _tab
+        ctx = _contexts.get(cid)
+        if ctx is None or _browser is None:
+            return None
+        tids = list(getattr(ctx, "tab_ids", []) or [])
+        if not tids:
+            return None
+        try:
+            _tab = _browser.get_tab(tids[0])
+            return _tab
+        except Exception as e:
+            logger.warning("switch_context 取 tab 失败: %s", e)
+            return None
 
 

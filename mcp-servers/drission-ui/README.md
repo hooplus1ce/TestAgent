@@ -34,7 +34,7 @@ uv add DrissionPage mcp ddddocr httpx openpyxl
 
 前置：Chrome 以 `--remote-debugging-port=9222` 启动。
 
-## 工具清单（39 个）
+## 工具清单（41 个）
 
 | 类别 | 工具 |
 |------|------|
@@ -44,7 +44,7 @@ uv add DrissionPage mcp ddddocr httpx openpyxl
 | VTable | `mount_vtable` `scan_vtable_columns` `get_column_values` `get_cell_rect` `scroll_to_cell` `click_cell` `resize_column` |
 | 筛选区 | `expand_filter_area` `scan_filter_fields` `select_date_range` |
 | 弹窗/网络/调试 | `detect_modal` `close_modal` `listen_start` `listen_wait` `listen_stop` `listen_ws_start` `listen_ws_wait` `mouse_trail` `download_by_browser` `set_permission` |
-| 上下文 | `new_context` |
+| 上下文 | `new_context` `switch_context` `list_contexts` |
 
 ## 模块
 
@@ -65,7 +65,7 @@ js/                页面内 JS 载荷（移植自旧技能脚本，改 IIFE+ret
 
 ## 配置
 
-通过环境变量覆盖默认值（见 `config.py`）：
+通过环境变量覆盖默认值（见 `config.py`）。接管模式（`connect`）相关：
 
 | 变量 | 默认值 | 用途 |
 |------|--------|------|
@@ -75,8 +75,24 @@ js/                页面内 JS 载荷（移植自旧技能脚本，改 IIFE+ret
 | `HL_TARGET_HINT` | `诺贝科技` | connect 时选 tab 的标题提示 |
 | `HL_REMOTE_PORT` | `9222` | Chrome 远程调试端口 |
 | `HL_SHOT_DIR` | `~/.drission-ui-shots` | screenshot 默认保存目录 |
-| `HL_SCM_USERNAME` | `Hooplus1ce` | OCR 登录用户名 |
-| `HL_SCM_USERPWD` | `Ac123456` | OCR 登录密码 |
+| `HL_COOKIE_SAMESITE` | `Lax` | CDP 注入 cookie 的 sameSite |
+
+OCR 登录凭据（**只走环境变量/secret，无明文默认值**，缺失时 `login_ocr` 报错）：
+
+| 变量 | 用途 |
+|------|------|
+| `HL_SCM_USERNAME` | OCR 登录用户名 |
+| `HL_SCM_USERPWD` | OCR 登录密码 |
+
+仅 launch 场景生效（`connect` 接管模式**不**使用，见 `config.make_chromium_options`）：
+
+| 变量 | 用途 |
+|------|------|
+| `HL_CHROME_PATH` | Chrome 浏览器路径（可选，自动探测） |
+| `HL_EDGE_MODE` | 使用 Edge（`true`/`1` 启用） |
+| `HL_PROXY` | 代理地址 `http://user:pass@ip:port` |
+| `HL_DISABLE_PDF_PREVIEW` | 禁用 PDF 预览（`true`/`1`） |
+| `HL_REMOVE_TEST_TYPE` | 移除自动化测试标记（`true`/`1`） |
 
 ## 坐标换算（关键）
 
@@ -100,10 +116,11 @@ asyncio.run(m())"
 
 ## 单元测试
 
-```bash
-uv run pytest tests/ -v
-```
+暂无 `tests/` 目录（待补）。当前验证以 `verify_live.py` 端到端为主。
 
 ## 端到端验证
 
-见 `verify_live.py`（需 Chrome 已在 9222 端口运行）。最高优先级：VTable 链路 `mount_vtable → scan_vtable_columns → click_cell → 截图核对落点`。
+见 `verify_live.py`（需 Chrome 已在 9222 端口运行）。默认跑只读链路（连接/frame/
+VTable 挂载与扫描）；设置环境变量 `HL_E2E=1` 可额外跑写路径 `enter_module →
+reset_to_initial → screenshot` 及 `click_cell` 落点截图核对（会点击/导航，非只读）。
+最高优先级：VTable 链路 `mount_vtable → scan_vtable_columns → click_cell → 截图核对落点`。

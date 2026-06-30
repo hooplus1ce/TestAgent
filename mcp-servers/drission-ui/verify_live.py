@@ -91,4 +91,27 @@ try:
 except Exception as e:
     print("  make_chromium_options() 失败: %s" % e)
 
+print("\n==== 12. e2e 写路径 (HL_E2E=1 启用，会点击/导航，非只读) ====")
+if os.environ.get("HL_E2E", "").lower() in ("1", "true", "yes"):
+    import server
+    # 覆盖曾因缺 import time 而 NameError 的路径：enter_module / reset_to_initial / screenshot(无path)
+    mod = os.environ.get("HL_E2E_MODULE", "")
+    if mod:
+        step("enter_module(%r)" % mod, lambda: server.enter_module(mod, expand_filter=False))
+        step("screenshot(无path，触发 time.time 默认路径)", lambda: server.screenshot())
+        step("reset_to_initial(%r)" % mod, lambda: server.reset_to_initial(mod))
+    else:
+        print("  未设置 HL_E2E_MODULE（菜单文字），跳过 enter_module 链路")
+    # click_cell 落点截图核对（README 标的最高优先级）——验证 _wait_cell_center_stable 坐标路径
+    if fr is not None:
+        mv = step("mount_vtable(e2e)", lambda: vtable.mount_vtable())
+        if mv and mv.get("ok"):
+            cols = step("scan_vtable_columns(8, e2e)", lambda: vtable.scan_vtable_columns(8))
+            if cols and cols.get("columns"):
+                c0 = cols["columns"][0]
+                step("click_cell落点", lambda: server.click_cell(c0["col"], c0.get("row", 0)))
+                step("screenshot(落点核对)", lambda: server.screenshot())
+else:
+    print("  跳过（设置 HL_E2E=1 启用；HL_E2E_MODULE 指定菜单文字）")
+
 print("\n==== 验证完成 ====")

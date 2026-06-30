@@ -38,7 +38,13 @@ REMOVE_TEST_TYPE = os.environ.get("HL_REMOVE_TEST_TYPE", "").lower() in ("true",
 
 
 def make_chromium_options():
-    """创建 ChromiumOptions（4.2 增强配置）。用于需要启动新浏览器实例的场景。"""
+    """创建 ChromiumOptions（4.2 增强配置）。
+
+    仅用于「启动新浏览器实例」的场景（如自启 Chrome）。connect() 走的是接管已运行
+    Chrome 的路径（Chromium(port)），不会调用本函数，故 HL_CHROME_PATH / HL_EDGE_MODE /
+    HL_PROXY / HL_DISABLE_PDF_PREVIEW / HL_REMOVE_TEST_TYPE 在接管模式下不生效——
+    仅当未来新增 launch 工具时才生效。
+    """
     from DrissionPage import ChromiumOptions
     co = ChromiumOptions()
     if CHROME_PATH:

@@ -10,6 +10,7 @@ import json
 import logging
 import os
 import sys
+import time
 
 # 确保同目录模块可导入（与 verify_live.py 一致）
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -110,7 +111,6 @@ def enter_module(menu_text: str, timeout: float = 8, expand_filter: bool = True)
     ele = tab.ele(f'text:{menu_text}', timeout=3)
     if not ele:
         # 降级：JS 查找点击
-        import json as _json
         _safe_chars = menu_text.replace('\\', '\\\\').replace("'", "\\'")
         res = tab.run_js(
             "var items=[].slice.call(document.querySelectorAll('.ant-menu-item, li[class*=\"ant-menu\"]'));"
@@ -119,7 +119,7 @@ def enter_module(menu_text: str, timeout: float = 8, expand_filter: bool = True)
             + "return JSON.stringify({ok:false});"
         )
         if isinstance(res, str):
-            res = _json.loads(res)
+            res = json.loads(res)
         if not res or not res.get("ok"):
             return {"ok": False, "reason": "menu not found"}
     else:
@@ -129,23 +129,19 @@ def enter_module(menu_text: str, timeout: float = 8, expand_filter: bool = True)
             # 无位置/大小，用 JS 点击
             tab.run_js("arguments[0].click();", ele)
 
-    # 2. 等待 iframe
+    # 2. 等待 iframe 就绪（智能等待：iframe 元素在 DOM 中可见即视为就绪；超时不抛错，由下方 get_active_frame 兜底判定）
     wait_seconds = int(timeout)
-    if old_url is None:
-        for _ in range(wait_seconds * 5):
-            time.sleep(0.2)
-            if browser_session.get_active_frame(tab) is not None:
-                break
-    else:
-        try:
+    try:
+        if old_url is None:
+            tab.wait.ele_displayed(config.ACTIVE_FRAME_LOC, timeout=wait_seconds)
+        else:
             new_fr = browser_session.get_active_frame(tab)
             if new_fr:
                 new_fr.wait.url_change(old_url, timeout=wait_seconds)
-        except Exception:
-            for _ in range(wait_seconds * 5):
-                time.sleep(0.2)
-                if browser_session.get_active_frame(tab) is not None:
-                    break
+            else:
+                tab.wait.ele_displayed(config.ACTIVE_FRAME_LOC, timeout=wait_seconds)
+    except Exception:
+        pass
 
     if browser_session.get_active_frame(tab) is None:
         return {"ok": True, "entered": menu_text, "iframe_ready": False, "reason": "iframe 未在 %.0fs 内出现" % timeout}
@@ -167,11 +163,11 @@ def reset_to_initial(module_text: str, timeout: float = 20) -> dict:
         "if(b){b.click();return JSON.stringify({closed:true});}"
         "return JSON.stringify({closed:false});"
     )
-    # 不要盲等 2s：轮询直到 iframe 消失，说明 tab 已关闭，最多 10s
-    for _ in range(50):
-        time.sleep(0.2)
-        if browser_session.get_active_frame(tab) is None:
-            break
+    # 智能等待：业务 iframe 从 DOM 消失即说明 tab 已关闭（最多 10s）；超时不阻断，交给后续 enter_module
+    try:
+        tab.wait.ele_deleted(config.ACTIVE_FRAME_LOC, timeout=10)
+    except Exception:
+        pass
     return enter_module(module_text, timeout=timeout)
 
 @mcp.tool()
@@ -245,11 +241,10 @@ def dom_tree(selector: str = "", max_depth: int = 6, text: bool = False, save_pa
         """
         js = find_el_js + "return JSON.stringify(" + js.replace('MAXD', str(max_depth)).replace('SHOWTEXT', 'true' if text else 'false') + ")"
         res = target.run_js(js)
-        
-        import json as _json, os as _os
-        tree_dict = _json.loads(res) if isinstance(res, str) else res
+
+        tree_dict = json.loads(res) if isinstance(res, str) else res
         result = {"ok": True, "save_format": save_format}
-        
+
         if save_format == "yml":
             def _yaml(obj, i=0):
                 p = "  " * i
@@ -280,12 +275,12 @@ def dom_tree(selector: str = "", max_depth: int = 6, text: bool = False, save_pa
             result["tree"] = _yaml(tree_dict)
         else:
             result["tree"] = tree_dict
-        
+
         if save_path:
-            _os.makedirs(_os.path.dirname(save_path) or ".", exist_ok=True)
+            os.makedirs(os.path.dirname(save_path) or ".", exist_ok=True)
             with open(save_path, "w", encoding="utf-8") as f:
-                f.write(result["tree"] if save_format == "yml" else _json.dumps(tree_dict, ensure_ascii=False, indent=2))
-            result["saved_to"] = _os.path.abspath(save_path)
+                f.write(result["tree"] if save_format == "yml" else json.dumps(tree_dict, ensure_ascii=False, indent=2))
+            result["saved_to"] = os.path.abspath(save_path)
         
         return result
     except Exception as e:
@@ -295,23 +290,38 @@ def dom_tree(selector: str = "", max_depth: int = 6, text: bool = False, save_pa
 
 @mcp.tool()
 @synchronized
-def scan_page_elements(include_iframe: bool = True) -> dict:
+def scan_page_elements(include_iframe: bool = True, max_items: int = 200) -> dict:
     """扫描页面所有可见交互控件(button/a/input/role=*/canvas)，递归穿透同源 iframe，
-    按 frame 分组返回，含中心坐标。进入模块后第一件事。"""
+    按 frame 分组返回，含中心坐标。进入模块后第一件事。
+    max_items 限制返回元素数（超出截断并标 _truncated），避免吃尽上下文。"""
     tab = browser_session.get_tab()
     script = browser_session.load_js("element-scan.js") + "\nreturn JSON.stringify(scanInteractiveControls());"
     res = tab.run_js(script)
-    return json.loads(res) if isinstance(res, str) else res
+    data = json.loads(res) if isinstance(res, str) else res
+    if isinstance(data, dict):
+        els = data.get("elements", [])
+        if len(els) > max_items:
+            data["elements"] = els[:max_items]
+            data["_truncated"] = True
+            data["returned"] = max_items
+    return data
 
 
 @mcp.tool()
 @synchronized
-def dom_overview() -> dict:
-    """页面俯瞰：顶部页签(含选中态) + 可见按钮文本(含 disabled)。不点击任何元素。"""
+def dom_overview(max_buttons: int = 100) -> dict:
+    """页面俯瞰：顶部页签(含选中态) + 可见按钮文本(含 disabled)。不点击任何元素。
+    max_buttons 限制返回按钮数（超出截断并标 _truncated），避免吃尽上下文。"""
     tab = browser_session.get_tab()
     script = browser_session.load_js("element-scan.js") + "\nreturn JSON.stringify(domOverview());"
     res = tab.run_js(script)
-    return json.loads(res) if isinstance(res, str) else res
+    data = json.loads(res) if isinstance(res, str) else res
+    if isinstance(data, dict):
+        btns = data.get("buttons", [])
+        if len(btns) > max_buttons:
+            data["buttons"] = btns[:max_buttons]
+            data["_truncated"] = True
+    return data
 
 
 @mcp.tool()
@@ -323,7 +333,6 @@ def click(locator: str, in_frame: bool = True, by_js: bool = False, timeout: flo
     ele = browser_session.find(locator, in_frame=in_frame, timeout=timeout)
     if not ele and locator.startswith("text:") and in_frame and " " in locator[5:]:
         # text: 定位含空格文本（如「新 增」）时 DP 可能匹配不到，降级 JS 宽松查找
-        import json as _json
         safe_text = locator[5:].replace("\\", "\\\\").replace("'", "\\'")
         target = browser_session.get_active_frame() or browser_session.get_tab()
         res = target.run_js(
@@ -335,7 +344,7 @@ def click(locator: str, in_frame: bool = True, by_js: bool = False, timeout: flo
             "return JSON.stringify({ok:false});"
         )
         if isinstance(res, str):
-            res = _json.loads(res)
+            res = json.loads(res)
         if res and res.get("ok"):
             return {"ok": True, "locator": locator, "fallback": "js-text"}
         return {"ok": False, "reason": "元素未找到: %s（等待 %.1fs，JS 降级也失败）" % (locator, timeout)}
@@ -403,7 +412,7 @@ def hover(locator: str = None, x: float = None, y: float = None, in_frame: bool 
     """鼠标悬停。给 locator 悬停元素；或给 x,y 悬停坐标。timeout 为查找超时秒数。"""
     tab = browser_session.get_tab()
     if locator:
-        ele = browser_session.find(locator, in_frame=in_frame, timeout=timeout)
+        ele = browser_session.find(locator, in_frame=in_frame, timeout=timeout, wait_clickable=False)
         if not ele:
             return {"ok": False, "reason": "元素未找到: %s（等待 %.1fs）" % (locator, timeout)}
         tab.actions.move_to(ele)
@@ -421,7 +430,7 @@ def screenshot(path: str = None, locator: str = None, in_frame: bool = True, tim
         os.makedirs(config.SHOT_DIR, exist_ok=True)
         path = os.path.join(config.SHOT_DIR, "shot_%d.png" % int(time.time()))
     if locator:
-        ele = browser_session.find(locator, in_frame=in_frame, timeout=timeout)
+        ele = browser_session.find(locator, in_frame=in_frame, timeout=timeout, wait_clickable=False)
         if not ele:
             return {"ok": False, "reason": "元素未找到: %s（等待 %.1fs）" % (locator, timeout)}
         ele.get_screenshot(path=path)
@@ -432,9 +441,10 @@ def screenshot(path: str = None, locator: str = None, in_frame: bool = True, tim
 
 @mcp.tool()
 @synchronized
-def run_js(script: str, in_frame: bool = True) -> dict:
+def run_js(script: str, in_frame: bool = True, max_chars: int = 4000) -> dict:
     """逃生舱：执行任意 JS。in_frame=True 在活动 iframe 内执行。script 内可用 return 返回值。
-    返回值需为 JSON 可序列化(建议 return JSON.stringify(...))。"""
+    返回值需为 JSON 可序列化(建议 return JSON.stringify(...))。
+    max_chars 限制返回文本长度（超出截断并标 _truncated），避免吃尽上下文。"""
     target = browser_session.get_active_frame() if in_frame else None
     if target is None:
         target = browser_session.get_tab()
@@ -443,7 +453,11 @@ def run_js(script: str, in_frame: bool = True) -> dict:
         json.dumps(res)
     except (TypeError, ValueError):
         res = str(res)
-    return {"ok": True, "result": res}
+    truncated = False
+    if isinstance(res, str) and len(res) > max_chars:
+        res = res[:max_chars]
+        truncated = True
+    return {"ok": True, "result": res, "_truncated": True} if truncated else {"ok": True, "result": res}
 
 
 # ==================== VTable（canvas 表格）====================
@@ -538,16 +552,21 @@ def close_modal() -> dict:
     """关闭当前残留的弹窗/通知/消息，避免积累在 DOM 中干扰后续交互。
     每次 detect_modal() 返回非 none 后调用此函数清理。
     通知类 → 点×关闭；业务确认弹窗 → 点取消或×。
+    返回 {ok, closed:[...], errors:[...]}，可判断清理是否成功。
     """
-    modal.close_modal()
-    return {"ok": True}
+    return modal.close_modal()
 
 
 @mcp.tool()
 @synchronized
-def listen_start(targets: str, method: str = None) -> dict:
-    """启动网络监听。targets 为 URL 特征(支持多个用逗号或列表)。method 可选 'POST'/'GET'。"""
+def listen_start(targets, method: str = None) -> dict:
+    """启动网络监听。targets 为 URL 特征：单个字符串、逗号分隔的多个特征、或列表。method 可选 'POST'/'GET'。"""
     tab = browser_session.get_tab()
+    # 统一为列表：逗号分隔 → 拆分去空，避免 "a,b" 被当成单个特征串
+    if isinstance(targets, str):
+        targets = [t.strip() for t in targets.split(",") if t.strip()]
+    elif targets is None:
+        targets = ""
     if method:
         tab.listen.set_method(method)
     tab.listen.start(targets)
@@ -658,21 +677,60 @@ def listen_ws_wait(count: int = 1, timeout: float = 10) -> dict:
 @mcp.tool()
 @synchronized
 def new_context(proxy: str = None) -> dict:
-    """创建独立浏览器上下文(4.2 BrowserContext)。隔离 cookie/代理，用于多账号或干净测试环境。
+    """创建独立浏览器上下文(4.2 BrowserContext)，隔离 cookie/代理。用于多账号或干净测试环境。
     proxy 格式: 'http://user:password@ip:port'。
-    返回 {ok, context_id, tab_ids}。
-    """
+    返回稳定 context_id（可传给 switch_context 切换操作）与该上下文 tab 列表。"""
     browser = browser_session.get_browser()
-    ctx = browser.new_context(proxy=proxy) if proxy else browser.new_context()
-    return {"ok": True, "context_id": id(ctx), "tab_ids": ctx.tab_ids}
+    try:
+        ctx = browser.new_context(proxy=proxy) if proxy else browser.new_context()
+    except Exception as e:
+        return {"ok": False, "reason": "创建上下文失败: %s" % e}
+    cid = browser_session.register_context(ctx)
+    tids = list(getattr(ctx, "tab_ids", []) or [])
+    return {"ok": True, "context_id": cid, "tab_ids": tids,
+            "hint": "调用 switch_context(%d) 切换到该上下文操作" % cid if tids
+            else "上下文暂无 tab，可能需先在该上下文 new_tab"}
+
+
+@mcp.tool()
+@synchronized
+def switch_context(context_id: int) -> dict:
+    """切换活动 tab 到指定 context 的首个 tab（配合 new_context）。返回新 tab url。"""
+    tab = browser_session.switch_context(context_id)
+    if tab is None:
+        return {"ok": False, "reason": "context 不存在或无可用 tab", "context_id": context_id}
+    return {"ok": True, "url": getattr(tab, "url", "") or "", "context_id": context_id}
+
+
+@mcp.tool()
+@synchronized
+def list_contexts() -> dict:
+    """列出所有已注册的浏览器上下文（配合 new_context）。"""
+    return {"ok": True, "contexts": browser_session.list_contexts()}
 
 
 @mcp.tool()
 @synchronized
 def set_permission(perm: str, allow: bool = True) -> dict:
-    """设置浏览器权限(4.2 新增)。perm: 'camera'/'geolocation'/'notifications'/'midi' 等。"""
+    """设置浏览器权限(4.2 新增)。perm: 'camera'/'geolocation'/'notifications'/'midi' 等。
+    allow=False 撤销权限；若该权限仅支持开启（无 deny 形式），返回 ok=False 并说明。"""
     browser = browser_session.get_browser()
-    getattr(browser.set.perm, perm)() if allow else None
+    try:
+        perm_fn = getattr(browser.set.perm, perm)
+    except AttributeError:
+        return {"ok": False, "reason": "不支持的权限: %s" % perm}
+    try:
+        if allow:
+            perm_fn()
+        else:
+            # deny 路径：尝试 (allow=False) 形参；不支持则明确告知而非静默返回 ok
+            try:
+                perm_fn(allow=False)
+            except TypeError:
+                return {"ok": False, "reason": "deny 不支持（权限 %s 仅可开启）" % perm,
+                        "perm": perm, "allow": False}
+    except Exception as e:
+        return {"ok": False, "reason": "设置权限失败: %s" % e}
     return {"ok": True, "perm": perm, "allow": allow}
 
 

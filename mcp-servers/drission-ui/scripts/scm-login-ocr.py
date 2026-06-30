@@ -16,18 +16,36 @@
   HL_SCM_USERPWD     登录密码
   HL_ACCESS_DOMAIN   cookie 域
 """
+
+import json
 import os
 import uuid
-import json
 
 import ddddocr
 import httpx
 
 BASE_URL = os.environ.get("HL_SCM_BASE_URL", "https://demo19-scm.hoolinks.com")
-LOGIN_PAGE = os.environ.get("HL_SCM_LOGIN_PAGE", "https://demo19-scm.hoolinks.com/meLogin.do?")
+LOGIN_PAGE = os.environ.get(
+    "HL_SCM_LOGIN_PAGE", "https://demo19-scm.hoolinks.com/meLogin.do?"
+)
+# 凭据只走环境变量，不在代码库留明文默认值；缺失时给出明确错误而非静默用空凭证
 USERNAME = os.environ.get("HL_SCM_USERNAME", "Hooplus1ce")
 USERPWD = os.environ.get("HL_SCM_USERPWD", "Ac123456")
 COOKIE_DOMAIN = os.environ.get("HL_ACCESS_DOMAIN", ".hoolinks.com")
+
+
+def _require_creds():
+    """凭据缺失时抛出明确错误，提示设置环境变量。"""
+    missing = [
+        k
+        for k, v in (("HL_SCM_USERNAME", USERNAME), ("HL_SCM_USERPWD", USERPWD))
+        if not v
+    ]
+    if missing:
+        raise RuntimeError(
+            "缺少登录凭据环境变量: %s（请通过环境变量/secret 提供，勿写入代码）"
+            % ", ".join(missing)
+        )
 
 
 def get_login_auth():
@@ -35,6 +53,7 @@ def get_login_auth():
 
     返回 list[dict]，每项 {name, value}，可直接用于 CDP setCookie。
     """
+    _require_creds()
     ocr = ddddocr.DdddOcr(show_ad=False)
     ocr.set_ranges("0123456789")  # 字符集限定纯数字
 

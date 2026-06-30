@@ -97,10 +97,13 @@ def close_modal(tab=None):
     """关闭当前残留的弹窗/通知/消息，避免积累在 DOM 中干扰后续操作。
     通知→点×关闭；业务弹窗→点取消或×。
     使用 DrissionPage 原生方法 + wait.ele_deleted 等待关闭完成。
+    返回 {ok, closed:[...], errors:[...]}，调用方可判断清理是否真正成功。
     """
     tab = tab or browser_session.get_tab()
     fr = browser_session.get_active_frame(tab)
     target = fr if fr is not None else tab
+    closed = []
+    errors = []
     try:
         # 关闭通知
         notices = target.eles('css:.ant-notification-notice', timeout=0.5)
@@ -108,15 +111,23 @@ def close_modal(tab=None):
             btn = n.ele('css:.ant-notification-notice-close', timeout=0.3)
             if btn:
                 btn.click()
-                n.wait.ele_deleted(timeout=2)
+                try:
+                    n.wait.ele_deleted(timeout=2)
+                    closed.append("notification")
+                except Exception:
+                    errors.append("notification: 等待关闭超时")
 
         # 关闭消息
         for m in target.eles('css:.ant-message-notice', timeout=0.3):
             btn = m.ele('css:.ant-message-notice-close', timeout=0.3)
-            if btn:
-                btn.click()
-            else:
-                m.run_js("this.remove()")
+            try:
+                if btn:
+                    btn.click()
+                else:
+                    m.run_js("this.remove()")
+                closed.append("message")
+            except Exception as e:
+                errors.append("message: %s" % e)
 
         # 关闭业务弹窗（点取消优先，其次×）
         modal = target.ele('css:.ant-modal-content', timeout=0.5)
@@ -124,11 +135,19 @@ def close_modal(tab=None):
             cancel = modal.ele('css:.ant-btn:not(.ant-btn-primary)', timeout=0.3)
             if cancel:
                 cancel.click()
-                modal.wait.ele_deleted(timeout=3)
             else:
                 close_x = modal.ele('css:.ant-modal-close', timeout=0.3)
                 if close_x:
                     close_x.click()
+                else:
+                    errors.append("modal: 无可点击的取消/关闭按钮")
+            if "modal: 无可点击的取消/关闭按钮" not in errors:
+                try:
                     modal.wait.ele_deleted(timeout=3)
+                    closed.append("modal")
+                except Exception:
+                    errors.append("modal: 等待关闭超时")
     except Exception as e:
         logger.debug("close_modal 失败: %s", e)
+        errors.append(str(e))
+    return {"ok": not errors, "closed": closed, "errors": errors}
