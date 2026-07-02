@@ -49,8 +49,8 @@ def synchronized(fn):
 @mcp.tool()
 @synchronized
 def connect(port: int = config.DEFAULT_PORT, target_hint: str = config.DEFAULT_TARGET_HINT) -> dict:
-    """接管 port 上已运行的 Chrome（不启动新实例），选中目标 tab。前置：Chrome 须以
-    --remote-debugging-port=<port> 启动。返回当前 url/title 与所有 tab 列表。"""
+    """连接 Chrome。先检查 port 上是否已有 Chrome 实例，有则接管；无则根据
+    dp_configs.ini 配置自动启动新实例。返回当前 url/title 与所有 tab 列表。"""
     tab = browser_session.connect(port, target_hint)
     return {"ok": True, "url": tab.url, "title": tab.title, "tabs": browser_session.list_tabs()}
 
@@ -191,14 +191,19 @@ def get_active_frame() -> dict:
 
 @mcp.tool()
 @synchronized
-def dom_tree(selector: str = "", max_depth: int = 6, text: bool = False, save_path: str = "", save_format: str = "yml") -> dict:
+def dom_tree(selector: str = "", max_depth: int = 6, max_children: int = 50,
+             text: bool = False, text_limit: int = 100, show_hidden: bool = False,
+             save_path: str = "", save_format: str = "yml") -> dict:
     """打印页面或元素的 DOM 树结构（结构化 JSON，便于 AI 识别）。
-    
+
     Args:
         selector: CSS 选择器，为空则从 body 开始
         max_depth: 最大递归深度（默认 6）
-        text: 是否包含元素文本内容
-        save_path: 指定文件路径则同时写入磁盘（如 "screenshots/dom-tree.json"）
+        max_children: 每节点最多收录子节点数（默认 50），超出在 _more 标注
+        text: 是否提取元素文本
+        text_limit: 每节点文本最大字符数（默认 100），同时整树文本总量限制 5000 字符
+        show_hidden: 是否包含 script/style/comment 等隐藏节点（默认 False）
+        save_path: 指定文件路径则同时写入磁盘（如 "screenshots/dom-tree.yml"）
         save_format: 输出格式，"json" 或 "yml"（默认 yml，更省 token）
     """
     fr = browser_session.get_active_frame()
@@ -210,12 +215,23 @@ def dom_tree(selector: str = "", max_depth: int = 6, text: bool = False, save_pa
                 return {"ok": False, "reason": f"selector 未匹配: {selector}"}
         else:
             root = target
-        find_el_js = "var el = document.querySelector('" + selector.replace("'", "\\'") + "');" if selector else "var el = document.body;"
-        
+
+        # 用 querySelector 找根元素（与上面 DrissionPage 的 ele 双重验证）
+        escaped = selector.replace("'", "\\'")
+        find_el = ("var el = document.querySelector('" + escaped + "');"
+                   if selector else "var el = document.body;")
+
+        # 跳过标签列表
+        skip_tags = "" if show_hidden else (
+            "var SKIP = {'script':1,'style':1,'link':1,'meta':1,'noscript':1,"
+            "'template':1,'#comment':1};")
+
         js = r"""
-        (function walk(el, depth, maxD, showText) {
+        (function walk(el, depth, maxD, maxC, showT, txtLim) {
             if (!el || depth > maxD) return null;
-            var node = { tag: (el.tagName || '#text').toLowerCase() };
+            var tag = (el.tagName || '#text').toLowerCase();
+            """ + ("" if show_hidden else "if (SKIP[tag]) return null;") + r"""
+            var node = { tag: tag };
             if (el.id) node.id = el.id;
             if (el.className && typeof el.className === 'string') {
                 var cls = el.className.trim().split(/\s+/).filter(Boolean);
@@ -223,23 +239,43 @@ def dom_tree(selector: str = "", max_depth: int = 6, text: bool = False, save_pa
             }
             var role = el.getAttribute('role');
             if (role) node.role = role;
-            if (showText && el.childNodes && el.childNodes.length === 1 && el.childNodes[0].nodeType === 3) {
-                var t = (el.textContent || '').trim().substring(0, 80);
+            var name = el.getAttribute('name');
+            if (name) node.name = name;
+            var typ = el.getAttribute('type');
+            if (typ) node.type = typ;
+            var href = el.getAttribute('href');
+            if (href) node.href = href.substring(0, 120);
+            var src = el.getAttribute('src');
+            if (src) node.src = src.substring(0, 120);
+            var placeholder = el.getAttribute('placeholder');
+            if (placeholder) node.placeholder = placeholder;
+            if (el.disabled) node.disabled = true;
+            var val = el.getAttribute('value');
+            if (val && tag === 'input' && typ !== 'hidden') node.value = val.substring(0, 60);
+
+            // 文本提取：非 script/style 的任意元素，取 textContent 前 N 字符
+            if (showT && tag !== 'script' && tag !== 'style') {
+                var t = (el.textContent || '').trim().substring(0, txtLim);
                 if (t) node.text = t;
             }
+
             if (depth < maxD && el.children && el.children.length > 0) {
                 var children = [];
-                for (var i = 0; i < el.children.length && children.length < 20; i++) {
-                    var child = walk(el.children[i], depth + 1, maxD, showText);
+                for (var i = 0; i < el.children.length && children.length < maxC; i++) {
+                    var child = walk(el.children[i], depth + 1, maxD, maxC, showT, txtLim);
                     if (child) children.push(child);
                 }
                 if (children.length > 0) node.children = children;
-                if (el.children.length > 20) node._more = el.children.length - 20;
+                if (el.children.length > maxC) node._more = el.children.length - maxC;
             }
             return node;
-        })(el, 0, MAXD, SHOWTEXT)
+        })(el, 0, MAXD, MAXC, SHOWT, TXTLIM)
         """
-        js = find_el_js + "return JSON.stringify(" + js.replace('MAXD', str(max_depth)).replace('SHOWTEXT', 'true' if text else 'false') + ")"
+        js = (find_el + skip_tags + "return JSON.stringify(" +
+              js.replace('MAXD', str(max_depth))
+                .replace('MAXC', str(max_children))
+                .replace('SHOWT', 'true' if text else 'false')
+                .replace('TXTLIM', str(text_limit)) + ")")
         res = target.run_js(js)
 
         tree_dict = json.loads(res) if isinstance(res, str) else res
@@ -279,9 +315,10 @@ def dom_tree(selector: str = "", max_depth: int = 6, text: bool = False, save_pa
         if save_path:
             os.makedirs(os.path.dirname(save_path) or ".", exist_ok=True)
             with open(save_path, "w", encoding="utf-8") as f:
-                f.write(result["tree"] if save_format == "yml" else json.dumps(tree_dict, ensure_ascii=False, indent=2))
+                f.write(result["tree"] if save_format == "yml"
+                        else json.dumps(tree_dict, ensure_ascii=False, indent=2))
             result["saved_to"] = os.path.abspath(save_path)
-        
+
         return result
     except Exception as e:
         return {"ok": False, "reason": str(e)}

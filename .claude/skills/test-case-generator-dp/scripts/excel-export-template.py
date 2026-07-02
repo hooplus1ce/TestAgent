@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # Excel 测试用例导出模板
-# 用法：在 eval kernel 中执行，test_cases 变量由 AI 在 Phase 4 填入
+# 用法：由 AI 在 Phase 4 通过 bash 执行此脚本，test_cases 变量在脚本末尾填入
 
 # ============================================================
 # 可配置变量 — Phase 4 执行时按实际项目修改
@@ -22,13 +22,13 @@ wb = Workbook()
 ws1 = wb.active
 ws1.title = "测试用例"
 
-HEADERS_18 = [
+HEADERS_19 = [
     "用例编号", "用例标题", "级别", "验证点",
     "一级模块", "二级模块", "测试类型", "功能",
     "前置条件", "测试步骤", "测试数据", "预期结果",
-    "测试结果", "执行人", "执行时间", "编写人", "编写时间", "备注"
+    "测试结果", "执行人", "执行时间", "编写人", "编写时间", "备注", "自动化建议"
 ]
-ws1.append(HEADERS_18)
+ws1.append(HEADERS_19)
 
 header_fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
 header_font = Font(bold=True, color="FFFFFF", size=11, name="微软雅黑")
@@ -58,7 +58,7 @@ def apply_priority_style(cell):
 
 # ============================================================
 # test_cases — AI 在 Phase 4 填入实际用例数据
-# 格式：每行 18 个字段，对应 HEADERS_18 顺序
+# 格式：每行 19 个字段，对应 HEADERS_19 顺序
 # 多行内容用 \n 连接，导出后自动换行显示
 # ============================================================
 test_cases = [
@@ -66,7 +66,8 @@ test_cases = [
     # [f"{ENTERPRISE_PREFIX}_MOD_001", "用例标题", "中级", "验证点",
     #  "一级模块", "二级模块", "功能测试", "查询",
     #  "前置条件", "测试步骤", "测试数据", "预期结果",
-    #  "", "", "", DEFAULT_AUTHOR, date.today().isoformat(), ""],
+    #  "", "", "", DEFAULT_AUTHOR, date.today().isoformat(), "",
+    #  "自动化建议"],
 ]
 
 for row_data in test_cases:
@@ -74,18 +75,18 @@ for row_data in test_cases:
     row_idx = ws1.max_row
     for cell_idx, cell in enumerate(ws1[row_idx], 1):
         cell.border = thin_border
-        if cell_idx in (2, 4, 9, 10, 11, 12):  # B/D/I/J/K/L 列左对齐
+        if cell_idx in (2, 4, 9, 10, 11, 12, 19):  # B/D/I/J/K/L/S 列左对齐
             cell.alignment = Alignment(horizontal="left", vertical="center", wrap_text=True)
         else:
             cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
     apply_priority_style(ws1.cell(row=row_idx, column=3))
 
-COL_WIDTHS = [18, 42, 12, 42, 18, 18, 18, 12, 50, 44, 44, 50, 10, 10, 12, 12, 12, 0]
+COL_WIDTHS = [18, 42, 12, 42, 18, 18, 18, 12, 50, 44, 44, 50, 10, 10, 12, 12, 12, 0, 58]
 for i, w in enumerate(COL_WIDTHS, 1):
     ws1.column_dimensions[chr(64 + i)].width = w
 
 ws1.freeze_panes = "E2"
-ws1.auto_filter.ref = f"A1:R{ws1.max_row}"
+ws1.auto_filter.ref = f"A1:{ws1.cell(1, ws1.max_column).column_letter}{ws1.max_row}"
 
 # ===================== Sheet 2: 测试数据 =====================
 ws2 = wb.create_sheet(title="测试数据")

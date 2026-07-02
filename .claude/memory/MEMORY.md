@@ -1,0 +1,1 @@
+- [弹窗交互策略](modal-interaction-strategy.md) — 与SCM弹窗交互必须先dom_tree分析DOM结构再用精确选择器操作

@@ -2,10 +2,9 @@
 // =============================================================
 // 在 *iframe(frame) 上下文* 中通过 frame.run_js 执行：
 //   1. mountVTable()        → 把 VTable 实例挂到 window._vtable
-//   2. scanColumns(maxCol)  → 返回列定义 + 表头图标的【帧内坐标】frameX/frameY
-// 坐标说明：本脚本只产出相对 iframe 自身视口的坐标(frameX/frameY)；
-//          Python 侧再叠加 frame 元素在顶层页面的偏移，得到可供
-//          tab.actions.move_to((x,y)) 使用的顶层视口坐标。
+//   2. scanColumns(maxCol)  → 返回列定义 + 表头图标的【顶层视口坐标】viewportX/viewportY
+// 坐标说明：本脚本通过 window.frameElement.getBoundingClientRect()
+//          直接产出顶层视口坐标(viewportX/viewportY)，Python 侧不再叠加偏移。
 //          （原 puppeteer 版在 iframe 内查询顶层 iframe 元素恒为 null，是隐患，此处移除。）
 
 // ============ 1. 挂载 VTable 实例 ============
@@ -140,6 +139,8 @@ function scanColumns(maxCol) {
   // .vtable 元素相对【iframe 自身视口】的偏移
   var vtEl = document.querySelector('.vtable') || document.querySelector('[class*="vtable"]');
   var vtRect = vtEl ? vtEl.getBoundingClientRect() : { left: 0, top: 0 };
+  // iframe 在顶层视口的偏移（JS 一次算完，Python 不再叠加）
+  var ifrRect = window.frameElement ? window.frameElement.getBoundingClientRect() : { left: 0, top: 0 };
 
   for (var col = 0; col < maxCol; col++) {
     var bodyInfo = classifyColumnBody(t, col);
@@ -161,12 +162,12 @@ function scanColumns(maxCol) {
         bodyBehavior: bodyInfo.behavior, bodyDetail: bodyInfo.detail,
         bodyType: bodyInfo.bodyType, bodyEditable: bodyInfo.editable,
         icons: icons.map(function (ic) {
-          // 帧内坐标 = .vtable 在 iframe 视口的偏移 + 图标在场景图的中心坐标
+          // 顶层视口坐标 = iframe 偏移 + .vtable 偏移 + 图标中心坐标（一次算完）
           return {
             name: ic.name, func: ic.func,
             width: ic.width, height: ic.height,
-            frameX: Math.round((vtRect.left + ic.centerX) * 10) / 10,
-            frameY: Math.round((vtRect.top + ic.centerY) * 10) / 10
+            viewportX: Math.round((ifrRect.left + vtRect.left + ic.centerX) * 10) / 10,
+            viewportY: Math.round((ifrRect.top + vtRect.top + ic.centerY) * 10) / 10
           };
         })
       };

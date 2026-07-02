@@ -1,13 +1,13 @@
-"""会话维持：cookie 缓存（内存）、CDP 注入刷新、OCR 免登、过期检测。
+"""会话维持：cookie 缓存（内存）、DrissionPage 内置注入、OCR 免登、过期检测。
 
 移植自 cookie-cache.js / scm-login.js / scm-login-ocr.py。
-cookie 缓存从原 page.__scmCookieCache（JS 对象属性）改为模块级内存变量。
+cookie 注入使用 DrissionPage 内置的 tab.set.cookies() 方法，自动处理域名解析、
+格式校验、__Host-/__Secure- 前缀等，无需手写 CDP Network.setCookie。
 """
 import importlib.util
 import json
 import logging
 import os
-import uuid
 
 import browser_session
 import config
@@ -15,17 +15,10 @@ import config
 logger = logging.getLogger("drission-ui")
 
 SCM_ADMIN_URL = config.SCM_ADMIN_URL
-COOKIE_DOMAIN = config.COOKIE_DOMAIN
-SCM_ACCESS_DOMAIN = config.SCM_ACCESS_DOMAIN
 NEEDED_COOKIES = config.NEEDED_COOKIES
 
 # 内存缓存：{name: value}
 _cookie_cache: dict = {}
-
-# cookie 注入参数：secure 按 SCM_ADMIN_URL 的 scheme 决定（http 下必须 False，否则 CDP 静默写入失败）；
-# sameSite 可经 HL_COOKIE_SAMESITE 覆盖（默认 Lax）。
-_COOKIE_SECURE = SCM_ADMIN_URL.lower().startswith("https://")
-_COOKIE_SAMESITE = os.environ.get("HL_COOKIE_SAMESITE", "Lax")
 
 # OCR 登录脚本路径（内部化：scripts/scm-login-ocr.py）
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -75,13 +68,19 @@ def get_cached_cookies():
 
 
 def _inject_cookies(cookies: list):
-    """通过 CDP 把 cookies 注入到 tab。secure 按 SCM_ADMIN_URL 的 scheme 决定（http 下 False，避免静默写入失败）。"""
+    """用 DrissionPage 内置方法注入 cookies，自动处理域名解析、格式校验、前缀处理。
+
+    注意：OCR 登录返回的 cookies 不含 domain 字段，需手动补上（DrissionPage 的
+    set_tab_cookies 在没有 domain 时从页面 URL 解析，若页面不在目标域则会失败）。
+    """
     tab = browser_session.get_tab()
+    enriched = []
     for c in cookies:
-        tab.run_cdp("Network.setCookie",
-                    name=c["name"], value=c["value"],
-                    domain=SCM_ACCESS_DOMAIN, path="/",
-                    secure=_COOKIE_SECURE, sameSite=_COOKIE_SAMESITE)
+        c = dict(c)
+        if "domain" not in c:
+            c["domain"] = config.SCM_ACCESS_DOMAIN
+        enriched.append(c)
+    tab.set.cookies(enriched)
 
 
 def refresh_session():
@@ -95,7 +94,7 @@ def refresh_session():
     _inject_cookies(cookies)
     tab = browser_session.get_tab()
     tab.refresh()
-    tab.wait.load_complete(timeout=10)  # 等页面加载完成，不用固定睡 3s
+    tab.wait.doc_loaded(timeout=10)  # 等页面加载完成
     cache_session()  # 服务端可能轮换 cookie，重新缓存
     return {"ok": True}
 
@@ -111,7 +110,7 @@ def login_ocr():
     if nav_ok is False:
         return {"ok": False, "reason": "导航失败: status=%s" % getattr(nav, "status", "unknown"),
                 "cookies": [c["name"] for c in auth_cookies]}
-    tab.wait.load_complete(timeout=15)  # 等页面加载完成，不用固定睡 3s
+    tab.wait.doc_loaded(timeout=15)  # 等页面加载完成
     cache_session()
     return {"ok": True, "cookies": [c["name"] for c in auth_cookies], "url": tab.url, "title": tab.title,
             "nav_status": getattr(nav, "status", None)}

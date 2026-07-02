@@ -49,10 +49,13 @@ function getVisualCellText(vtable, col, row) {
   } catch (e) { return null; }
 }
 
-// ---- 单元格中心【帧内坐标】（供点击）----
-function getCellCenterFrame(col, row) {
+// ---- 单元格中心【顶层视口坐标】（供 click_xy / actions.move_to 直接使用）----
+// 内部通过 window.frameElement.getBoundingClientRect() 一次算到顶层视口，
+// Python 侧不再叠加 iframe 偏移。
+function getCellCenterViewport(col, row) {
   var t = window._vtable;
   if (!t) return null;
+  var ifrRect = window.frameElement ? window.frameElement.getBoundingClientRect() : { left: 0, top: 0 };
   var vtEl = document.querySelector('.vtable') || document.querySelector('[class*="vtable"]');
   var vtRect = vtEl ? vtEl.getBoundingClientRect() : { left: 0, top: 0 };
   var cx = null, cy = null;
@@ -76,8 +79,8 @@ function getCellCenterFrame(col, row) {
   }
   if (cx === null) return null;
   return {
-    frameX: Math.round((vtRect.left + cx) * 10) / 10,
-    frameY: Math.round((vtRect.top + cy) * 10) / 10
+    viewportX: Math.round((ifrRect.left + vtRect.left + cx) * 10) / 10,
+    viewportY: Math.round((ifrRect.top + vtRect.top + cy) * 10) / 10
   };
 }
 

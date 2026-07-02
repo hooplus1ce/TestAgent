@@ -1,4 +1,4 @@
-# 字段规范 — 18 字段完整定义
+# 字段规范 — 19 字段完整定义
 
 > 本文件是 Excel 测试用例字段的**唯一权威来源**。SKILL.md 的 Phase 2、`excel-export-template.py` 的 `HEADERS_18` 都必须与本表对齐。
 > ⚠️ 历史问题：v1 的 SKILL.md Phase 2 字段表存在「L 预期结果」重复占位、I/J/K 编号错乱的问题，本文件已修正。
@@ -25,10 +25,11 @@
 | **P** | 编写人 | `"编写人"` | ✅ | 初始填 `DEFAULT_AUTHOR`，可被用户覆盖 |
 | **Q** | 编写时间 | `"编写时间"` | ✅ | `date.today().isoformat()`，自动填充 |
 | **R** | 备注 | `"备注"` | ❌ | 骨架用例填 `[待确认]`，其余留空 |
+| **S** | 自动化建议 | `"自动化建议"` | ✅ | 面向 drission-ui MCP 自动执行的动作与断言建议，如使用 `scan_filter_fields`、`input`、`select_date_range`、`get_column_values`、`listen_wait` 等 |
 
 ## 与 Python 模板的对应关系
 
-`excel-export-template.py` 中 `HEADERS_18` 数组顺序 = 上表 A→R 顺序，**一一对应，无错位**。AI 在 Phase 4 填 `test_cases` 时，每行 list 的 18 个元素按下标 0-17 依次填入：
+`excel-export-template.py` 中 `HEADERS_19` 数组顺序 = 上表 A→S 顺序，**一一对应，无错位**。AI 在 Phase 4 填 `test_cases` 时，每行 list 的 19 个元素按下标 0-18 依次填入：
 
 ```python
 test_cases = [
@@ -43,7 +44,8 @@ test_cases = [
      "制令单号:MO202606",                            # K 测试数据
      "表格所有制令单号均包含「MO202606」，无不符合记录", # L 预期结果
      "", "", "",                                    # M/N/O 执行信息（空）
-     DEFAULT_AUTHOR, date.today().isoformat(), ""]  # P/Q/R
+     DEFAULT_AUTHOR, date.today().isoformat(), "",     # P/Q/R
+     "使用 input 设置筛选值，click 查询，get_column_values 断言结果"]  # S 自动化建议
 ]
 ```
 
@@ -59,7 +61,7 @@ test_cases = [
 
 ## 模板样式规则（与 `excel-export-template.py` 对齐）
 
-- **左对齐列**：B 标题、D 验证点、I 前置条件、J 测试步骤、K 测试数据、L 预期结果
+- **左对齐列**：B 标题、D 验证点、I 前置条件、J 测试步骤、K 测试数据、L 预期结果、S 自动化建议
 - **居中列**：其余所有列
 - **级别配色（C 列）**：高级 红 / 中级 橙 / 低级 黄
 - **多行内容**：用 `\n` 连接，导出后 `wrap_text=True` 自动换行

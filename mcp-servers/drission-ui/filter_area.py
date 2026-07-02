@@ -15,12 +15,14 @@ _lock = browser_session._lock
 
 
 def expand_filter_area(tab=None):
-    """展开筛选区：将弹窗模式切换为内联模式，并点击展开显示所有筛选字段。
+    """展开筛选区：优先切换为内联模式，并点击展开显示所有筛选字段。
 
     流程:
-      0. 先检测当前模式：若已是内联模式且已展开 → 直接返回，不操作
-      1. 非内联模式 → 点击 anticon-bars → 切「内联模式」
-      2. 折叠状态 → 点击「展开▼」
+      0. 若已是内联模式且已展开 → 直接返回
+      1. 点击 anticon-bars 打开“内联模式/弹窗模式”菜单，优先切换到“内联模式”
+      2. 内联模式下若仍折叠 → 点击「展开▼」
+
+    重要：不能在弹窗模式下直接点击「展开▼」，否则会触发“高级搜索”弹窗。
     """
     with _lock:
         tab = tab or browser_session.get_tab()
@@ -28,111 +30,109 @@ def expand_filter_area(tab=None):
         if fr is None:
             return {"ok": False, "reason": "未找到活动 iframe"}
         try:
-            # 等待筛选区基础元素渲染就绪再执行 JS 检测
             try:
-                fr.wait.ele_loaded('css:button', timeout=5)
+                fr.wait.eles_loaded('css:.page-query', timeout=5)
             except Exception:
-                pass  # 即使个别按钮未 load，也继续尝试 JS 检测
-            logger.debug("filter area buttons loaded, running JS detection")
-            # Step 0: 用 JS 检测展开/收起按钮（DrissionPage 不支持 :has-text 伪类）
-            btn_state = fr.run_js("""
-                var btns=document.querySelectorAll('button');
-                for(var i=0;i<btns.length;i++){
-                    var t=btns[i].textContent.trim().replace(/\\s+/g,'');
-                    if(t.indexOf('展开')>=0&&btns[i].offsetParent!==null)
-                        return JSON.stringify({type:'expand'});
-                    if(t.indexOf('收起')>=0&&btns[i].offsetParent!==null)
-                        return JSON.stringify({type:'collapse'});
-                }
-                return JSON.stringify({type:'none'});
-            """)
-            if isinstance(btn_state, str):
-                btn_state = json.loads(btn_state)
-            if btn_state and btn_state.get('type') == 'expand':
-                # 点击「展开」按钮（用 JS 点击，避免 CSS selector 问题）
-                fr.run_js("""
-                    var btns=document.querySelectorAll('button');
-                    for(var i=0;i<btns.length;i++){
-                        var t=btns[i].textContent.trim().replace(/\\s+/g,'');
-                        if(t.indexOf('展开')>=0){btns[i].click();break;}
+                pass
+
+            def _state():
+                res = fr.run_js(r"""
+                    var q=document.querySelector('.page-query');
+                    if(!q)return JSON.stringify({hasQuery:false});
+                    function visible(el){
+                        if(!el)return false;
+                        var s=getComputedStyle(el);
+                        return s.display!=='none' && s.visibility!=='hidden' && el.offsetWidth>0 && el.offsetHeight>0;
                     }
+                    var btns=[].slice.call(q.querySelectorAll('button'));
+                    var expand=btns.find(function(b){return visible(b)&&b.textContent.replace(/\s+/g,'').indexOf('展开')>=0;});
+                    var collapse=btns.find(function(b){return visible(b)&&b.textContent.replace(/\s+/g,'').indexOf('收起')>=0;});
+                    var bars=btns.find(function(b){return visible(b)&&b.querySelector('i.anticon-bars');});
+                    var remaining=q.querySelector('.legions-pro-quick-filter-remaining');
+                    return JSON.stringify({
+                        hasQuery:true,
+                        hasExpand:!!expand,
+                        hasCollapse:!!collapse,
+                        hasBars:!!bars,
+                        hasRemaining:!!remaining,
+                        fieldText:q.textContent.trim().slice(0,120)
+                    });
                 """)
-                # 智能等待：展开完成后「收起」按钮出现即视为就绪（最多 3s）
+                return json.loads(res) if isinstance(res, str) else (res or {})
+
+            st = _state()
+            if st.get('hasRemaining') and st.get('hasCollapse'):
+                return {"ok": True, "reason": "筛选区已是内联展开模式"}
+
+            # Step 1: 优先切换到内联模式，避免点击「展开」触发高级搜索弹窗。
+            if st.get('hasBars'):
+                fr.run_js(r"""
+                    var q=document.querySelector('.page-query');
+                    function visible(el){
+                        if(!el)return false;
+                        var s=getComputedStyle(el);
+                        return s.display!=='none' && s.visibility!=='hidden' && el.offsetWidth>0 && el.offsetHeight>0;
+                    }
+                    var btn=[].slice.call(q.querySelectorAll('button')).find(function(b){return visible(b)&&b.querySelector('i.anticon-bars');});
+                    if(btn)btn.click();
+                """)
+                try:
+                    fr.wait.ele_displayed('css:.ant-dropdown:not(.ant-dropdown-hidden)', timeout=3)
+                except Exception:
+                    pass
+
+                mode_res = fr.run_js(r"""
+                    var menus=[].slice.call(document.querySelectorAll('.ant-dropdown:not(.ant-dropdown-hidden)'));
+                    var menu=menus.find(function(m){return m.textContent.indexOf('内联模式')>=0 && m.textContent.indexOf('弹窗模式')>=0;});
+                    if(!menu)return JSON.stringify({ok:false, reason:'mode menu not found'});
+                    var items=[].slice.call(menu.querySelectorAll('.ant-dropdown-menu-item'));
+                    var inline=items.find(function(i){return i.textContent.trim().indexOf('内联模式')>=0;});
+                    var selected=items.find(function(i){return i.className.indexOf('ant-dropdown-menu-item-selected')>=0;});
+                    var selectedText=selected?selected.textContent.trim():'';
+                    if(inline && selectedText.indexOf('内联模式')<0){inline.click();return JSON.stringify({ok:true, switched:true});}
+                    document.body.click();
+                    return JSON.stringify({ok:true, switched:false, selected:selectedText});
+                """)
+                try:
+                    mode_res = json.loads(mode_res) if isinstance(mode_res, str) else mode_res
+                except Exception:
+                    mode_res = {}
+                try:
+                    fr.wait.ele_hidden('css:.ant-dropdown:not(.ant-dropdown-hidden)', timeout=3)
+                except Exception:
+                    pass
+
+                st = _state()
+                if st.get('hasRemaining') and st.get('hasCollapse'):
+                    return {"ok": True, "reason": "已切换为内联展开模式"}
+
+            # Step 2: 内联模式下展开剩余筛选项。
+            if st.get('hasExpand'):
+                fr.run_js(r"""
+                    var q=document.querySelector('.page-query');
+                    function visible(el){
+                        if(!el)return false;
+                        var s=getComputedStyle(el);
+                        return s.display!=='none' && s.visibility!=='hidden' && el.offsetWidth>0 && el.offsetHeight>0;
+                    }
+                    var btn=[].slice.call(q.querySelectorAll('button')).find(function(b){return visible(b)&&b.textContent.replace(/\s+/g,'').indexOf('展开')>=0;});
+                    if(btn)btn.click();
+                """)
                 try:
                     fr.wait.ele_displayed('text:收起', timeout=3)
                 except Exception:
                     pass
+                st = _state()
+                if st.get('hasRemaining') or st.get('hasCollapse'):
+                    return {"ok": True, "reason": "筛选区已以内联模式展开"}
+
+            if st.get('hasCollapse'):
                 return {"ok": True, "reason": "筛选区已展开"}
-            elif btn_state and btn_state.get('type') == 'collapse':
-                return {"ok": True, "reason": "筛选区已展开"}
-
-            # Step 1: 非内联模式 → 点击 anticon-bars
-            mode_btn = fr.ele('css:button.ant-dropdown-trigger i.anticon-bars', timeout=3)
-            if mode_btn:
-                mode_btn.parent().click()
-                # 智能等待：下拉菜单出现即就绪（最多 3s）
-                try:
-                    fr.wait.ele_displayed('css:.ant-dropdown-menu', timeout=3)
-                except Exception:
-                    pass
-
-                selected = fr.ele('css:.ant-dropdown-menu-item-selected', timeout=2)
-                if selected and "弹窗" in selected.text:
-                    inline_item = fr.ele('css:.ant-dropdown-menu-item:not(.ant-dropdown-menu-item-selected)', timeout=2)
-                    if inline_item and "内联" in inline_item.text:
-                        inline_item.click()
-                        # 智能等待：选中级联通常自动收起下拉（最多 3s）
-                        try:
-                            fr.wait.ele_hidden('css:.ant-dropdown-menu', timeout=3)
-                        except Exception:
-                            pass
-
-                # 兜底关闭下拉并等待其隐藏
-                fr.run_js("document.body.click()")
-                try:
-                    fr.wait.ele_hidden('css:.ant-dropdown-menu', timeout=3)
-                except Exception:
-                    pass
-
-            # Step 2: 用 JS 查找并点击「展开▼」
-            js_expand = fr.run_js("""
-                var btns=document.querySelectorAll('button');
-                for(var i=0;i<btns.length;i++){
-                    var t=btns[i].textContent.trim().replace(/\\s+/g,'');
-                    if(t.indexOf('展开')>=0){btns[i].click();return JSON.stringify({found:true});}
-                }
-                return JSON.stringify({found:false});
-            """)
-            if isinstance(js_expand, str):
-                js_expand = json.loads(js_expand)
-            if js_expand and js_expand.get('found'):
-                # 智能等待：展开完成后「收起」按钮出现即视为就绪（最多 3s）
-                try:
-                    fr.wait.ele_displayed('text:收起', timeout=3)
-                except Exception:
-                    pass
-                return {"ok": True, "reason": "已切换内联模式并展开筛选区"}
-
-            # 检测「收起」状态
-            js_collapse = fr.run_js("""
-                var btns=document.querySelectorAll('button');
-                for(var i=0;i<btns.length;i++){
-                    var t=btns[i].textContent.trim().replace(/\\s+/g,'');
-                    if(t.indexOf('收起')>=0)return JSON.stringify({found:true});
-                }
-                return JSON.stringify({found:false});
-            """)
-            if isinstance(js_collapse, str):
-                js_collapse = json.loads(js_collapse)
-            if js_collapse and js_collapse.get('found'):
-                return {"ok": True, "reason": "筛选区已展开"}
-
             return {"ok": True, "reason": "无展开/收起按钮，跳过"}
 
         except Exception as e:
             logger.debug("expand_filter_area 失败: %s", e)
             return {"ok": False, "reason": str(e)}
-
 
 def select_date_range(field_name: str, start_date: str, end_date: str, tab=None):
     """选择 Ant Design RangePicker 日期范围。
@@ -235,10 +235,14 @@ def scan_filter_fields(tab=None):
     """扫描筛选区所有字段，返回字段名/操作符/输入类型/下拉选项的完整矩阵。
 
     展开筛选区（expand_filter_area）后调用此函数，确保所有字段暴露在 DOM 中。
-    分两阶段：先 JS 扫描结构（不打开下拉），再对每个下拉字段用「打开→等待→读取并关闭」
-    两步法获取选项——避免在单次 run_js 内用 while 忙等待阻塞页面事件循环（会让下拉
-    展开动画冻死、读不到正确选项）。分组按 .ant-row 内部语义识别，遇非字段 select
-    前进 1 步重新对齐，而非盲跳 +3。
+    内联模式下必须只扫描 .legions-pro-quick-filter-row 的直接字段列，不能扫描
+    所有嵌套 .ant-row，否则会被字段内部布局和日期控件干扰导致错位。
+
+    每个筛选字段为三段式控件：字段名下拉 / 操作符下拉 / 值控件。
+    - operatorOptions：第二段操作符下拉框的全部可选操作符，必须与 field 对应。
+    - valueMode=free-text：第三段是文本框，可自由输入。
+    - valueMode=date-range：第三段是日期范围。
+    - valueMode=must-select-option：第三段是下拉框，只能选择 options 中已有内容，不能任意填写。
     """
     with _lock:
         tab = tab or browser_session.get_tab()
@@ -246,43 +250,62 @@ def scan_filter_fields(tab=None):
         if fr is None:
             return {"ok": False, "reason": "未找到活动 iframe"}
         try:
-            # ---- 阶段 1：结构扫描（按 .ant-row 内部分组，不打开任何下拉）----
             struct_js = r"""
-            var OP = ['等于','不等于','包含','不包含','大于','小于','大于等于','小于等于','为空','不为空','之间','不属于','属于','开头是','结尾是','在...之间'];
-            function isOp(t){ t=(t||'').trim(); for(var i=0;i<OP.length;i++) if(t.indexOf(OP[i])>=0) return true; return false; }
-            function selText(sel){ var s=sel.querySelector('.ant-select-selection__rendered'); return s?s.textContent.trim():''; }
-            var rows = document.querySelectorAll('.legions-pro-quick-filter .ant-row');
+            function selText(sel){
+                var s=sel.querySelector('.ant-select-selection__rendered');
+                return s?s.textContent.trim():'';
+            }
+            function isActionCol(col){
+                var t=(col.textContent||'').trim().replace(/\s+/g,'');
+                return !col.querySelector('.ant-select') || t.indexOf('重置')>=0 || t.indexOf('收起')>=0 || t.indexOf('展开')>=0;
+            }
+            var cols = document.querySelectorAll('.page-query .legions-pro-quick-filter-row > div[class*="ant-col-"]');
             var out = [], seen = {};
-            for (var ri = 0; ri < rows.length; ri++) {
-                var row = rows[ri];
-                var selects = row.querySelectorAll('.ant-select');
-                var inputs = row.querySelectorAll('input.ant-input-sm');
-                var datePickers = row.querySelectorAll('.ant-calendar-picker');
-                var si = 0;
-                while (si < selects.length) {
-                    var fName = selText(selects[si]);
-                    // 字段组起点：文本非空、非操作符、未见过；否则前进一步重新对齐（不盲跳 +3）
-                    if (!fName || isOp(fName) || seen[fName]) { si++; continue; }
-                    seen[fName] = true;
-                    var opEl = selects[si+1] || null;
-                    var valEl = selects[si+2] || null;
-                    var opText = opEl ? selText(opEl) : '';
-                    var entry = { row: ri, field: fName, operator: opText, inputType: 'unknown',
-                                  options: [], hasValueCb: false, hasOpCb: false,
-                                  valIdx: valEl ? si+2 : -1, opIdx: opEl ? si+1 : -1 };
-                    if (valEl) {
-                        var searchInput = valEl.querySelector('.ant-select-search__field');
-                        if (searchInput) {
-                            entry.inputType = valEl.querySelector('.ant-select-selection') ? 'searchable-dropdown' : 'dropdown';
-                        }
-                        if (valEl.querySelector('[role="combobox"]')) entry.hasValueCb = true;
-                    }
-                    if (inputs.length > 0 && !valEl) entry.inputType = 'text-input';
-                    if (datePickers.length > 0) entry.inputType = 'date-range';
-                    if (opEl && opEl.querySelector('[role="combobox"]')) entry.hasOpCb = true;
-                    out.push(entry);
-                    si += valEl ? 3 : (opEl ? 2 : 1);
+            for (var i = 0; i < cols.length; i++) {
+                var col = cols[i];
+                if (isActionCol(col)) continue;
+                var selects = col.querySelectorAll('.ant-select');
+                if (selects.length < 2) continue;
+                var field = selText(selects[0]);
+                var operator = selText(selects[1]);
+                if (!field || !operator || seen[field]) continue;
+                seen[field] = true;
+
+                var entry = {
+                    col: i,
+                    field: field,
+                    operator: operator,
+                    inputType: 'unknown',
+                    options: [],
+                    operatorOptions: [],
+                    hasValueCb: false,
+                    hasOpCb: false
+                };
+                var valueSelect = selects[2] || null;
+                var datePicker = col.querySelector('.ant-calendar-picker');
+                var textInput = col.querySelector('input.ant-input-sm');
+                var rangeInputs = col.querySelectorAll('input.ant-calendar-range-picker-input');
+
+                if (datePicker || rangeInputs.length >= 2) {
+                    entry.inputType = 'date-range';
+                    entry.valueMode = 'date-range';
+                    entry.value = {
+                        start: rangeInputs[0] ? rangeInputs[0].value : '',
+                        end: rangeInputs[1] ? rangeInputs[1].value : ''
+                    };
+                } else if (valueSelect) {
+                    entry.inputType = valueSelect.querySelector('.ant-select-search__field') ? 'searchable-dropdown' : 'dropdown';
+                    entry.valueMode = 'must-select-option';
+                    entry.hasValueCb = !!valueSelect.querySelector('[role="combobox"]');
+                } else if (textInput) {
+                    entry.inputType = 'text-input';
+                    entry.valueMode = 'free-text';
+                    entry.value = textInput.value || '';
+                } else {
+                    entry.valueMode = 'unknown';
                 }
+                entry.hasOpCb = !!selects[1].querySelector('[role="combobox"]');
+                out.push(entry);
             }
             return JSON.stringify(out);
             """
@@ -291,13 +314,12 @@ def scan_filter_fields(tab=None):
             if not isinstance(fields, list):
                 return {"ok": False, "reason": "结构扫描返回非列表"}
 
-            # ---- 阶段 2：逐个下拉用两步法获取选项（不在 JS 内忙等待）----
             for entry in fields:
-                if entry.get("hasValueCb") and entry.get("valIdx", -1) >= 0:
-                    entry["options"] = _collect_dropdown_options(fr, entry["row"], entry["valIdx"])
-                if entry.get("hasOpCb") and entry.get("opIdx", -1) >= 0:
-                    entry["operatorOptions"] = _collect_dropdown_options(fr, entry["row"], entry["opIdx"])
-                for k in ("row", "valIdx", "opIdx", "hasValueCb", "hasOpCb"):
+                if entry.get("hasOpCb"):
+                    entry["operatorOptions"] = _collect_dropdown_options(fr, entry["col"], 1)
+                if entry.get("hasValueCb"):
+                    entry["options"] = _collect_dropdown_options(fr, entry["col"], 2)
+                for k in ("col", "hasValueCb", "hasOpCb"):
                     entry.pop(k, None)
             return {"ok": True, "fields": fields}
         except Exception as e:
@@ -305,39 +327,98 @@ def scan_filter_fields(tab=None):
             return {"ok": False, "reason": str(e)}
 
 
-def _collect_dropdown_options(fr, row_idx, sel_idx):
-    """两步法读取某行某 select 的下拉选项：JS 打开 → 智能等待 → JS 读取并关闭。
+def _close_visible_dropdowns(fr, timeout=0.5):
+    """快速关闭可见 Ant Design 下拉浮层。
 
-    避免在单次 run_js 内用 while 忙等待阻塞页面事件循环（会让下拉展开动画冻死、
-    读不到正确选项）。row_idx/sel_idx 均为整数，%d 格式化无注入风险。
+    扫描下拉选项时不等待完整关闭动画；只做一次关闭动作 + 短确认，
+    避免 slide-up-leave 动画导致每个下拉多等数秒。
     """
+    fr.run_js(r"""
+        document.activeElement && document.activeElement.blur && document.activeElement.blur();
+        document.dispatchEvent(new KeyboardEvent('keydown', {key:'Escape', code:'Escape', keyCode:27, which:27, bubbles:true}));
+        document.body.dispatchEvent(new MouseEvent('mousedown', {bubbles:true}));
+        document.body.dispatchEvent(new MouseEvent('mouseup', {bubbles:true}));
+        document.body.click();
+        document.querySelectorAll('.ant-select-dropdown, .ant-dropdown').forEach(function(d){
+            d.style.removeProperty('display');
+        });
+    """)
+    try:
+        fr.wait.ele_hidden('css:.ant-select-dropdown:not(.ant-select-dropdown-hidden)', timeout=timeout)
+    except Exception:
+        pass
+    try:
+        fr.wait.ele_hidden('css:.ant-dropdown:not(.ant-dropdown-hidden)', timeout=timeout)
+    except Exception:
+        pass
+    return True
+
+
+def _collect_dropdown_options(fr, col_idx, sel_idx):
+    """读取某字段列内某个 select 的下拉选项：清场 → 打开 → 智能等待 → 读取 → 关闭确认。
+
+    col_idx 是 .page-query .legions-pro-quick-filter-row 的直接字段列索引；
+    sel_idx: 0=字段名、1=操作符、2=值选择器。
+    """
+    _close_visible_dropdowns(fr, timeout=0.2)
+    fr.run_js("document.querySelectorAll('.ant-select-dropdown, .ant-dropdown').forEach(function(d){d.style.removeProperty('display');});")
+
     open_js = (
-        "var rows=document.querySelectorAll('.legions-pro-quick-filter .ant-row');"
-        "var sel=rows[%d]?rows[%d].querySelectorAll('.ant-select')[%d]:null;"
-        "if(sel){var cb=sel.querySelector('[role=\"combobox\"]');if(cb){cb.click();return JSON.stringify({ok:true});}}"
+        "var cols=document.querySelectorAll('.page-query .legions-pro-quick-filter-row > div[class*=\"ant-col-\"]');"
+        "var sel=cols[%d]?cols[%d].querySelectorAll('.ant-select')[%d]:null;"
+        "if(sel){var cb=sel.querySelector('[role=\"combobox\"]')||sel.querySelector('.ant-select-selection');"
+        "if(cb){var r=cb.getBoundingClientRect();cb.dispatchEvent(new MouseEvent('mousedown',{bubbles:true}));cb.click();"
+        "return JSON.stringify({ok:true,left:r.left,top:r.top,width:r.width,height:r.height});}}"
         "return JSON.stringify({ok:false});"
-    ) % (row_idx, row_idx, sel_idx)
-    fr.run_js(open_js)
-    # 智能等待：下拉面板出现即就绪（不阻塞页面事件循环）
+    ) % (col_idx, col_idx, sel_idx)
+    opened = fr.run_js(open_js)
     try:
-        fr.wait.ele_displayed('css:.ant-select-dropdown:not(.ant-select-dropdown-hidden)', timeout=3)
+        opened = json.loads(opened) if isinstance(opened, str) else (opened or {})
     except Exception:
+        opened = {"ok": False}
+    if not opened.get("ok"):
+        _close_visible_dropdowns(fr, timeout=0.2)
+        return []
+
+    try:
+        fr.wait.ele_displayed('css:.ant-select-dropdown:not(.ant-select-dropdown-hidden)', timeout=1)
+        fr.wait.ele_displayed('css:.ant-select-dropdown:not(.ant-select-dropdown-hidden) .ant-select-dropdown-menu-item', timeout=0.8)
+    except Exception:
+        # 搜索型下拉可能暂无选项；后续读取为空即可。
         pass
-    # 读取可见下拉选项并关闭（读取时面板仍可见，关闭后返回）
-    read_js = (
-        "var items=document.querySelectorAll('.ant-select-dropdown:not(.ant-select-dropdown-hidden) .ant-select-item-option');"
-        "var opts=[];items.forEach(function(it){var t=it.textContent.trim();if(t&&t.length<30&&opts.indexOf(t)<0)opts.push(t);});"
-        "document.body.click();return JSON.stringify(opts);"
-    )
+
+    read_js = r"""
+        var target = OPENED;
+        function visible(el){
+            var s=getComputedStyle(el);
+            return s.display!=='none' && s.visibility!=='hidden' && el.offsetWidth>0 && el.offsetHeight>0;
+        }
+        var dropdowns=[].slice.call(document.querySelectorAll('.ant-select-dropdown:not(.ant-select-dropdown-hidden)')).filter(visible);
+        var scored=dropdowns.map(function(d){
+            var r=d.getBoundingClientRect();
+            var dx=Math.abs(r.left-target.left);
+            var dy=Math.abs(r.top-(target.top+target.height));
+            return {d:d, score:dx+dy};
+        }).sort(function(a,b){return a.score-b.score;});
+        var d=scored.length?scored[0].d:null;
+        var opts=[];
+        if(d){
+            var items=d.querySelectorAll('.ant-select-dropdown-menu-item, .ant-select-item-option');
+            items.forEach(function(it){
+                var t=it.textContent.trim();
+                if(t&&t.length<60&&opts.indexOf(t)<0)opts.push(t);
+            });
+        }
+        return JSON.stringify(opts);
+    """.replace('OPENED', json.dumps(opened))
     res = fr.run_js(read_js)
-    # 智能等待：下拉面板隐藏即关闭完成，避免残留干扰下一个下拉
-    try:
-        fr.wait.ele_hidden('css:.ant-select-dropdown:not(.ant-select-dropdown-hidden)', timeout=3)
-    except Exception:
-        pass
+    closed = _close_visible_dropdowns(fr, timeout=0.2)
+    if not closed:
+        logger.warning("下拉框未能确认关闭 col=%s sel=%s", col_idx, sel_idx)
     if isinstance(res, str):
         try:
             return json.loads(res)
         except Exception:
             return []
     return res or []
+

@@ -5,10 +5,10 @@ import time
 
 
 def test_tool_count():
-    """应注册 28 个工具。"""
+    """应注册 41 个工具。"""
     import server
     tools = asyncio.run(server.mcp.list_tools())
-    assert len(tools) == 33, "工具数应为 33（28 + 5 个 4.2 新增: download_by_browser/listen_ws_start/listen_ws_wait/new_context/set_permission）"
+    assert len(tools) == 41, f"工具数应为 41，当前为 {len(tools)}"
 
 
 def test_listen_stop_registered():

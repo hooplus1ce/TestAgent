@@ -2,12 +2,18 @@
 
 所有 MCP 工具通过本模块取 tab / frame，保证跨工具调用复用同一个浏览器连接。
 """
+import ast
 import json
 import logging
 import os
+import shutil
+import socket
+import subprocess
 import threading
+import time
+from pathlib import Path
 
-from DrissionPage import Chromium
+from DrissionPage import Chromium, ChromiumOptions
 
 import config
 
@@ -27,11 +33,96 @@ _lock = threading.RLock()
 # 活动业务 iframe 选择器（SCM：可见 tabpanel 内的 iframe）
 ACTIVE_FRAME_LOC = config.ACTIVE_FRAME_LOC
 
+# dp_configs.ini 路径（项目根目录）
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+_DP_INI = str(_PROJECT_ROOT / "dp_configs.ini")
+
 
 def load_js(name: str) -> str:
     """读取 js/ 目录下的页面注入脚本。"""
     with open(os.path.join(_JS_DIR, name), encoding="utf-8") as f:
         return f.read()
+
+
+def _port_in_use(port: int) -> bool:
+    """检查端口是否被占用。"""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.settimeout(0.5)
+        return s.connect_ex(("127.0.0.1", port)) == 0
+
+
+def _cdp_ready(port: int, timeout: float = 8) -> bool:
+    """轮询 CDP /json/version 端点直到就绪。"""
+    import httpx
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            r = httpx.get(f'http://127.0.0.1:{port}/json/version', timeout=2)
+            if 'webSocketDebuggerUrl' in r.json():
+                return True
+        except Exception:
+            pass
+        time.sleep(0.5)
+    return False
+
+
+def _launch_chrome(port: int):
+    """根据 dp_configs.ini 启动新 Chrome 实例。"""
+    # 读取 ini 配置
+    browser_path = None
+    chrome_args = []
+
+    try:
+        import configparser
+        cp = configparser.ConfigParser()
+        cp.read(_DP_INI, encoding="utf-8")
+        browser_path = cp.get("chromium_options", "browser_path", fallback="chrome")
+        raw_args = cp.get("chromium_options", "arguments", fallback="[]")
+        # 安全解析 Python 字面量列表
+        chrome_args = ast.literal_eval(raw_args) if isinstance(raw_args, str) else list(raw_args)
+    except Exception as e:
+        logger.warning("读取 dp_configs.ini 失败，使用默认值: %s", e)
+        browser_path = "google-chrome"
+        chrome_args = []
+
+    # 确保远程调试端口
+    debug_flag = f"--remote-debugging-port={port}"
+    if not any(debug_flag in a for a in chrome_args):
+        chrome_args.insert(0, debug_flag)
+
+    # 解析 --user-data-dir 为绝对路径
+    for i, a in enumerate(chrome_args):
+        if a.startswith("--user-data-dir="):
+            rel = a.split("=", 1)[1]
+            # ini 路径是相对项目根目录的
+            abs_path = str(_PROJECT_ROOT / rel)
+            chrome_args[i] = f"--user-data-dir={abs_path}"
+            logger.info("user-data-dir 解析为: %s", abs_path)
+
+    # 解析浏览器路径，兼容多平台
+    exe = shutil.which(browser_path)
+    if not exe:
+        for p in ["google-chrome", "google-chrome-stable", "chromium-browser",
+                   "chromium", "chrome.exe", "msedge.exe", "edge"]:
+            exe = shutil.which(p)
+            if exe:
+                break
+    if not exe:
+        raise RuntimeError(f"未找到浏览器可执行文件（尝试: chrome, google-chrome, chromium, edge），"
+                           f"请在 dp_configs.ini 中设置正确的 browser_path")
+
+    logger.info("启动 Chrome: %s %s", exe, " ".join(chrome_args))
+    subprocess.Popen([exe] + chrome_args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    # 等待 CDP 就绪
+    if not _cdp_ready(port, timeout=10):
+        raise RuntimeError(f"Chrome 启动后未能在 10s 内就绪（port {port}）")
+
+
+def _connect_existing(port: int):
+    """连接已有 Chrome（接管模式）。"""
+    _opt = ChromiumOptions(read_file=False).set_address(f'127.0.0.1:{port}')
+    return Chromium(_opt)
 
 
 def _pick_tab(browser, hint):
@@ -59,15 +150,24 @@ def _pick_tab(browser, hint):
 
 
 def connect(port: int = config.DEFAULT_PORT, target_hint: str = config.DEFAULT_TARGET_HINT):
-    """接管 port 上已运行的 Chrome（不启新实例），选中目标 tab。"""
+    """连接 Chrome：优先 9222 端口已有实例，无则自启。"""
     with _lock:
         global _browser, _tab, _port, _target_hint
         _port = port
         _target_hint = target_hint
         logger.info("connect port=%s target_hint=%r", port, target_hint)
-        _browser = Chromium(port)
+
+        if _port_in_use(port):
+            logger.info("port %s 已有 Chrome，直接接管", port)
+            _browser = _connect_existing(port)
+        else:
+            logger.info("port %s 无 Chrome，自动启动", port)
+            _launch_chrome(port)
+            _browser = _connect_existing(port)
+
         _tab = _pick_tab(_browser, target_hint)
         logger.info("connected tab url=%s", (_tab.url or "")[:120])
+        return _tab
 
 
 def list_tabs():

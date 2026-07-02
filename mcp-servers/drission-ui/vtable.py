@@ -1,8 +1,8 @@
 """VTable 工具：把脆弱的页面内 JS 包成结构化 Python 工具。
 
 所有 VTable 操作都在活动 iframe(frame) 上下文执行（VTable 实例挂在 frame 的 window）。
-坐标换算：JS 产出帧内坐标 frameX/frameY → Python 叠加 frame 在顶层视口的偏移 →
-得到可供 tab.actions.move_to((x,y)) 点击的顶层视口坐标。
+坐标换算全部在 JS 端完成：JS 通过 window.frameElement.getBoundingClientRect()
+一次算到顶层视口坐标 viewportX/viewportY，Python 不再叠加 iframe 偏移。
 
 JS 参数化：用 json.dumps 把 Python 参数列表序列化为 JS 数组字面量，
 通过 fn.apply(null, [...]) 调用，避免 %d / %s 字符串拼接的类型与转义陷阱。
@@ -74,13 +74,13 @@ def _wait_stable(reader, timeout=3):
 
 
 def _wait_cell_center_stable(col, row, timeout=3):
-    """scrollToCell 后轮询单元格中心帧内坐标至稳定（场景图停止动画），返回稳定的坐标 dict 或 None。"""
+    """scrollToCell 后轮询单元格中心顶层视口坐标至稳定（场景图停止动画），返回稳定的坐标 dict 或 None。"""
     def reader():
         ctr = _run("vtable-column-values.js",
-                   "return JSON.stringify(getCellCenterFrame.apply(null, %s));" % _js_args(col, row))
+                   "return JSON.stringify(getCellCenterViewport.apply(null, %s));" % _js_args(col, row))
         if not ctr:
             return None
-        return (round(ctr.get("frameX", 0), 1), round(ctr.get("frameY", 0), 1)), ctr
+        return (round(ctr.get("viewportX", 0), 1), round(ctr.get("viewportY", 0), 1)), ctr
     stable = _wait_stable(reader, timeout)
     return stable[1] if stable else None
 
@@ -98,23 +98,14 @@ def mount_vtable():
 def scan_vtable_columns(max_col: int = 50):
     """扫描列定义 + 表头图标（含顶层视口坐标 viewportX/viewportY）。
 
-    图标坐标已叠加 frame 偏移，可直接用于 click_xy / actions.move_to。
+    图标坐标已在 JS 端叠加 window.frameElement 偏移，可直接用于 click_xy / actions.move_to。
     """
     if not _ensure_vtable():
         return {"ok": False, "reason": "VTable 实例失效且自动重挂载失败，请显式调用 mount_vtable"}
-    fr = _frame()
-    ox, oy = browser_session.frame_offset()
     cols = _run("vtable-scanner.js",
                 "return JSON.stringify(scanColumns.apply(null, %s));" % _js_args(max_col))
     if not cols:
         return {"ok": False, "reason": "scanColumns 返回空，可能未挂载 VTable 或无列"}
-    for c in cols:
-        for ic in c.get("icons", []):
-            fx = ic.pop("frameX", None)
-            fy = ic.pop("frameY", None)
-            if fx is not None and fy is not None:
-                ic["viewportX"] = round(fx + ox, 1)
-                ic["viewportY"] = round(fy + oy, 1)
     return {"ok": True, "columns": cols}
 
 
@@ -140,8 +131,6 @@ def get_cell_rect(col: int, row: int, scroll: bool = True):
             True（默认）— 先 scrollToCell 确保在视口内，返回可见区域的坐标。
             False — 不滚动，返回当前渲染位置的坐标（可能在视口外，用于判断是否需要 scroll）。
     """
-    fr = _frame()
-    ox, oy = browser_session.frame_offset()
     if not _ensure_vtable():
         return {"ok": False, "reason": "VTable 实例失效且自动重挂载失败，请显式调用 mount_vtable"}
     if scroll:
@@ -151,13 +140,13 @@ def get_cell_rect(col: int, row: int, scroll: bool = True):
         res = _wait_cell_center_stable(col, row)
     else:
         res = _run("vtable-column-values.js",
-                   "return JSON.stringify(getCellCenterFrame.apply(null, %s));" % _js_args(col, row))
+                   "return JSON.stringify(getCellCenterViewport.apply(null, %s));" % _js_args(col, row))
     if not res:
         return {"ok": False, "reason": "无法获取单元格坐标，可能 col/row 越界或未挂载 VTable"}
     return {
         "ok": True,
-        "viewportX": round(res.get("frameX", 0) + ox, 1),
-        "viewportY": round(res.get("frameY", 0) + oy, 1),
+        "viewportX": round(res.get("viewportX", 0), 1),
+        "viewportY": round(res.get("viewportY", 0), 1),
         "col": col, "row": row,
         "scrolled": scroll,
     }
@@ -188,8 +177,6 @@ def click_cell(col: int, row: int, icon_name: str = None, hover_first: bool = Tr
         duration: hover 动画时长
         double_click: 是否双击（用于 bodyBehavior='链接/按钮' 的单元格，单击无效）
     """
-    fr = _frame()
-    ox, oy = browser_session.frame_offset()
     if not _ensure_vtable():
         return {"ok": False, "reason": "VTable 实例失效且自动重挂载失败，请显式调用 mount_vtable"}
 
@@ -207,8 +194,8 @@ def click_cell(col: int, row: int, icon_name: str = None, hover_first: bool = Tr
         if not match:
             return {"ok": False, "reason": "图标未找到: %s（可用: %s）" % (
                 icon_name, [i.get("name") for i in icons])}
-        vx = match["frameX"] + ox
-        vy = match["frameY"] + oy
+        vx = match["viewportX"]
+        vy = match["viewportY"]
     else:
         _run("vtable-column-values.js",
              "scrollToCell.apply(null, %s);" % _js_args(col, row))
@@ -216,8 +203,8 @@ def click_cell(col: int, row: int, icon_name: str = None, hover_first: bool = Tr
         ctr = _wait_cell_center_stable(col, row)
         if not ctr:
             return {"ok": False, "reason": "无法获取单元格坐标"}
-        vx = ctr["frameX"] + ox
-        vy = ctr["frameY"] + oy
+        vx = ctr["viewportX"]
+        vy = ctr["viewportY"]
 
     tab = browser_session.get_tab()
     if double_click:
@@ -232,7 +219,7 @@ def resize_column(col: int, width: int):
     """拖拽调整 VTable 列宽（DrissionPage actions 模拟鼠标拖拽）。
     
     判断流程：
-      1. 取列头右边框的场景图坐标（帧内坐标）
+      1. 取列头右边框的场景图坐标（JS 已包含 iframe 偏移，直接是视口坐标）
       2. 若超出当前 iframe 视口 → scrollToCell 滚动 → 重新取坐标
       3. DrissionPage actions.move_to → hold → move_to → release
     
@@ -240,13 +227,11 @@ def resize_column(col: int, width: int):
         col: 列索引（从 0 开始，含复选框列）
         width: 目标宽度（像素）
     """
-    fr = _frame()
-    ox, oy = browser_session.frame_offset()
     if not _ensure_vtable():
         return {"ok": False, "reason": "VTable 实例失效且自动重挂载失败，请显式调用 mount_vtable"}
 
     def _get_bounds():
-        """读取列头右边框的帧内坐标（仅数据读取，非 UI 操作）。"""
+        """读取列头右边框的视口坐标（JS 内已加 iframe 偏移）。"""
         js = (
             "var t=window._vtable;"
             "if(!t||!t.scenegraph)return JSON.stringify({error:'no vtable'});"
@@ -254,12 +239,13 @@ def resize_column(col: int, width: int):
             "if(!cg)return JSON.stringify({error:'no cell'});"
             "var b=cg.globalAABBBounds;"
             "if(!b)return JSON.stringify({error:'no bounds'});"
+            "var ifr=window.frameElement?window.frameElement.getBoundingClientRect():{left:0,top:0};"
             "var vtEl=document.querySelector('.vtable')||document.querySelector('[class*=\"vtable\"]');"
             "var vr=vtEl?vtEl.getBoundingClientRect():{left:0,top:0};"
-            "var rightEdge=Math.round((vr.left+b.x2)*10)/10;"
+            "var rightEdge=Math.round((ifr.left+vr.left+b.x2)*10)/10;"
             "return JSON.stringify({"
             "  rightEdge:rightEdge,"
-            "  centerY:Math.round((vr.top+(b.y1+b.y2)/2)*10)/10,"
+            "  centerY:Math.round((ifr.top+vr.top+(b.y1+b.y2)/2)*10)/10,"
             "  oldWidth:Math.round(b.x2-b.x1),"
             "  viewportW:window.innerWidth});"
         ) % col
@@ -296,9 +282,9 @@ def resize_column(col: int, width: int):
         if delta == 0:
             return {"ok": True, "reason": "滚动后列宽已是目标值", "width": old_width}
     
-    # 3. 视口坐标 = 帧内坐标 + iframe 偏移
-    start_x = round(info["rightEdge"] + ox)
-    center_y = round(info["centerY"] + oy)
+    # 3. 视口坐标（JS 已将帧内坐标转为顶层视口坐标）
+    start_x = round(info["rightEdge"])
+    center_y = round(info["centerY"])
     
     # 4. DrissionPage 动作链拖拽
     tab = browser_session.get_tab()

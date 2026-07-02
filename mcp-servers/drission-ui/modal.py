@@ -18,6 +18,18 @@ def _detect_in_target(target):
     try:
         modal = target.ele('css:.ant-modal-content', timeout=0.3)
         if modal:
+            # 优先检查：ant-modal-wrap 为 display:none 则弹窗已关闭
+            # （React 组件卸载不彻底时 ant-modal 残留但 wrap 已隐藏，这是最可靠的关闭判定）
+            try:
+                wrap_hidden = target.run_js(
+                    "var w=document.querySelector('.ant-modal-wrap');"
+                    "if(!w)return true;"
+                    "return window.getComputedStyle(w).display==='none';"
+                )
+                if wrap_hidden:
+                    return {"type": "none"}
+            except Exception:
+                pass
             # 二次确认：ghost element（已销毁但 DP 缓存未 GC）返回 false
             try:
                 if not modal.states.is_displayed:
@@ -142,11 +154,24 @@ def close_modal(tab=None):
                 else:
                     errors.append("modal: 无可点击的取消/关闭按钮")
             if "modal: 无可点击的取消/关闭按钮" not in errors:
+                # 优先等元素从 DOM 删除，超时后降级检查 ant-modal-wrap 是否 display:none
                 try:
                     modal.wait.ele_deleted(timeout=3)
                     closed.append("modal")
                 except Exception:
-                    errors.append("modal: 等待关闭超时")
+                    # React 组件卸载不彻底时 ant-modal 残留但 wrap 已隐藏
+                    try:
+                        wrap_hidden = target.run_js(
+                            "var w=document.querySelector('.ant-modal-wrap');"
+                            "if(!w)return true;"
+                            "return window.getComputedStyle(w).display==='none';"
+                        )
+                        if wrap_hidden:
+                            closed.append("modal")
+                        else:
+                            errors.append("modal: 等待关闭超时")
+                    except Exception:
+                        errors.append("modal: 等待关闭超时")
     except Exception as e:
         logger.debug("close_modal 失败: %s", e)
         errors.append(str(e))

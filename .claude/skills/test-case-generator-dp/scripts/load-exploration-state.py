@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """断点续传：读写探索进度文件。
 
-在 eval kernel 中执行。Phase 3 每完成一个区域调用 save_state() 追加；
+Phase 3 每完成一个区域，AI 调用 save_state() 写入进度；
 重新启动技能时调用 load_state() 读取上次进度并向用户汇报。
 进度文件结构见 assets/exploration-state.schema.json。
 """
