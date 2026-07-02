@@ -5,10 +5,10 @@ import time
 
 
 def test_tool_count():
-    """应注册 41 个工具。"""
+    """应注册 50 个工具（含新增的 find_elements/find_static/find_batch/get_frame）。"""
     import server
     tools = asyncio.run(server.mcp.list_tools())
-    assert len(tools) == 41, f"工具数应为 41，当前为 {len(tools)}"
+    assert len(tools) == 50, f"工具数应为 50，当前为 {len(tools)}"
 
 
 def test_listen_stop_registered():
@@ -26,18 +26,17 @@ def test_listen_stop_registered():
     assert "set_permission" in names
 
 
-def test_synchronized_serializes():
-    """synchronized 装饰器应串行化调用（通过 browser_session._lock）。"""
+def test_write_synchronized_serializes():
+    """write_synchronized 装饰器应串行化写操作。"""
     import server
-    import browser_session
 
-    call_order = []
+    results = []
 
-    @server.synchronized
+    @server.write_synchronized
     def slow_task(label):
-        call_order.append(("start", label))
+        results.append(("enter", label))
         time.sleep(0.05)
-        call_order.append(("end", label))
+        results.append(("exit", label))
 
     threads = [threading.Thread(target=slow_task, args=(i,)) for i in range(3)]
     for t in threads:
@@ -45,20 +44,33 @@ def test_synchronized_serializes():
     for t in threads:
         t.join()
 
-    # 串行化：每个任务的 start/end 不交错
-    labels_in_order = [label for _, label in call_order]
-    assert len(labels_in_order) == 6
-    # 第一个 start 的 label 应该和它的 end 紧邻（无其他 start 插入）
-    first_label = labels_in_order[0]
-    assert labels_in_order[1] == first_label, "任务应串行：start 后立即 end"
+    # 验证串行化：enter/exit 对不交错
+    assert len(results) == 6
+    # 每对 enter/exit 的 label 应相同
+    for i in range(0, 6, 2):
+        assert results[i][0] == "enter"
+        assert results[i+1][0] == "exit"
+        assert results[i][1] == results[i+1][1], f"第 {i//2} 个任务 enter/exit label 不一致"
 
 
 def test_synchronized_returns_value():
-    """synchronized 不改变函数返回值。"""
+    """write_synchronized 不改变函数返回值。"""
     import server
 
-    @server.synchronized
+    @server.write_synchronized
     def add(a, b):
         return a + b
 
     assert add(2, 3) == 5
+
+
+def test_new_tools_registered():
+    """新增的 find_elements/find_static/find_batch/get_frame 应存在。"""
+    import server
+    tools = asyncio.run(server.mcp.list_tools())
+    names = [t.name for t in tools]
+    assert "find_elements" in names, "find_elements 工具缺失"
+    assert "find_static" in names, "find_static 工具缺失"
+    assert "find_batch" in names, "find_batch 工具缺失"
+    assert "get_frame" in names, "get_frame 工具缺失"
+

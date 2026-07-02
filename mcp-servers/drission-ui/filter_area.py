@@ -31,7 +31,7 @@ def expand_filter_area(tab=None):
             return {"ok": False, "reason": "未找到活动 iframe"}
         try:
             try:
-                fr.wait.eles_loaded('css:.page-query', timeout=5)
+                fr.wait.eles_loaded('c:.page-query', timeout=5)
             except Exception:
                 pass
 
@@ -77,7 +77,7 @@ def expand_filter_area(tab=None):
                     if(btn)btn.click();
                 """)
                 try:
-                    fr.wait.ele_displayed('css:.ant-dropdown:not(.ant-dropdown-hidden)', timeout=3)
+                    fr.wait.ele_displayed('c:.ant-dropdown:not(.ant-dropdown-hidden)', timeout=3)
                 except Exception:
                     pass
 
@@ -98,7 +98,7 @@ def expand_filter_area(tab=None):
                 except Exception:
                     mode_res = {}
                 try:
-                    fr.wait.ele_hidden('css:.ant-dropdown:not(.ant-dropdown-hidden)', timeout=3)
+                    fr.wait.ele_hidden('c:.ant-dropdown:not(.ant-dropdown-hidden)', timeout=3)
                 except Exception:
                     pass
 
@@ -149,20 +149,20 @@ def select_date_range(field_name: str, start_date: str, end_date: str, tab=None)
         if fr is None:
             return {"ok": False, "reason": "未找到活动 iframe"}
         try:
-            rows = fr.eles('css:.legions-pro-quick-filter .ant-row')
+            rows = fr.eles('c:.legions-pro-quick-filter .ant-row')
             target_row = None
             for row in rows:
                 text = row.text
-                if field_name in text and row.ele('css:.ant-calendar-picker', timeout=1):
+                if field_name in text and row.ele('c:.ant-calendar-picker', timeout=1):
                     target_row = row
                     break
             if target_row is None:
                 return {"ok": False, "reason": f"未找到字段「{field_name}」的日期选择器"}
 
-            picker_input = target_row.ele('css:.ant-calendar-picker-input')
+            picker_input = target_row.ele('c:.ant-calendar-picker-input')
             picker_input.click()
             # 智能等待：日历面板出现即就绪（ele 自带轮询，无需固定 sleep）
-            cal = browser_session.get_tab().ele('css:.ant-calendar', timeout=5)
+            cal = browser_session.get_tab().ele('c:.ant-calendar', timeout=5)
             if cal is None:
                 return {"ok": False, "reason": "日历面板未弹出"}
 
@@ -172,9 +172,9 @@ def select_date_range(field_name: str, start_date: str, end_date: str, tab=None)
 
             # 双向翻页：按月份差正负选 prev/next 方向；上限 600 次（≈50 年）防异常死循环
             def _shown_ym():
-                lp = cal.ele('css:.ant-calendar-range-left')
-                ye = lp.ele('css:.ant-calendar-year-select')
-                me = lp.ele('css:.ant-calendar-month-select')
+                lp = cal.ele('c:.ant-calendar-range-left')
+                ye = lp.ele('c:.ant-calendar-year-select')
+                me = lp.ele('c:.ant-calendar-month-select')
                 return int(ye.text.replace('年', '')), int(me.text.replace('月', ''))
 
             def _wait_ym_change(prev, deadline):
@@ -196,7 +196,7 @@ def select_date_range(field_name: str, start_date: str, end_date: str, tab=None)
                 delta = (target_year * 12 + target_month) - (cur_year * 12 + cur_month)
                 if delta == 0:
                     break
-                btn_sel = 'css:.ant-calendar-next-month-btn' if delta > 0 else 'css:.ant-calendar-prev-month-btn'
+                btn_sel = 'c:.ant-calendar-next-month-btn' if delta > 0 else 'c:.ant-calendar-prev-month-btn'
                 btn = cal.ele(btn_sel, timeout=1)
                 if not btn:
                     return {"ok": False, "reason": f"未找到{'下一月' if delta > 0 else '上一月'}按钮"}
@@ -204,22 +204,22 @@ def select_date_range(field_name: str, start_date: str, end_date: str, tab=None)
                 # 智能等待：显示的年/月变化后再决定是否继续翻（最多 1.5s）
                 _wait_ym_change((cur_year, cur_month), time.time() + 1.5)
 
-            start_cell = cal.ele(f'css:td[title="{start_date}"] .ant-calendar-date')
+            start_cell = cal.ele(f'c:td[title="{start_date}"] .ant-calendar-date')
             if start_cell is None:
                 return {"ok": False, "reason": f"未找到开始日期单元格: {start_date}"}
             start_cell.click()
             # 智能等待：开始日期被选中即视为已进入结束日期选择态（最多 3s）
             try:
-                cal.wait.ele_displayed('css:.ant-calendar-selected-start-date', timeout=3)
+                cal.wait.ele_displayed('c:.ant-calendar-selected-start-date', timeout=3)
             except Exception:
                 pass
 
-            end_cell = cal.ele(f'css:td[title="{end_date}"] .ant-calendar-date')
+            end_cell = cal.ele(f'c:td[title="{end_date}"] .ant-calendar-date')
             if end_cell is None:
                 return {"ok": False, "reason": f"未找到结束日期单元格: {end_date}"}
             end_cell.click()
 
-            inputs = target_row.eles('css:input.ant-calendar-range-picker-input')
+            inputs = target_row.eles('c:input.ant-calendar-range-picker-input')
             return {
                 "ok": True,
                 "startValue": inputs[0].attr('value') if inputs else '',
@@ -259,7 +259,7 @@ def scan_filter_fields(tab=None):
                 var t=(col.textContent||'').trim().replace(/\s+/g,'');
                 return !col.querySelector('.ant-select') || t.indexOf('重置')>=0 || t.indexOf('收起')>=0 || t.indexOf('展开')>=0;
             }
-            var cols = document.querySelectorAll('.page-query .legions-pro-quick-filter-row > div[class*="ant-col-"]');
+            var cols = document.querySelectorAll('.legions-pro-quick-filter-row > div[class*="ant-col-"]');
             var out = [], seen = {};
             for (var i = 0; i < cols.length; i++) {
                 var col = cols[i];
@@ -344,11 +344,11 @@ def _close_visible_dropdowns(fr, timeout=0.5):
         });
     """)
     try:
-        fr.wait.ele_hidden('css:.ant-select-dropdown:not(.ant-select-dropdown-hidden)', timeout=timeout)
+        fr.wait.ele_hidden('c:.ant-select-dropdown:not(.ant-select-dropdown-hidden)', timeout=timeout)
     except Exception:
         pass
     try:
-        fr.wait.ele_hidden('css:.ant-dropdown:not(.ant-dropdown-hidden)', timeout=timeout)
+        fr.wait.ele_hidden('c:.ant-dropdown:not(.ant-dropdown-hidden)', timeout=timeout)
     except Exception:
         pass
     return True
@@ -364,7 +364,7 @@ def _collect_dropdown_options(fr, col_idx, sel_idx):
     fr.run_js("document.querySelectorAll('.ant-select-dropdown, .ant-dropdown').forEach(function(d){d.style.removeProperty('display');});")
 
     open_js = (
-        "var cols=document.querySelectorAll('.page-query .legions-pro-quick-filter-row > div[class*=\"ant-col-\"]');"
+        "var cols=document.querySelectorAll('.legions-pro-quick-filter-row > div[class*=\"ant-col-\"]');"
         "var sel=cols[%d]?cols[%d].querySelectorAll('.ant-select')[%d]:null;"
         "if(sel){var cb=sel.querySelector('[role=\"combobox\"]')||sel.querySelector('.ant-select-selection');"
         "if(cb){var r=cb.getBoundingClientRect();cb.dispatchEvent(new MouseEvent('mousedown',{bubbles:true}));cb.click();"
@@ -381,8 +381,8 @@ def _collect_dropdown_options(fr, col_idx, sel_idx):
         return []
 
     try:
-        fr.wait.ele_displayed('css:.ant-select-dropdown:not(.ant-select-dropdown-hidden)', timeout=1)
-        fr.wait.ele_displayed('css:.ant-select-dropdown:not(.ant-select-dropdown-hidden) .ant-select-dropdown-menu-item', timeout=0.8)
+        fr.wait.ele_displayed('c:.ant-select-dropdown:not(.ant-select-dropdown-hidden)', timeout=1)
+        fr.wait.ele_displayed('c:.ant-select-dropdown:not(.ant-select-dropdown-hidden) .ant-select-dropdown-menu-item', timeout=0.8)
     except Exception:
         # 搜索型下拉可能暂无选项；后续读取为空即可。
         pass

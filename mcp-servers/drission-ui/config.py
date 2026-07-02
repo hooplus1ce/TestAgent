@@ -22,7 +22,7 @@ NEEDED_COOKIES = ["SESSION", "UCTOKEN", "cookie_token"]
 DEFAULT_PORT = int(os.environ.get("HL_REMOTE_PORT", "9222"))
 DEFAULT_TARGET_HINT = os.environ.get("HL_TARGET_HINT", "诺贝科技")
 
-ACTIVE_FRAME_LOC = 'css:[role="tabpanel"][aria-hidden="false"] iframe'
+ACTIVE_FRAME_LOC = 'c:[role="tabpanel"][aria-hidden="false"] iframe'
 
 SHOT_DIR = os.environ.get(
     "HL_SHOT_DIR",

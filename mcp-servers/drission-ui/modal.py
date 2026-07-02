@@ -16,7 +16,7 @@ logger = logging.getLogger("drission-ui")
 def _detect_in_target(target):
     """用 DrissionPage 原生方法检测 target（tab/frame）内的弹窗。返回 {type, ...} 或 {type: "none"}。"""
     try:
-        modal = target.ele('css:.ant-modal-content', timeout=0.3)
+        modal = target.ele('c:.ant-modal-content', timeout=0.3)
         if modal:
             # 优先检查：ant-modal-wrap 为 display:none 则弹窗已关闭
             # （React 组件卸载不彻底时 ant-modal 残留但 wrap 已隐藏，这是最可靠的关闭判定）
@@ -37,11 +37,11 @@ def _detect_in_target(target):
             except Exception:
                 pass
         if modal:
-            title_el = modal.ele('css:.ant-modal-title', timeout=0.2)
-            content_el = modal.ele('css:.ant-modal-body', timeout=0.2)
-            buttons = [b.text for b in modal.eles('css:.ant-btn', timeout=0.2) if b.text]
-            has_close = modal.ele('css:.ant-modal-close', timeout=0.2) is not None
-            is_confirm = modal.ele('css:.ant-confirm-body', timeout=0.1) is not None
+            title_el = modal.ele('c:.ant-modal-title', timeout=0.2)
+            content_el = modal.ele('c:.ant-modal-body', timeout=0.2)
+            buttons = [b.text for b in modal.eles('c:.ant-btn', timeout=0.2) if b.text]
+            has_close = modal.ele('c:.ant-modal-close', timeout=0.2) is not None
+            is_confirm = modal.ele('c:.ant-confirm-body', timeout=0.1) is not None
             return {
                 "type": "confirm" if is_confirm else "interactive",
                 "title": title_el.text if title_el else "",
@@ -50,18 +50,18 @@ def _detect_in_target(target):
                 "hasClose": has_close,
             }
 
-        notif = target.ele('css:.ant-notification-notice', timeout=0.2)
+        notif = target.ele('c:.ant-notification-notice', timeout=0.2)
         if notif:
-            msg_el = notif.ele('css:.ant-notification-notice-message', timeout=0.1)
-            desc_el = notif.ele('css:.ant-notification-notice-description', timeout=0.1)
+            msg_el = notif.ele('c:.ant-notification-notice-message', timeout=0.1)
+            desc_el = notif.ele('c:.ant-notification-notice-description', timeout=0.1)
             return {
                 "type": "notification",
                 "message": (msg_el.text if msg_el else "") or (desc_el.text if desc_el else ""),
             }
 
-        msg = target.ele('css:.ant-message-notice', timeout=0.2)
+        msg = target.ele('c:.ant-message-notice', timeout=0.2)
         if msg:
-            text_el = msg.ele('css:.ant-message-notice-content', timeout=0.1)
+            text_el = msg.ele('c:.ant-message-notice-content', timeout=0.1)
             return {"type": "message", "message": text_el.text[:200] if text_el else ""}
 
     except Exception:
@@ -75,8 +75,8 @@ def detect_modal(timeout: float = 0):
     """
     deadline = time.time() + timeout if timeout > 0 else None
     while True:
-        tab = browser_session.get_tab()
-        fr = browser_session.get_active_frame(tab)
+        tab = browser_session.get_tab_ro()
+        fr = browser_session.get_active_frame_ro(tab)
         if fr is not None:
             info = _detect_in_target(fr)
             if info.get("type") != "none":
@@ -118,9 +118,9 @@ def close_modal(tab=None):
     errors = []
     try:
         # 关闭通知
-        notices = target.eles('css:.ant-notification-notice', timeout=0.5)
+        notices = target.eles('c:.ant-notification-notice', timeout=0.5)
         for n in notices:
-            btn = n.ele('css:.ant-notification-notice-close', timeout=0.3)
+            btn = n.ele('c:.ant-notification-notice-close', timeout=0.3)
             if btn:
                 btn.click()
                 try:
@@ -130,8 +130,8 @@ def close_modal(tab=None):
                     errors.append("notification: 等待关闭超时")
 
         # 关闭消息
-        for m in target.eles('css:.ant-message-notice', timeout=0.3):
-            btn = m.ele('css:.ant-message-notice-close', timeout=0.3)
+        for m in target.eles('c:.ant-message-notice', timeout=0.3):
+            btn = m.ele('c:.ant-message-notice-close', timeout=0.3)
             try:
                 if btn:
                     btn.click()
@@ -142,13 +142,13 @@ def close_modal(tab=None):
                 errors.append("message: %s" % e)
 
         # 关闭业务弹窗（点取消优先，其次×）
-        modal = target.ele('css:.ant-modal-content', timeout=0.5)
+        modal = target.ele('c:.ant-modal-content', timeout=0.5)
         if modal:
-            cancel = modal.ele('css:.ant-btn:not(.ant-btn-primary)', timeout=0.3)
+            cancel = modal.ele('c:.ant-btn:not(.ant-btn-primary)', timeout=0.3)
             if cancel:
                 cancel.click()
             else:
-                close_x = modal.ele('css:.ant-modal-close', timeout=0.3)
+                close_x = modal.ele('c:.ant-modal-close', timeout=0.3)
                 if close_x:
                     close_x.click()
                 else:

@@ -252,6 +252,63 @@ def get_active_frame(tab=None):
             return None
 
 
+def get_tab_ro():
+    """返回当前 tab（只读，不探活不重连）。仅在读锁保护下调用，确保无并发写。"""
+    return _tab
+
+
+def get_active_frame_ro(tab=None):
+    """取活动 iframe（只读版本，不加 _lock，不重连）。
+    
+    仅在读锁保护下调用：保证 _tab 不会被写操作替换。
+    """
+    tab = tab or _tab
+    if tab is None:
+        return None
+    try:
+        js = (
+            "var f=document.querySelector('[role=\"tabpanel\"][aria-hidden=\"false\"] iframe');"
+            "if(!f)return JSON.stringify({found:false});"
+            "return JSON.stringify({found:true, name:f.name||'', id:f.id||''});"
+        )
+        res = tab.run_js(js)
+        d = json.loads(res) if isinstance(res, str) else (res or {})
+        name = d.get("name") or d.get("id") or ""
+        if name:
+            try:
+                fr = tab.get_frame(name, timeout=3)
+                if fr and not isinstance(fr, str) and getattr(fr, '_type', None) == 'ChromiumFrame':
+                    return fr
+            except Exception:
+                pass
+        try:
+            fr = tab.get_frame(ACTIVE_FRAME_LOC, timeout=3)
+            if fr and not isinstance(fr, str) and getattr(fr, '_type', None) == 'ChromiumFrame':
+                return fr
+        except Exception:
+            pass
+        return None
+    except Exception as e:
+        logger.debug("get_active_frame_ro 失败: %s", e)
+        return None
+
+
+def frame_offset_ro(tab=None):
+    """活动 iframe 左上角视口偏移（只读版本）。"""
+    tab = tab or _tab
+    if tab is None:
+        return 0.0, 0.0
+    js = (
+        "var f=document.querySelector('[role=\"tabpanel\"][aria-hidden=\"false\"] iframe');"
+        "if(!f)return JSON.stringify({x:0,y:0});"
+        "var r=f.getBoundingClientRect();"
+        "return JSON.stringify({x:r.left,y:r.top});"
+    )
+    res = tab.run_js(js)
+    d = json.loads(res) if isinstance(res, str) else (res or {"x": 0, "y": 0})
+    return float(d.get("x", 0)), float(d.get("y", 0))
+
+
 def frame_offset(tab=None):
     """活动 iframe 左上角在【顶层视口】的偏移 (x, y)。
 
@@ -273,6 +330,23 @@ def frame_offset(tab=None):
 
 def find(locator: str, in_frame: bool = True, timeout: float = 5, wait_clickable: bool = True):
     """按 DrissionPage 定位符查找元素：优先在活动 iframe 内，未命中再回退到 top 文档。
+
+    支持完整 DP 定位语法：
+      #id          — id 匹配（精确），#:ne 模糊，#^on 开头，#$ne 结尾
+      .cls         — class 匹配（精确），.:_cls 模糊，.^p_ 开头，.$_cls 结尾
+      text=文      — 文本精确匹配，text:文 模糊匹配（纯字符串默认模糊匹配文本）
+      tag:div      — 标签类型匹配（简化 t:div）
+      css:.cls     — CSS 选择器（简化 c:.cls）
+      xpath://div  — XPath 定位（简化 x://div）
+      @id=val      — 单属性精确匹配（@id:val 模糊，@id^val 开头，@id$val 结尾）
+      @@k1=v@@k2=v — 多属性与匹配（所有条件同时满足）
+      @|k1=v@|k2=v — 多属性或匹配（任一条件满足）
+      @!id=val     — 否定匹配（@!class 匹配无 class 属性的元素）
+      ax:@role=btn@name=xxx — 无障碍模式匹配
+    简化写法：text→tx, tag→t, css→c, xpath→x, @text()→@tx(), @tag()→@t()
+    链式：tab('#id')('.cls') 等价于 tab.ele('#id').ele('.cls')
+    shadow-root：ele.sr 等价于 ele.shadow_root
+    文档：https://drissionpage.cn/browser_control/get_elements/syntax
 
     Args:
         locator: DrissionPage 定位符
@@ -303,6 +377,76 @@ def find(locator: str, in_frame: bool = True, timeout: float = 5, wait_clickable
                 # 某些元素无 clickable 概念（如纯展示节点），忽略校验返回元素
                 pass
         return ele
+
+def find_all(locator: str, in_frame: bool = True, timeout: float = 5):
+    """按 DrissionPage 定位符查找所有匹配元素（eles 封装）。
+
+    支持完整 DP 定位语法：tag:div / t:div / #id / .cls / @attr=v / @@k1=v@@k2=v / @|k1=v@|k2=v
+    text:文 / tx=文 / css:.cls / c:.cls / xpath://div / x://div / ax:@role=btn@name=xxx
+    纯文本自动匹配。简化写法见 https://drissionpage.cn/browser_control/get_elements/simplify
+    """
+    with _lock:
+        tab = get_tab()
+        if in_frame:
+            fr = get_active_frame(tab)
+            if fr is not None:
+                els = fr.eles(locator, timeout=timeout)
+                if els:
+                    return els
+        return tab.eles(locator, timeout=timeout)
+
+
+def find_static(locator: str = None, in_frame: bool = True, timeout: float = 5, index: int = 1):
+    """按 DrissionPage 定位符查找元素的静态版本（s_ele 封装）。
+
+    静态元素（SessionElement）由纯文本构造，速度极快，适合批量数据采集。
+    返回的静态元素不能交互（点击/输入），只能读取属性/文本。
+    locator 为 None 时返回调用者本身的静态副本。
+    """
+    with _lock:
+        tab = get_tab()
+        if in_frame:
+            fr = get_active_frame(tab)
+            if fr is not None:
+                ele = fr.s_ele(locator, index=index, timeout=timeout) if locator else fr.s_ele()
+                if ele:
+                    return ele
+        return tab.s_ele(locator, index=index, timeout=timeout) if locator else tab.s_ele()
+
+
+def find_batch(locators: list, in_frame: bool = True, timeout: float = 5,
+               any_one: bool = True, first_ele: bool = True):
+    """同时匹配多个定位符（find 封装）。返回 dict{定位符: 元素} 或 tuple(定位符, 元素)。
+
+    any_one=True: 返回第一个有结果的 (定位符, 元素)
+    any_one=False: 返回 {定位符: 元素}（first_ele=True 每个定位符第一个，False 所有）
+    """
+    with _lock:
+        tab = get_tab()
+        if in_frame:
+            fr = get_active_frame(tab)
+            if fr is not None:
+                res = fr.find(locators, any_one=any_one, first_ele=first_ele, timeout=timeout)
+                if any_one:
+                    if res[0] is not None:
+                        return res
+                else:
+                    if any(v for v in res.values()):
+                        return res
+        return tab.find(locators, any_one=any_one, first_ele=first_ele, timeout=timeout)
+
+
+def get_frame_by_locator(locator, timeout: float = 5):
+    """按定位符/序号/id/name 获取 iframe/frame 元素（get_frame 封装）。
+
+    locator 可以是定位字符串、int 序号（1 开始，负数倒数）、id 属性内容、name 属性内容。
+    返回 ChromiumFrame 对象，可在其内部继续查找元素。
+    """
+    with _lock:
+        tab = get_tab()
+        if isinstance(locator, int) or (isinstance(locator, str) and locator.isdigit()):
+            return tab.get_frame(int(locator), timeout=timeout)
+        return tab.get_frame(locator, timeout=timeout)
 
 
 # ==================== BrowserContext 注册表 ====================
