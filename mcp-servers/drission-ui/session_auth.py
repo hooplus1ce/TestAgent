@@ -29,15 +29,6 @@ def _load_ocr_module():
     return mod
 
 
-def cache_session():
-    """（已废弃）直接返回 ok，不再缓存 cookie。
-
-    旧版缓存逻辑会在 refresh_session 时重复注入 cookie 导致多 SESSION 冲突，
-    现改为由 refresh_session → login_ocr 每次重新获取。
-    """
-    return {"ok": True, "cached": [], "missing": [], "deprecated": True}
-
-
 def _inject_cookies(cookies: list):
     """用 DrissionPage 内置方法注入 cookies，自动处理域名解析、格式校验、前缀处理。
 

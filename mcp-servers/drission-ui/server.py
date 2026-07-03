@@ -114,13 +114,6 @@ def connect(port: int = config.DEFAULT_PORT, target_hint: str = config.DEFAULT_T
 
 @mcp.tool()
 @write_synchronized
-def cache_session() -> dict:
-    """（已废弃）不再缓存 cookie。refresh_session 改为每次重新 OCR 登录。"""
-    return session_auth.cache_session()
-
-
-@mcp.tool()
-@write_synchronized
 def refresh_session() -> dict:
     """会话过期时直接触发 OCR 登录 → 注入新 cookie → 刷新页面。不再依赖缓存。"""
     return session_auth.refresh_session()

@@ -5,10 +5,10 @@ import time
 
 
 def test_tool_count():
-    """应注册 50 个工具（含新增的 find_elements/find_static/find_batch/get_frame）。"""
+    """应注册 49 个工具（cache_session 已废弃移除）。"""
     import server
     tools = asyncio.run(server.mcp.list_tools())
-    assert len(tools) == 50, f"工具数应为 50，当前为 {len(tools)}"
+    assert len(tools) == 49, f"工具数应为 49，当前为 {len(tools)}"
 
 
 def test_listen_stop_registered():
