@@ -30,11 +30,11 @@ description: 为 WMS/MOM/ERP 等企业系统迭代生成测试用例（DrissionP
 ## 1. 系统接入与工具
 
 ### 浏览器连接
-`connect(port=9222)` 接管用户已打开的 Chrome。**禁止**启动新浏览器或无头模式。连接后立即 `cache_session()` 缓存会话。
+`connect(port=9222)` 接管用户已打开的 Chrome。**禁止**启动新浏览器或无头模式。连接后立即 `check_session()` 检测会话状态。
 
 ### Session 维持
-- 探索中途过期：`check_session()` → `refresh_session()`（缓存注入）→ 失败则 `login_ocr()`
-- 首次登录/完全失效：`login_ocr()`（OCR + HTTP 登录 + CDP 注入）
+- 首次登录或会话过期：直接 `login_ocr()`（OCR + HTTP 登录 + 注入 → 导航 SCM Admin）
+- `refresh_session()` 等同于 `login_ocr()`，每次重新获取新 cookie，不再缓存
 
 ### 工具集
 所有浏览器原子操作由 `drission-ui` MCP 提供：点击/输入/截图/弹窗检测/VTable 操作/网络监听/筛选区操作等。AI 只需调用工具并编排顺序，无需关心内部实现。
@@ -50,7 +50,7 @@ description: 为 WMS/MOM/ERP 等企业系统迭代生成测试用例（DrissionP
 ### Phase 1 — 需求采集
 
 1. 确认领域（显式询问用户）
-2. `connect()` → 立即 `cache_session()`
+2. `connect()` → 立即 `check_session()`
 3. `enter_module("<模块名>", expand_filter=True)` 进入模块
 4. 确保筛选区切换为**内联模式**（见“筛选区显示模式”）
 5. `dom_overview()` DOM 俯瞰，分析页面结构
@@ -178,7 +178,7 @@ detect_modal() → 确认弹窗状态变化
 ```
 
 ### 会话维持
-`check_session()` 检测过期 → `refresh_session()`（缓存 cookie）→ 失败则 `login_ocr()`。
+`check_session()` 检测过期 → 直接 `refresh_session()` 或 `login_ocr()`（每次重新获取新 cookie，不再缓存）。
 
 ---
 
@@ -190,7 +190,7 @@ detect_modal() → 确认弹窗状态变化
 | 浏览器连接失败 | 检查 `http://localhost:9222/json`；确认 Chrome 以 9222 启动 |
 | `mount_vtable` 失败 | `get_active_frame()` 确认 iframe；仍失败按截图降级生成低级用例 |
 | `enter_module` iframe 未就绪 | 重试 `reset_to_initial`；检查菜单文本匹配 |
-| SCM 会话过期 | `check_session` → `refresh_session` → 失败则 `login_ocr` |
+| SCM 会话过期 | `check_session` → 直接 `refresh_session` 或 `login_ocr`（每次重新 OCR 登录） |
 | openpyxl 未安装 | `uv add openpyxl` |
 | 需求信息不足 | 3 轮追问后生成骨架用例，备注 `[待确认]` |
 
@@ -198,7 +198,7 @@ detect_modal() → 确认弹窗状态变化
 
 - [ ] `drission-ui` MCP 可用
 - [ ] 浏览器可连接（port 9222）
-- [ ] `connect` 成功 + `cache_session` 已缓存
+- [ ] `connect` 成功 + `check_session` 通过
 - [ ] 用户已确认变量配置
 - [ ] 输出目录有写入权限
 - [ ] 每条用例通过质量门禁

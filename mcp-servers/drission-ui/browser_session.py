@@ -112,7 +112,20 @@ def _launch_chrome(port: int):
                            f"请在 dp_configs.ini 中设置正确的 browser_path")
 
     logger.info("启动 Chrome: %s %s", exe, " ".join(chrome_args))
-    subprocess.Popen([exe] + chrome_args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    # 当前 Claude Code 会话可能为 tty（无 DISPLAY/XAUTHORITY）；图形会话为
+    # Wayland(GNOME mutter)，X0 是 Xwayland，需 DISPLAY + XAUTHORITY 才能非 headless 启动
+    env = os.environ.copy()
+    env.setdefault('DISPLAY', ':0')
+    if 'XAUTHORITY' not in env:
+        xauth_dir = '/run/user/%d' % os.getuid()
+        try:
+            for f in os.listdir(xauth_dir):
+                if f.startswith('.mutter-Xwaylandauth.'):
+                    env['XAUTHORITY'] = os.path.join(xauth_dir, f)
+                    break
+        except OSError:
+            pass
+    subprocess.Popen([exe] + chrome_args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env)
 
     # 等待 CDP 就绪
     if not _cdp_ready(port, timeout=10):
@@ -120,8 +133,23 @@ def _launch_chrome(port: int):
 
 
 def _connect_existing(port: int):
-    """连接已有 Chrome（接管模式）。"""
+    """连接已有 Chrome（接管模式）。
+
+    4.2：Chromium.__init__ 会比对已运行浏览器的实际 headless 状态与 options 配置，
+    不一致时调用 self.quit() 杀掉已接管浏览器并尝试重启——在无 DISPLAY 环境下
+    重启失败，表现为"浏览器连接失败"。故先探测 /json/version 的 UA，若为
+    HeadlessChrome 则同步 options.headless(True)，使接管不触发 quit。
+    GUI 环境（UA 不含 HeadlessChrome）不设，保持 is_headless=False 匹配。
+    """
     _opt = ChromiumOptions(read_file=False).set_address(f'127.0.0.1:{port}')
+    try:
+        import httpx
+        r = httpx.get(f'http://127.0.0.1:{port}/json/version', timeout=2)
+        ua = r.json().get('User-Agent', '')
+        if 'HeadlessChrome' in ua:
+            _opt.headless(True)
+    except Exception as e:
+        logger.debug("探测 Chrome headless 状态失败: %s", e)
     return Chromium(_opt)
 
 
@@ -150,20 +178,22 @@ def _pick_tab(browser, hint):
 
 
 def connect(port: int = config.DEFAULT_PORT, target_hint: str = config.DEFAULT_TARGET_HINT):
-    """连接 Chrome：优先 9222 端口已有实例，无则自启。"""
+    """连接 Chrome：直接用 DrissionPage 启动或接管 9222 实例。
+
+    读项目 dp_configs.ini 配置（含 --disable-site-isolation-trials、user-data-dir），
+    交给 DrissionPage 的 Chromium() 自动处理——端口无实例则启动，有则接管，
+    CDP 就绪等待由 DrissionPage 内部完成，不手动 subprocess / 轮询。
+    """
     with _lock:
         global _browser, _tab, _port, _target_hint
         _port = port
         _target_hint = target_hint
         logger.info("connect port=%s target_hint=%r", port, target_hint)
 
-        if _port_in_use(port):
-            logger.info("port %s 已有 Chrome，直接接管", port)
-            _browser = _connect_existing(port)
-        else:
-            logger.info("port %s 无 Chrome，自动启动", port)
-            _launch_chrome(port)
-            _browser = _connect_existing(port)
+        co = ChromiumOptions(read_file=True, ini_path=_DP_INI)
+        co.set_address(f'127.0.0.1:{port}')
+        co.set_browser_path('google-chrome')
+        _browser = Chromium(co)
 
         _tab = _pick_tab(_browser, target_hint)
         logger.info("connected tab url=%s", (_tab.url or "")[:120])

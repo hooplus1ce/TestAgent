@@ -69,9 +69,11 @@ except Exception as e:
 
 print("\n==== 9. 4.2 新增: listen 链式 API ====")
 try:
-    tab.listen.set_method("GET")
+    # 4.2：set_method 是 property，返回 MethodSetter 对象，用属性名链式调用
+    # tab.listen.set_method.GET(only=True) 只监听 GET；旧写法 set_method("GET") 会抛 TypeError
+    tab.listen.set_method.GET(only=True)
     tab.listen.start("hoolinks")
-    print("  listen.set_method + start 调用成功")
+    print("  listen.set_method.GET(only=True) + start 调用成功")
     tab.listen.stop()
 except Exception as e:
     print("  listen 新 API 失败: %s" % e)

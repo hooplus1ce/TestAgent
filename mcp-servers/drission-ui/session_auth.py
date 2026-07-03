@@ -1,8 +1,7 @@
-"""会话维持：cookie 缓存（内存）、DrissionPage 内置注入、OCR 免登、过期检测。
+"""会话维持：OCR 免登、cookie 注入、过期检测。
 
-移植自 cookie-cache.js / scm-login.js / scm-login-ocr.py。
-cookie 注入使用 DrissionPage 内置的 tab.set.cookies() 方法，自动处理域名解析、
-格式校验、__Host-/__Secure- 前缀等，无需手写 CDP Network.setCookie。
+每当检测到登录过期，直接触发 OCR 登录获取新 cookie 并注入刷新，
+不再缓存旧 cookie（避免重复注入导致多 SESSION 冲突）。
 """
 import importlib.util
 import json
@@ -16,9 +15,6 @@ logger = logging.getLogger("drission-ui")
 
 SCM_ADMIN_URL = config.SCM_ADMIN_URL
 NEEDED_COOKIES = config.NEEDED_COOKIES
-
-# 内存缓存：{name: value}
-_cookie_cache: dict = {}
 
 # OCR 登录脚本路径（内部化：scripts/scm-login-ocr.py）
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -34,37 +30,12 @@ def _load_ocr_module():
 
 
 def cache_session():
-    """缓存当前 tab 的 SESSION/UCTOKEN/cookie_token 到内存。返回 {ok, cached, missing}。"""
-    global _cookie_cache
-    tab = browser_session.get_tab()
-    # 兼容 cookies() 返回 dict 或 Cookie 对象两种形态
-    try:
-        cookies_map = dict(tab.cookies(as_dict=True))
-    except Exception as e:
-        logger.debug("cookies(as_dict=True) 失败，回退到列表模式: %s", e)
-        cookies = list(tab.cookies())
+    """（已废弃）直接返回 ok，不再缓存 cookie。
 
-        def _gname(c):
-            return c.get("name") if isinstance(c, dict) else getattr(c, "name", None)
-
-        def _gval(c):
-            return c.get("value") if isinstance(c, dict) else getattr(c, "value", None)
-
-        cookies_map = {_gname(c): _gval(c) for c in cookies}
-    cache = {}
-    missing = []
-    for name in NEEDED_COOKIES:
-        v = cookies_map.get(name)
-        if v:
-            cache[name] = v
-        else:
-            missing.append(name)
-    _cookie_cache.update(cache)
-    return {"ok": not missing, "cached": list(cache.keys()), "missing": missing}
-
-
-def get_cached_cookies():
-    return dict(_cookie_cache)
+    旧版缓存逻辑会在 refresh_session 时重复注入 cookie 导致多 SESSION 冲突，
+    现改为由 refresh_session → login_ocr 每次重新获取。
+    """
+    return {"ok": True, "cached": [], "missing": [], "deprecated": True}
 
 
 def _inject_cookies(cookies: list):
@@ -84,19 +55,17 @@ def _inject_cookies(cookies: list):
 
 
 def refresh_session():
-    """用缓存 cookie 注入并刷新页面，恢复会话。"""
-    if not _cookie_cache:
-        return {"ok": False, "reason": "cookie 未缓存，请先 cache_session 或 login_ocr"}
-    missing = [n for n in NEEDED_COOKIES if not _cookie_cache.get(n)]
-    if missing:
-        return {"ok": False, "reason": "缓存缺失: %s" % missing}
-    cookies = [{"name": n, "value": _cookie_cache[n]} for n in NEEDED_COOKIES]
-    _inject_cookies(cookies)
-    tab = browser_session.get_tab()
-    tab.refresh()
-    tab.wait.doc_loaded(timeout=10)  # 等页面加载完成
-    cache_session()  # 服务端可能轮换 cookie，重新缓存
-    return {"ok": True}
+    """会话过期时直接触发 OCR 登录 → 注入新 cookie → 刷新页面。
+
+    不再依赖缓存 cookie，每次都重新获取，避免多 SESSION 冲突。
+    """
+    logger.info("refresh_session → 触发 login_ocr 获取新 cookie")
+    result = login_ocr()
+    if result.get("ok"):
+        tab = browser_session.get_tab()
+        tab.refresh()
+        tab.wait.doc_loaded(timeout=10)
+    return result
 
 
 def login_ocr():
@@ -111,7 +80,6 @@ def login_ocr():
         return {"ok": False, "reason": "导航失败: status=%s" % getattr(nav, "status", "unknown"),
                 "cookies": [c["name"] for c in auth_cookies]}
     tab.wait.doc_loaded(timeout=15)  # 等页面加载完成
-    cache_session()
     return {"ok": True, "cookies": [c["name"] for c in auth_cookies], "url": tab.url, "title": tab.title,
             "nav_status": getattr(nav, "status", None)}
 

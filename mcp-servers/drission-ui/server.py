@@ -115,14 +115,14 @@ def connect(port: int = config.DEFAULT_PORT, target_hint: str = config.DEFAULT_T
 @mcp.tool()
 @write_synchronized
 def cache_session() -> dict:
-    """缓存当前 tab 的 SESSION/UCTOKEN/cookie_token 到服务器内存，供会话过期时刷新复用。"""
+    """（已废弃）不再缓存 cookie。refresh_session 改为每次重新 OCR 登录。"""
     return session_auth.cache_session()
 
 
 @mcp.tool()
 @write_synchronized
 def refresh_session() -> dict:
-    """用缓存 cookie 经 CDP 注入并刷新页面，恢复过期会话。先 cache_session 再调用。"""
+    """会话过期时直接触发 OCR 登录 → 注入新 cookie → 刷新页面。不再依赖缓存。"""
     return session_auth.refresh_session()
 
 
@@ -250,7 +250,7 @@ def get_active_frame() -> dict:
 @read_synchronized
 def dom_tree(selector: str = "", max_depth: int = 6, max_children: int = 50,
              text: bool = False, text_limit: int = 100, show_hidden: bool = False,
-             save_path: str = "", save_format: str = "yml") -> dict:
+             save_path: str = "", save_format: str = "yml", max_chars: int = 8000) -> dict:
     """打印页面或元素的 DOM 树结构（结构化 JSON，便于 AI 识别）。
 
     Args:
@@ -262,6 +262,7 @@ def dom_tree(selector: str = "", max_depth: int = 6, max_children: int = 50,
         show_hidden: 是否包含 script/style/comment 等隐藏节点（默认 False）
         save_path: 指定文件路径则同时写入磁盘（如 "screenshots/dom-tree.yml"）
         save_format: 输出格式，"json" 或 "yml"（默认 yml，更省 token）
+        max_chars: 输出字符串最大字符数（默认 8000），超出截断并标 _truncated
     """
     fr = browser_session.get_active_frame()
     target = fr if fr is not None else browser_session.get_tab()
@@ -369,6 +370,14 @@ def dom_tree(selector: str = "", max_depth: int = 6, max_children: int = 50,
         else:
             result["tree"] = tree_dict
 
+        # 输出截断保护：防止 DOM 树过大撑爆上下文
+        tree_str = result.get("tree", "")
+        if isinstance(tree_str, str) and len(tree_str) > max_chars:
+            result["tree"] = tree_str[:max_chars] + (
+                f"\n...(_truncated at {max_chars} chars, original {len(tree_str)})")
+            result["_truncated"] = True
+            result["_original_chars"] = len(tree_str)
+
         if save_path:
             os.makedirs(os.path.dirname(save_path) or ".", exist_ok=True)
             with open(save_path, "w", encoding="utf-8") as f:
@@ -386,7 +395,8 @@ def dom_tree(selector: str = "", max_depth: int = 6, max_children: int = 50,
 @read_synchronized
 def scan_page_elements(include_iframe: bool = True, max_items: int = 200) -> dict:
     """扫描页面所有可见交互控件(button/a/input/role=*/canvas)，递归穿透同源 iframe，
-    按 frame 分组返回，含中心坐标。进入模块后第一件事。
+    按 frame 分组返回，含中心坐标和稳定引用 ref ID（e1/e2/...），后续可用 ref 定位。
+    进入模块后第一件事。
     max_items 限制返回元素数（超出截断并标 _truncated），避免吃尽上下文。"""
     tab = browser_session.get_tab()
     script = browser_session.load_js("element-scan.js") + "\nreturn JSON.stringify(scanInteractiveControls());"
@@ -775,7 +785,15 @@ def close_modal() -> dict:
 @mcp.tool()
 @write_synchronized
 def listen_start(targets, method: str = None) -> dict:
-    """启动网络监听。targets 为 URL 特征：单个字符串、逗号分隔的多个特征、或列表。method 可选 'POST'/'GET'。"""
+    """启动网络监听。targets 为 URL 特征：单个字符串、逗号分隔的多个特征、或列表。
+    method 可选 'POST'/'GET' 等，采用 4.2 set_method 链式 API 只监听指定方法；
+    不传则默认监听 GET+POST。
+
+    4.2 起 listen.start() 删除 method/res_type 参数，改用 listen.set_method 链式 API：
+      tab.listen.set_method.GET(only=True)   # 只监听 GET
+      tab.listen.set_method.POST().GET()     # 监听 GET+POST
+      tab.listen.set_method.all()            # 监听全部
+    """
     tab = browser_session.get_tab()
     # 统一为列表：逗号分隔 → 拆分去空，避免 "a,b" 被当成单个特征串
     if isinstance(targets, str):
@@ -783,7 +801,14 @@ def listen_start(targets, method: str = None) -> dict:
     elif targets is None:
         targets = ""
     if method:
-        tab.listen.set_method(method)
+        # 4.2：listen.set_method 是 property，返回 MethodSetter 对象，
+        # 用属性名（GET/POST/PUT/...）链式调用，only=True 表示只监听该方法。
+        # MethodSetter.__getattr__ 对不在 _ALLOW 中的名字调用时 raise ValueError。
+        m = method.upper()
+        try:
+            getattr(tab.listen.set_method, m)(only=True)
+        except (ValueError, TypeError) as e:
+            logger.warning("不支持的监听方法 %r（%s），回退默认 GET+POST", method, e)
     tab.listen.start(targets)
     return {"ok": True, "targets": targets}
 
@@ -838,7 +863,10 @@ def download_by_browser(url: str, save_path: str = None, rename: str = None,
                         file_exists: str = "rename") -> dict:
     """浏览器触发下载(4.2 新增)。用于 blob / 难以直接 fetch 的 URL。
     file_exists: 'rename'/'overwrite'/'skip' 或 'r'/'o'/'s'。
-    返回 {ok, path, file_size, url}。
+    返回 {ok, path, file_size, url, state, name}。
+
+    注意：DownloadMission 的属性为 final_path/total_bytes/name/state，
+    无 path/file_size；wait(show=False) 返回 final_path 或 False（静默，避免 print 污染 MCP stdout）。
     """
     tab = browser_session.get_tab()
     kwargs = {"url": url, "timeout": timeout, "file_exists": file_exists}
@@ -850,8 +878,16 @@ def download_by_browser(url: str, save_path: str = None, rename: str = None,
         kwargs["suffix"] = suffix
     try:
         mission = tab.download.by_browser(**kwargs)
-        mission.wait()
-        return {"ok": True, "path": mission.path, "file_size": mission.file_size, "url": url}
+        # show=False：wait() 默认 print 进度到 stdout，会污染 MCP 协议帧，必须关闭
+        final_path = mission.wait(show=False)
+        return {
+            "ok": bool(final_path),
+            "path": final_path or getattr(mission, "final_path", "") or "",
+            "file_size": getattr(mission, "total_bytes", None),
+            "url": url,
+            "state": getattr(mission, "state", ""),
+            "name": getattr(mission, "name", ""),
+        }
     except Exception as e:
         return {"ok": False, "reason": "下载失败: %s" % e}
 

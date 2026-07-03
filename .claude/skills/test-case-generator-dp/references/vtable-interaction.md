@@ -22,9 +22,8 @@ scan_vtable_columns()         # → 每列: col, title, bodyBehavior, icons[]
 
 Canvas VTable 的复选框列可通过 `click_cell(col, row)` 直接点击。工具内部流程：
 
-1. `get_cell_rect(col, row)` 通过 VTable 场景图 API（`scenegraph.getCell(col, row).globalAABBBounds`）获取单元格中心在 iframe 内的帧内坐标
-2. Python 层叠加 iframe 偏移转换为顶层视口坐标
-3. `tab.actions.move_to((viewportX, viewportY)).click()` 执行坐标级点击
+1. `get_cell_rect(col, row)` 通过 VTable 场景图 API（`scenegraph.getCell(col, row).globalAABBBounds`）获取单元格中心帧内坐标，JS 端叠加 `window.frameElement.getBoundingClientRect()` 偏移，一次算到顶层视口坐标 viewportX/viewportY（Python 不再二次叠加，避免双倍偏移）
+2. `tab.actions.move_to((viewportX, viewportY)).click()` 执行坐标级点击
 
 ```python
 # 点击第 N 行的复选框

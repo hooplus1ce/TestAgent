@@ -1,6 +1,7 @@
 // 通用交互控件扫描（DOM，递归穿透同源 iframe）。在 tab 或 frame 上下文执行。
 function scanInteractiveControls() {
   var out = [];
+  var _seq = 0;
   function visible(el) {
     var r = el.getBoundingClientRect();
     var s = getComputedStyle(el);
@@ -18,7 +19,9 @@ function scanInteractiveControls() {
       var el = nodes[i];
       if (!visible(el)) continue;
       var r = el.getBoundingClientRect();
+      _seq++;
       out.push({
+        ref: 'e' + _seq,
         frame: frame,
         tag: el.tagName.toLowerCase(),
         type: el.getAttribute('type') || el.getAttribute('role') || '',
