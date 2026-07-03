@@ -32,23 +32,19 @@ print("\n==== 2. get_active_frame ====")
 fr = B.get_active_frame(tab)
 print("  active_frame=%s url=%s" % (fr, getattr(fr, "url", "") if fr else ""))
 
-print("\n==== 3. frame_offset ====")
-if fr is not None:
-    print("  offset=%s" % (B.frame_offset(tab),))
-
-print("\n==== 4. scan_page_elements (top, 递归穿透 iframe) ====")
+print("\n==== 3. scan_page_elements (top, 递归穿透 iframe) ====")
 script = B.load_js("element-scan.js") + "\nreturn JSON.stringify(scanInteractiveControls());"
 res = tab.run_js(script)
 data = json.loads(res) if isinstance(res, str) else res
 print("  total=%s groups=%s" % (data.get("total"), list({e.get("frame") or "(main)" for e in data.get("elements", [])})))
 
-print("\n==== 5. check_session ====")
+print("\n==== 4. check_session ====")
 print("  ", session_auth.check_session())
 
-print("\n==== 6. detect_modal ====")
+print("\n==== 5. detect_modal ====")
 print("  ", modal.detect_modal())
 
-print("\n==== 7. VTable 链路 (最高风险) ====")
+print("\n==== 6. VTable 链路 (最高风险) ====")
 if fr is not None:
     mv = step("mount_vtable", lambda: vtable.mount_vtable())
     if mv and mv.get("ok"):
@@ -59,7 +55,7 @@ if fr is not None:
 else:
     print("  无活动 iframe，跳过")
 
-print("\n==== 8. 4.2 新增: mouse_trail (原生 tab.set.show_trail) ====")
+print("\n==== 7. 4.2 新增: mouse_trail (原生 tab.set.show_trail) ====")
 try:
     tab.set.show_trail()
     print("  show_trail() 调用成功")
@@ -67,7 +63,7 @@ except Exception as e:
     print("  show_trail() 失败(可能版本不支持): %s" % e)
     modal.mouse_trail(True)
 
-print("\n==== 9. 4.2 新增: listen 链式 API ====")
+print("\n==== 8. 4.2 新增: listen 链式 API ====")
 try:
     # 4.2：set_method 是 property，返回 MethodSetter 对象，用属性名链式调用
     # tab.listen.set_method.GET(only=True) 只监听 GET；旧写法 set_method("GET") 会抛 TypeError
@@ -78,14 +74,14 @@ try:
 except Exception as e:
     print("  listen 新 API 失败: %s" % e)
 
-print("\n==== 10. 4.2 新增: BrowserContext ====")
+print("\n==== 9. 4.2 新增: BrowserContext ====")
 try:
     browser = B.get_browser()
     print("  get_browser() 成功, browser=%s" % type(browser).__name__)
 except Exception as e:
     print("  get_browser() 失败: %s" % e)
 
-print("\n==== 11. 4.2 新增: ChromiumOptions ====")
+print("\n==== 10. 4.2 新增: ChromiumOptions ====")
 try:
     import config
     co = config.make_chromium_options()
@@ -93,7 +89,7 @@ try:
 except Exception as e:
     print("  make_chromium_options() 失败: %s" % e)
 
-print("\n==== 12. e2e 写路径 (HL_E2E=1 启用，会点击/导航，非只读) ====")
+print("\n==== 11. e2e 写路径 (HL_E2E=1 启用，会点击/导航，非只读) ====")
 if os.environ.get("HL_E2E", "").lower() in ("1", "true", "yes"):
     import server
     # 覆盖曾因缺 import time 而 NameError 的路径：enter_module / reset_to_initial / screenshot(无path)

@@ -323,41 +323,6 @@ def get_active_frame_ro(tab=None):
         return None
 
 
-def frame_offset_ro(tab=None):
-    """活动 iframe 左上角视口偏移（只读版本）。"""
-    tab = tab or _tab
-    if tab is None:
-        return 0.0, 0.0
-    js = (
-        "var f=document.querySelector('[role=\"tabpanel\"][aria-hidden=\"false\"] iframe');"
-        "if(!f)return JSON.stringify({x:0,y:0});"
-        "var r=f.getBoundingClientRect();"
-        "return JSON.stringify({x:r.left,y:r.top});"
-    )
-    res = tab.run_js(js)
-    d = json.loads(res) if isinstance(res, str) else (res or {"x": 0, "y": 0})
-    return float(d.get("x", 0)), float(d.get("y", 0))
-
-
-def frame_offset(tab=None):
-    """活动 iframe 左上角在【顶层视口】的偏移 (x, y)。
-
-    actions.move_to((x,y)) 接收视口坐标，故用 getBoundingClientRect（恒为视口坐标）
-    而非 rect.location（页面坐标，页面滚动时会错位）。
-    """
-    with _lock:
-        tab = tab or get_tab()
-        js = (
-            "var f=document.querySelector('[role=\"tabpanel\"][aria-hidden=\"false\"] iframe');"
-            "if(!f)return JSON.stringify({x:0,y:0});"
-            "var r=f.getBoundingClientRect();"
-            "return JSON.stringify({x:r.left,y:r.top});"
-        )
-        res = tab.run_js(js)
-        d = json.loads(res) if isinstance(res, str) else (res or {"x": 0, "y": 0})
-        return float(d.get("x", 0)), float(d.get("y", 0))
-
-
 def find(locator: str, in_frame: bool = True, timeout: float = 5, wait_clickable: bool = True):
     """按 DrissionPage 定位符查找元素：优先在活动 iframe 内，未命中再回退到 top 文档。
 

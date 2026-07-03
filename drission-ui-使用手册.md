@@ -46,7 +46,7 @@ AI(模型) ──调用 MCP 工具──► drission-ui MCP 服务器(常驻 Pyt
 | **"手"与"脑"分离** | MCP 服务器只做确定性浏览器原语；测试判断留在技能层，不硬编码 |
 | **接管而非启动** | 连接用户已在 9222 端口打开的 Chrome，不启动新实例、不无头 |
 | **脆弱 JS 被封装** | VTable 扫描/列值/坐标等依赖 React fiber 与 canvas scenegraph 的逻辑，作为工具内部实现，AI 调用即得结构化 JSON |
-| **坐标自动换算** | JS 产出帧内坐标 → Python 叠加 iframe 视口偏移 → 输出可直接点击的顶层视口坐标 |
+| **坐标自动换算** | 注入 JS 经 `window.frameElement` 一次算到顶层视口坐标 → 输出可直接点击的落点（Python 侧不再叠加偏移） |
 
 ### 文件布局
 
@@ -517,7 +517,7 @@ PYTHONIOENCODING=utf-8 uv run python verify_live.py
 |----|------|------|
 | 浏览器层 | `browser` 工具 + 每轮手写 JS eval | `drission-ui` MCP 结构化工具 |
 | VTable JS | 每轮拼装 eval | 封装在工具内部，AI 只消费 JSON |
-| 坐标换算 | 手动 / iframe 内查顶层 iframe（隐患） | Python 显式叠加 frame 视口偏移 |
+| 坐标换算 | 手动 / iframe 内查顶层 iframe（隐患） | JS 端经 `window.frameElement` 一次算定视口坐标 |
 | canvas hover | puppeteer 不稳，已转向 DrissionPage | `actions.move_to(hover).click()` 原生支持 |
 | 接口断言 | 无 | `listen_start/wait` 拿 body |
 | 并存策略 | 保留可回退 | 新增并行 |
