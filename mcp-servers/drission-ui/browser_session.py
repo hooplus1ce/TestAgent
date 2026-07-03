@@ -31,9 +31,9 @@ _lock = threading.RLock()
 # 活动业务 iframe 选择器（SCM：可见 tabpanel 内的 iframe）
 ACTIVE_FRAME_LOC = config.ACTIVE_FRAME_LOC
 
-# dp_configs.ini 路径（项目根目录）
+# dp_configs.ini 路径（configs/ 目录）
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
-_DP_INI = str(_PROJECT_ROOT / "dp_configs.ini")
+_DP_INI = str(_PROJECT_ROOT / "configs" / "dp_configs.ini")
 
 
 def load_js(name: str) -> str:

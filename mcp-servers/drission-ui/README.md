@@ -55,10 +55,8 @@ browser_session.py 单例 Chromium(9222)、活动 tab/frame 解析、find()、li
 config.py          配置外置：环境变量读 URL/域名/端口/截图目录，保留默认值
 vtable.py          VTable 工具：bundled JS 执行 + 帧内坐标→顶层视口换算
 filter_area.py     筛选区操作：展开/模式切换、日期范围选择、字段矩阵扫描
-session_auth.py    OCR 登录、cookie 注入刷新、过期检测
+session_auth.py    OCR 登录、cookie 注入刷新、过期检测（登录逻辑内嵌，无独立脚本）
 modal.py           弹窗三级检测、鼠标轨迹注入、弹窗关闭
-scripts/           OCR 登录脚本（内部化，不再跨包引用）
-  scm-login-ocr.py
 js/                页面内 JS 载荷（移植自旧技能脚本，改 IIFE+return）
   vtable-scanner.js  vtable-column-values.js  element-scan.js
   modal-detect.js    mouse-trail-inject.js

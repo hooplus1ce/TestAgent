@@ -2,6 +2,10 @@
 
 环境变量：
   HL_SCM_URL          SCM Admin URL
+  HL_SCM_BASE_URL      SCM 站点根 URL（OCR 登录用）
+  HL_SCM_LOGIN_PAGE    登录页 URL（Referer）
+  HL_SCM_USERNAME      登录用户名
+  HL_SCM_USERPWD       登录密码
   HL_COOKIE_DOMAIN    cookie 域
   HL_ACCESS_DOMAIN    CDP 注入 cookie 的域
   HL_TARGET_HINT      connect 时选 tab 的标题提示
@@ -17,6 +21,12 @@ import os
 SCM_ADMIN_URL = os.environ.get("HL_SCM_URL", "https://demo19-scm.hoolinks.com/scm-static/scm-admin/scm-admin/#/")
 COOKIE_DOMAIN = os.environ.get("HL_COOKIE_DOMAIN", ".demo19-scm.hoolinks.com")
 SCM_ACCESS_DOMAIN = os.environ.get("HL_ACCESS_DOMAIN", ".hoolinks.com")
+
+# OCR 登录端点与凭据（demo 环境；凭据优先走环境变量）
+SCM_BASE_URL = os.environ.get("HL_SCM_BASE_URL", "https://demo19-scm.hoolinks.com")
+SCM_LOGIN_PAGE = os.environ.get("HL_SCM_LOGIN_PAGE", "https://demo19-scm.hoolinks.com/meLogin.do?")
+SCM_USERNAME = os.environ.get("HL_SCM_USERNAME", "Hooplus1ce")
+SCM_USERPWD = os.environ.get("HL_SCM_USERPWD", "Ac123456")
 
 NEEDED_COOKIES = ["SESSION", "UCTOKEN", "cookie_token"]
 

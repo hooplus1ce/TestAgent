@@ -11,3 +11,6 @@ wheels/
 
 # Excel test case files
 *.xlsx
+
+# Chrome 用户数据目录（DrissionPage --user-data-dir，几百 MB）
+dp_profile/

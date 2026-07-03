@@ -122,7 +122,7 @@ def refresh_session() -> dict:
 @mcp.tool()
 @write_synchronized
 def login_ocr() -> dict:
-    """OCR 识别验证码 + HTTP 登录获取 cookie → 注入 → 导航 SCM Admin。用于首次登录或完全失效。"""
+    """OCR 识别验证码 + HTTP 登录获取 cookie → 清缓存 → 注入 → 刷新。用于首次登录或完全失效。"""
     return session_auth.login_ocr()
 
 
