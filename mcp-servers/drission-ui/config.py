@@ -10,6 +10,7 @@
   HL_CHROME_PATH       Chrome 浏览器路径（可选，自动探测）
   HL_EDGE_MODE         使用 Edge 浏览器（true/1 启用）
   HL_PROXY             代理地址，格式 'http://user:pass@ip:port'
+  HL_HEADLESS          无头模式（true/1 启用）——CI/CD 无图形环境场景，跳过图形环境探测
 """
 import os
 
@@ -35,6 +36,9 @@ EDGE_MODE = os.environ.get("HL_EDGE_MODE", "").lower() in ("true", "1", "yes")
 PROXY = os.environ.get("HL_PROXY", "")
 DISABLE_PDF_PREVIEW = os.environ.get("HL_DISABLE_PDF_PREVIEW", "").lower() in ("true", "1", "yes")
 REMOVE_TEST_TYPE = os.environ.get("HL_REMOVE_TEST_TYPE", "").lower() in ("true", "1", "yes")
+
+# 无头模式：CI/CD 等无图形环境场景。启用时跳过 Linux 图形环境探测，并加 --no-sandbox。
+HEADLESS = os.environ.get("HL_HEADLESS", "").lower() in ("true", "1", "yes")
 
 
 def make_chromium_options():

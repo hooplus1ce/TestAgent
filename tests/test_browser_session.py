@@ -1,5 +1,21 @@
-"""browser_session.py 测试：list_tabs / _pick_tab / get_active_frame（mock Chromium）。"""
+"""browser_session.py 测试：list_tabs / _pick_tab / get_active_frame（mock Chromium）
+及 _ensure_display_env 跨平台/headless 守卫。"""
+import os
+
+import pytest
 from unittest.mock import MagicMock, patch
+
+
+@pytest.fixture(autouse=True)
+def _restore_display_env():
+    """恢复 DISPLAY/XAUTHORITY，避免 _ensure_display_env 测试污染全局环境。"""
+    saved = {k: os.environ.get(k) for k in ("DISPLAY", "XAUTHORITY")}
+    yield
+    for k, v in saved.items():
+        if v is None:
+            os.environ.pop(k, None)
+        else:
+            os.environ[k] = v
 
 
 def test_list_tabs_no_browser():
@@ -101,3 +117,62 @@ def test_get_browser_returns_browser():
          patch.object(browser_session, "_lock"):
         result = browser_session.get_browser()
     assert result is mock_browser
+
+
+# ==================== _ensure_display_env 跨平台/headless 守卫 ====================
+
+def test_ensure_display_skipped_when_headless():
+    """headless 模式：跳过探测，不设 DISPLAY。"""
+    import browser_session, config
+    with patch.object(config, "HEADLESS", True), \
+         patch.dict("os.environ", {}, clear=False), \
+         patch.object(browser_session.os, "getuid", side_effect=AssertionError("不应调用 getuid")):
+        browser_session.os.environ.pop("DISPLAY", None)
+        browser_session._ensure_display_env()
+        assert "DISPLAY" not in browser_session.os.environ
+
+
+def test_ensure_display_skipped_on_windows():
+    """非 Linux（Windows）：跳过探测，且不触碰 os.getuid（Windows 无此函数）。"""
+    import browser_session, config
+    with patch.object(config, "HEADLESS", False), \
+         patch.object(browser_session.sys, "platform", "win32"), \
+         patch.object(browser_session.os, "getuid", side_effect=AssertionError("Windows 不应调用 getuid")):
+        browser_session.os.environ.pop("DISPLAY", None)
+        browser_session._ensure_display_env()  # 不应抛异常
+        assert "DISPLAY" not in browser_session.os.environ
+
+
+def test_ensure_display_sets_on_linux_headed():
+    """Linux + 有头 + 无 DISPLAY：探测补齐 DISPLAY=:0。"""
+    import browser_session, config
+    with patch.object(config, "HEADLESS", False), \
+         patch.object(browser_session.sys, "platform", "linux"), \
+         patch.object(browser_session.os, "listdir", return_value=[]):
+        browser_session.os.environ.pop("DISPLAY", None)
+        browser_session._ensure_display_env()
+        assert browser_session.os.environ.get("DISPLAY") == ":0"
+
+
+def test_ensure_display_preserves_existing():
+    """已有 DISPLAY（真图形会话）：不覆盖。"""
+    import browser_session, config
+    with patch.object(config, "HEADLESS", False), \
+         patch.object(browser_session.sys, "platform", "linux"):
+        browser_session.os.environ["DISPLAY"] = ":99"
+        browser_session._ensure_display_env()
+        assert browser_session.os.environ["DISPLAY"] == ":99"
+
+
+def test_ensure_display_finds_xauthority():
+    """Linux 有头：从 /run/user/<uid> 探测到 .mutter-Xwaylandauth.* 并设 XAUTHORITY。"""
+    import browser_session, config
+    with patch.object(config, "HEADLESS", False), \
+         patch.object(browser_session.sys, "platform", "linux"), \
+         patch.object(browser_session.os, "getuid", return_value=1000), \
+         patch.object(browser_session.os, "listdir", return_value=[".mutter-Xwaylandauth.ABC123"]):
+        browser_session.os.environ.pop("DISPLAY", None)
+        browser_session.os.environ.pop("XAUTHORITY", None)
+        browser_session._ensure_display_env()
+        assert browser_session.os.environ.get("XAUTHORITY", "").endswith(".mutter-Xwaylandauth.ABC123")
+

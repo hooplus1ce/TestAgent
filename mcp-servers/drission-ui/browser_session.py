@@ -1,16 +1,14 @@
-"""DrissionPage 浏览器单例：接管 9222 端口、活动 tab / iframe(frame) 解析与自愈重连。
+"""DrissionPage 浏览器单例：连接/启动 9222 端口、活动 tab / iframe(frame) 解析与自愈重连。
 
 所有 MCP 工具通过本模块取 tab / frame，保证跨工具调用复用同一个浏览器连接。
+启动/接管由 DrissionPage 的 Chromium() 依据 dp_configs.ini 自动处理（端口无实例则启动，有则接管）。
 """
-import ast
 import json
 import logging
 import os
 import shutil
-import socket
-import subprocess
+import sys
 import threading
-import time
 from pathlib import Path
 
 from DrissionPage import Chromium, ChromiumOptions
@@ -44,113 +42,36 @@ def load_js(name: str) -> str:
         return f.read()
 
 
-def _port_in_use(port: int) -> bool:
-    """检查端口是否被占用。"""
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.settimeout(0.5)
-        return s.connect_ex(("127.0.0.1", port)) == 0
+def _ensure_display_env():
+    """确保图形环境变量就绪，供 DrissionPage 启动非 headless Chrome（仅 Linux 有头场景）。
 
+    仅在 Linux + 有头模式下生效：
+      - Windows/macOS：无 DISPLAY 概念，图形程序默认可弹窗，直接跳过。
+      - headless（HL_HEADLESS）：无头不需要显示，直接跳过。
 
-def _cdp_ready(port: int, timeout: float = 8) -> bool:
-    """轮询 CDP /json/version 端点直到就绪。"""
-    import httpx
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        try:
-            r = httpx.get(f'http://127.0.0.1:{port}/json/version', timeout=2)
-            if 'webSocketDebuggerUrl' in r.json():
-                return True
-        except Exception:
-            pass
-        time.sleep(0.5)
-    return False
-
-
-def _launch_chrome(port: int):
-    """根据 dp_configs.ini 启动新 Chrome 实例。"""
-    # 读取 ini 配置
-    browser_path = None
-    chrome_args = []
-
-    try:
-        import configparser
-        cp = configparser.ConfigParser()
-        cp.read(_DP_INI, encoding="utf-8")
-        browser_path = cp.get("chromium_options", "browser_path", fallback="chrome")
-        raw_args = cp.get("chromium_options", "arguments", fallback="[]")
-        # 安全解析 Python 字面量列表
-        chrome_args = ast.literal_eval(raw_args) if isinstance(raw_args, str) else list(raw_args)
-    except Exception as e:
-        logger.warning("读取 dp_configs.ini 失败，使用默认值: %s", e)
-        browser_path = "google-chrome"
-        chrome_args = []
-
-    # 确保远程调试端口
-    debug_flag = f"--remote-debugging-port={port}"
-    if not any(debug_flag in a for a in chrome_args):
-        chrome_args.insert(0, debug_flag)
-
-    # 解析 --user-data-dir 为绝对路径
-    for i, a in enumerate(chrome_args):
-        if a.startswith("--user-data-dir="):
-            rel = a.split("=", 1)[1]
-            # ini 路径是相对项目根目录的
-            abs_path = str(_PROJECT_ROOT / rel)
-            chrome_args[i] = f"--user-data-dir={abs_path}"
-            logger.info("user-data-dir 解析为: %s", abs_path)
-
-    # 解析浏览器路径，兼容多平台
-    exe = shutil.which(browser_path)
-    if not exe:
-        for p in ["google-chrome", "google-chrome-stable", "chromium-browser",
-                   "chromium", "chrome.exe", "msedge.exe", "edge"]:
-            exe = shutil.which(p)
-            if exe:
-                break
-    if not exe:
-        raise RuntimeError(f"未找到浏览器可执行文件（尝试: chrome, google-chrome, chromium, edge），"
-                           f"请在 dp_configs.ini 中设置正确的 browser_path")
-
-    logger.info("启动 Chrome: %s %s", exe, " ".join(chrome_args))
-    # 当前 Claude Code 会话可能为 tty（无 DISPLAY/XAUTHORITY）；图形会话为
-    # Wayland(GNOME mutter)，X0 是 Xwayland，需 DISPLAY + XAUTHORITY 才能非 headless 启动
-    env = os.environ.copy()
-    env.setdefault('DISPLAY', ':0')
-    if 'XAUTHORITY' not in env:
-        xauth_dir = '/run/user/%d' % os.getuid()
+    MCP server 常作为 Claude Code（tty 会话）的子进程启动，继承的环境无 DISPLAY，
+    导致 Chromium() 自启动 Chrome 时报 "Missing X server or $DISPLAY"。此处在无
+    DISPLAY 时探测系统 X/Xwayland 显示并补进 os.environ：
+      - DISPLAY 默认 :0
+      - XAUTHORITY 探测 /run/user/<uid>/.mutter-Xwaylandauth.*（GNOME Wayland 的 Xwayland auth）
+    已有 DISPLAY（真图形会话）则不动。
+    """
+    if config.HEADLESS or not sys.platform.startswith("linux"):
+        return
+    if os.environ.get("DISPLAY"):
+        return
+    os.environ.setdefault("DISPLAY", ":0")
+    if "XAUTHORITY" not in os.environ:
+        xauth_dir = "/run/user/%d" % os.getuid()
         try:
             for f in os.listdir(xauth_dir):
-                if f.startswith('.mutter-Xwaylandauth.'):
-                    env['XAUTHORITY'] = os.path.join(xauth_dir, f)
+                if f.startswith(".mutter-Xwaylandauth."):
+                    os.environ["XAUTHORITY"] = os.path.join(xauth_dir, f)
                     break
         except OSError:
             pass
-    subprocess.Popen([exe] + chrome_args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env)
-
-    # 等待 CDP 就绪
-    if not _cdp_ready(port, timeout=10):
-        raise RuntimeError(f"Chrome 启动后未能在 10s 内就绪（port {port}）")
-
-
-def _connect_existing(port: int):
-    """连接已有 Chrome（接管模式）。
-
-    4.2：Chromium.__init__ 会比对已运行浏览器的实际 headless 状态与 options 配置，
-    不一致时调用 self.quit() 杀掉已接管浏览器并尝试重启——在无 DISPLAY 环境下
-    重启失败，表现为"浏览器连接失败"。故先探测 /json/version 的 UA，若为
-    HeadlessChrome 则同步 options.headless(True)，使接管不触发 quit。
-    GUI 环境（UA 不含 HeadlessChrome）不设，保持 is_headless=False 匹配。
-    """
-    _opt = ChromiumOptions(read_file=False).set_address(f'127.0.0.1:{port}')
-    try:
-        import httpx
-        r = httpx.get(f'http://127.0.0.1:{port}/json/version', timeout=2)
-        ua = r.json().get('User-Agent', '')
-        if 'HeadlessChrome' in ua:
-            _opt.headless(True)
-    except Exception as e:
-        logger.debug("探测 Chrome headless 状态失败: %s", e)
-    return Chromium(_opt)
+    logger.info("补齐图形环境: DISPLAY=%s XAUTHORITY=%s",
+                os.environ.get("DISPLAY"), os.environ.get("XAUTHORITY", "(未找到)"))
 
 
 def _pick_tab(browser, hint):
@@ -178,11 +99,12 @@ def _pick_tab(browser, hint):
 
 
 def connect(port: int = config.DEFAULT_PORT, target_hint: str = config.DEFAULT_TARGET_HINT):
-    """连接 Chrome：直接用 DrissionPage 启动或接管 9222 实例。
+    """连接 Chrome：接管指定端口已运行实例，或按 dp_configs.ini 自启动。
 
-    读项目 dp_configs.ini 配置（含 --disable-site-isolation-trials、user-data-dir），
-    交给 DrissionPage 的 Chromium() 自动处理——端口无实例则启动，有则接管，
-    CDP 就绪等待由 DrissionPage 内部完成，不手动 subprocess / 轮询。
+    交给 DrissionPage 的 Chromium() 处理——端口有实例则接管，无则启动
+    （existing_only=False），CDP 就绪等待由 DrissionPage 内部完成。
+    跨平台：Linux 有头自动补 DISPLAY/XAUTHORITY 并探测浏览器路径；
+    HL_HEADLESS 走无头 + --no-sandbox；Windows/macOS 交给 DrissionPage 探测。
     """
     with _lock:
         global _browser, _tab, _port, _target_hint
@@ -190,9 +112,23 @@ def connect(port: int = config.DEFAULT_PORT, target_hint: str = config.DEFAULT_T
         _target_hint = target_hint
         logger.info("connect port=%s target_hint=%r", port, target_hint)
 
+        _ensure_display_env()
         co = ChromiumOptions(read_file=True, ini_path=_DP_INI)
         co.set_address(f'127.0.0.1:{port}')
-        co.set_browser_path('google-chrome')
+        # 浏览器路径（跨平台）：优先 HL_CHROME_PATH；否则 Linux 显式指向 google-chrome
+        # （ini 默认 'chrome' 在多数发行版无此命令），Windows/macOS 交给 DrissionPage 自动探测。
+        if config.CHROME_PATH:
+            co.set_browser_path(config.CHROME_PATH)
+        elif sys.platform.startswith("linux"):
+            exe = shutil.which("google-chrome") or shutil.which("google-chrome-stable") \
+                or shutil.which("chromium") or shutil.which("chromium-browser")
+            if exe:
+                co.set_browser_path(exe)
+        if config.HEADLESS:
+            # CI/CD 无图形环境：无头 + 容器常需 no-sandbox
+            co.headless(True)
+            co.set_argument('--no-sandbox')
+            logger.info("headless 模式启动")
         _browser = Chromium(co)
 
         _tab = _pick_tab(_browser, target_hint)
