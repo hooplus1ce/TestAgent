@@ -4,7 +4,7 @@
 
 ## 组成
 
-- **`mcp-servers/drission-ui/`** — drission-ui MCP 服务器：把 DrissionPage 浏览器自动化封装成 28 个结构化 MCP 工具，供 AI 驱动的 UI 测试技能调用。详见 [mcp-servers/drission-ui/README.md](mcp-servers/drission-ui/README.md)。
+- **`mcp-servers/drission-ui/`** — drission-ui MCP 服务器：把 DrissionPage 浏览器自动化封装成一组精简的结构化 MCP 工具，供 AI 驱动的 UI 测试技能调用。详见 [mcp-servers/drission-ui/README.md](mcp-servers/drission-ui/README.md)。
 - **`.claude/skills/`** — 测试用例生成技能（`test-case-generator-dp`、`test-case-generator-optimized`）。
 - **`tests/`** — 单元测试。
 

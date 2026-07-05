@@ -145,6 +145,9 @@ def select_date_range(field_name: str, start_date: str, end_date: str, tab=None)
     """
     with _lock:
         tab = tab or browser_session.get_tab()
+        expand_result = expand_filter_area(tab)
+        if not expand_result.get("ok"):
+            return expand_result
         fr = browser_session.get_active_frame(tab)
         if fr is None:
             return {"ok": False, "reason": "未找到活动 iframe"}
@@ -246,6 +249,9 @@ def scan_filter_fields(tab=None):
     """
     with _lock:
         tab = tab or browser_session.get_tab()
+        expand_result = expand_filter_area(tab)
+        if not expand_result.get("ok"):
+            return expand_result
         fr = browser_session.get_active_frame(tab)
         if fr is None:
             return {"ok": False, "reason": "未找到活动 iframe"}

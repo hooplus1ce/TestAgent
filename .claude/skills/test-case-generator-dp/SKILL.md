@@ -33,8 +33,7 @@ description: 为 WMS/MOM/ERP 等企业系统迭代生成测试用例（DrissionP
 `connect(port=9222)` 接管用户已打开的 Chrome。**禁止**启动新浏览器或无头模式。连接后立即 `check_session()` 检测会话状态。
 
 ### Session 维持
-- 首次登录或会话过期：直接 `login_ocr()`（OCR + HTTP 登录 + 注入 → 导航 SCM Admin）
-- `refresh_session()` 等同于 `login_ocr()`，每次重新获取新 cookie，不再缓存
+- 首次登录或会话过期：直接 `refresh_session()`（内部完成 OCR + HTTP 登录 + Cookie 注入 → 导航 SCM Admin），每次重新获取新 cookie，不再缓存
 
 ### 工具集
 所有浏览器原子操作由 `drission-ui` MCP 提供：点击/输入/截图/弹窗检测/VTable 操作/网络监听/筛选区操作等。AI 只需调用工具并编排顺序，无需关心内部实现。
@@ -53,9 +52,9 @@ description: 为 WMS/MOM/ERP 等企业系统迭代生成测试用例（DrissionP
 2. `connect()` → 立即 `check_session()`
 3. `enter_module("<模块名>", expand_filter=True)` 进入模块
 4. 确保筛选区切换为**内联模式**（见“筛选区显示模式”）
-5. `dom_overview()` DOM 俯瞰，分析页面结构
-6. `mount_vtable()` → `scan_vtable_columns()` 穷尽列定义与表头图标
-7. `scan_filter_fields()` 穷尽筛选字段矩阵
+5. `scan_page_elements()` / `dom_tree()` 分析页面结构
+6. `scan_table(kind="auto")` 穷尽表格列定义与可交互信息
+7. `scan_filter_fields()` 穷尽筛选字段矩阵（内部自动展开筛选区）
 8. DFS 穷尽按钮 + 弹窗探索
 9. 用实际页面数据替代用户描述
 
@@ -77,22 +76,22 @@ description: 为 WMS/MOM/ERP 等企业系统迭代生成测试用例（DrissionP
 
 ```
 用户 → 指令（如「测一下批量排产按钮」）
-  Agent → 执行（click / observe_post_click / scan / listen_wait）
+  Agent → 执行（observe_start / click 或 click_table_cell / observe_wait / scan / listen_wait）
   Agent → 汇报结果 + 询问下一步
 用户 → 继续或调整方向
 ```
 
-**每次 `click`/`click_cell`/`click_xy` 后 MUST 立即观察页面变化**。优先用 `observe_post_click`（统一观察器，一次调用并发抓 弹窗/通知/消息/Tab/URL/网络，first-signal-wins，MutationObserver 事件驱动不漏短寿命 toast）：
+**每次 `click`/`click_table_cell`/`click_xy` 前后 MUST 使用两段式观察页面变化**：点击前 `observe_start(...)` 安装监听，点击后 `observe_wait(...)` 读取首个信号并清理。这样可以避免点击后再启动监听而漏掉短寿命 toast。
 
 ```
-observe_post_click(timeout=8, signals=["modal","notification","message","tab","url"])
+observe_start(signals=["modal","notification","message","tab","url"])
+click(...) 或 click_table_cell(...)
+observe_wait(timeout=8)
   → 返回首个命中信号 {type, scope, payload?, elapsedMs}
   → type ∈ interactive/confirm/system_confirm/notification/message/tab_change/url_change/none
 ```
 
-`observe_post_click` 替代旧的「detect_modal → dom_overview → get_active_frame」三步串行排查——一次调用覆盖所有信号，且能抓到 `detect_modal` 历史漏掉的**顶层短寿命 toast**（如「保存订单成功」`.ant-message-notice`，~3s 消失）。需要抓接口时加 `signals=[...,"network"]` + `listen_targets="gateway"`。
-
-何时仍用 `detect_modal` / 原子工具：单点复核弹窗类型、或 `observe_post_click` 返回 none 后二次确认。`detect_notification`/`detect_message`/`detect_url_change`/`detect_tab_change` 用于单信号专项排查。
+需要抓接口时在 `observe_start` 中加入 `signals=[...,"network"]` + `listen_targets="gateway"`，或单独使用 `listen_start` / `listen_wait` 做接口断言。
 
 **断点续传**：每完成一个区域，调用 `scripts/load-exploration-state.py` 保存进度。
 
@@ -110,7 +109,7 @@ observe_post_click(timeout=8, signals=["modal","notification","message","tab","u
 ### 坐标与 VTable
 VTable 是 canvas 渲染，无真实 DOM 节点。所有点击走坐标，工具自动处理 iframe 偏移和坐标换算。
 
-**列超出视口时先 scroll 再点击**：`scroll_to_cell(col, row)` → `click_cell(col, row)`。
+**表格交互统一使用 facade**：优先 `scan_table(kind="auto")`，点击用 `click_table_cell(...)`；VTable 列超出视口时工具内部自动滚动并换算坐标。
 
 ### iframe
 业务模块在 `[role=tabpanel][aria-hidden=false] iframe` 内。MCP 工具默认 `in_frame=True`，坐标换算自动完成。
@@ -156,11 +155,9 @@ dom_tree(selector=".page-query")  // 验证出现 .legions-pro-quick-filter-rema
 如果当前已经是内联模式，直接继续扫描筛选字段；不要重复切换。
 
 ### 弹窗检测
-详见 `references/modal-types.md`。点击后优先 `observe_post_click`（并发抓所有信号，first-signal-wins）；单点复核用 `detect_modal`（三级优先级：iframe 弹窗/通知/消息 → top 层弹窗/通知/消息 → none）。
+详见 `references/modal-types.md`。点击前调用 `observe_start`，点击后调用 `observe_wait`，由统一观察器并发捕获弹窗、通知、消息、Tab/URL 变化和可选网络响应。
 
-`detect_modal` 已修复历史盲区：现覆盖顶层 `.ant-message-notice`（如保存成功 toast）和 `.ant-notification-notice`，隐藏/残留 modal 不再早退遮挡其他信号。
-
-⚠️ VTable 筛选弹窗（`.vtable-filter-menu`）非 ant-design 组件，`detect_modal`/`observe_post_click` 不检测。点击列头筛选图标后需用 `run_js` 补充探测。
+⚠️ VTable 筛选弹窗（`.vtable-filter-menu`）非 ant-design 组件，统一观察器不检测。点击列头筛选图标后需用 `run_js` 补充探测。
 
 ### 弹窗交互策略
 **与弹窗交互前 MUST 先用 `dom_tree` 获取弹窗完整 DOM 结构**，无论是要点击按钮、输入文本还是关闭弹窗。
@@ -169,7 +166,7 @@ dom_tree(selector=".page-query")  // 验证出现 .legions-pro-quick-filter-rema
 
 流程：
 ```
-observe_post_click() 或 detect_modal() → 确认弹窗存在
+observe_start() → click/input/... → observe_wait() → 确认弹窗存在
   ↓
 dom_tree(selector=".ant-modal", max_depth=8)  → 获取弹窗完整结构
   ↓
@@ -177,11 +174,11 @@ dom_tree(selector=".ant-modal", max_depth=8)  → 获取弹窗完整结构
   ↓
 click(input/...) → 执行交互
   ↓
-observe_post_click() 或 detect_modal() → 确认弹窗状态变化
+observe_start() → click/input/... → observe_wait() → 确认弹窗状态变化
 ```
 
 ### 会话维持
-`check_session()` 检测过期 → 直接 `refresh_session()` 或 `login_ocr()`（每次重新获取新 cookie，不再缓存）。
+`check_session()` 检测过期 → 直接 `refresh_session()`（每次重新获取新 cookie，不再缓存）。
 
 ---
 
@@ -191,9 +188,9 @@ observe_post_click() 或 detect_modal() → 确认弹窗状态变化
 |---|---|
 | MCP 服务器未注册 | 检查 `.mcp.json`；`claude mcp list` 应见 `drission-ui` |
 | 浏览器连接失败 | 检查 `http://localhost:9222/json`；确认 Chrome 以 9222 启动 |
-| `mount_vtable` 失败 | `get_active_frame()` 确认 iframe；仍失败按截图降级生成低级用例 |
-| `enter_module` iframe 未就绪 | 重试 `reset_to_initial`；检查菜单文本匹配 |
-| SCM 会话过期 | `check_session` → 直接 `refresh_session` 或 `login_ocr`（每次重新 OCR 登录） |
+| `scan_table` 失败 | `get_active_frame()` 确认 iframe；仍失败按截图/DOM 降级生成低级用例 |
+| `enter_module` iframe 未就绪 | 重新调用 `enter_module`；检查菜单文本匹配 |
+| SCM 会话过期 | `check_session` → 直接 `refresh_session`（每次重新 OCR 登录） |
 | openpyxl 未安装 | `uv add openpyxl` |
 | 需求信息不足 | 3 轮追问后生成骨架用例，备注 `[待确认]` |
 
@@ -205,4 +202,4 @@ observe_post_click() 或 detect_modal() → 确认弹窗状态变化
 - [ ] 用户已确认变量配置
 - [ ] 输出目录有写入权限
 - [ ] 每条用例通过质量门禁
-- [ ] 每次点击后都调用了 `observe_post_click`（或 `detect_modal`）观察页面变化
+- [ ] 每次点击前后都执行了 `observe_start` → action → `observe_wait` 观察页面变化

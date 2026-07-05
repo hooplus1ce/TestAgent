@@ -1,29 +1,147 @@
-"""server.py 测试：工具注册数量 + synchronized 串行化。"""
+"""server.py 测试：公开工具面 + synchronized 串行化。"""
 import asyncio
 import threading
 import time
+from unittest.mock import patch
 
 
-def test_tool_count():
-    """应注册 49 个工具（cache_session 已废弃移除）。"""
+EXPECTED_PUBLIC_TOOLS = {
+    "connect",
+    "refresh_session",
+    "check_session",
+    "enter_module",
+    "scan_filter_fields",
+    "get_active_frame",
+    "dom_tree",
+    "scan_page_elements",
+    "find_elements",
+    "find_batch",
+    "click",
+    "click_xy",
+    "select_date_range",
+    "input",
+    "insert_text",
+    "hover",
+    "screenshot",
+    "run_js",
+    "scan_table",
+    "get_table_values",
+    "get_table_data",
+    "click_table_cell",
+    "hover_table_cell",
+    "resize_table_column",
+    "close_modal",
+    "observe_start",
+    "observe_wait",
+    "listen_start",
+    "listen_wait",
+    "listen_stop",
+    "mouse_trail",
+    "download_by_browser",
+    "listen_ws_start",
+    "listen_ws_wait",
+    "new_context",
+    "switch_context",
+    "list_contexts",
+    "set_permission",
+}
+
+REMOVED_DUPLICATE_TOOLS = {
+    "login_ocr",
+    "expand_filter_area",
+    "reset_to_initial",
+    "dom_overview",
+    "find_static",
+    "get_frame",
+    "mount_vtable",
+    "scan_vtable_columns",
+    "get_column_values",
+    "get_cell_rect",
+    "scroll_to_cell",
+    "click_cell",
+    "resize_column",
+    "detect_modal",
+    "observe_post_click",
+    "detect_notification",
+    "detect_message",
+    "detect_url_change",
+    "detect_tab_change",
+    "scan_html_table",
+    "get_html_table_values",
+    "click_html_table_cell",
+    "hover_html_table_cell",
+    "get_html_table_data",
+}
+
+
+def _tool_names():
     import server
     tools = asyncio.run(server.mcp.list_tools())
-    assert len(tools) == 49, f"工具数应为 49，当前为 {len(tools)}"
+    return {t.name for t in tools}
 
 
-def test_listen_stop_registered():
-    """listen_stop 工具应存在。"""
+def test_public_tool_surface():
+    """公开 MCP 工具应收敛到业务常用工具 + 表格 facade + 高级调试工具。"""
+    names = _tool_names()
+    assert names == EXPECTED_PUBLIC_TOOLS
+
+
+def test_duplicate_tools_removed_from_public_surface():
+    """重复/内部 helper 不应再作为 public MCP 工具暴露。"""
+    names = _tool_names()
+    assert REMOVED_DUPLICATE_TOOLS.isdisjoint(names)
+
+
+def test_table_facade_registered():
+    names = _tool_names()
+    assert {
+        "scan_table",
+        "get_table_values",
+        "get_table_data",
+        "click_table_cell",
+        "hover_table_cell",
+        "resize_table_column",
+    } <= names
+
+
+def test_scan_table_routes_to_vtable_backend():
     import server
-    tools = asyncio.run(server.mcp.list_tools())
-    names = [t.name for t in tools]
-    assert "listen_stop" in names
-    assert "listen_start" in names
-    assert "listen_wait" in names
-    assert "listen_ws_start" in names
-    assert "listen_ws_wait" in names
-    assert "download_by_browser" in names
-    assert "new_context" in names
-    assert "set_permission" in names
+    with patch.object(server.vtable, "scan_vtable_columns", return_value={"ok": True, "columns": []}) as scan:
+        assert server.scan_table(kind="vtable") == {"ok": True, "columns": [], "kind": "vtable"}
+        scan.assert_called_once_with(50)
+
+
+def test_scan_table_routes_to_html_backend():
+    import server
+    with patch.object(server.html_table, "scan_html_table", return_value={"ok": True, "tables": []}) as scan:
+        assert server.scan_table(kind="html") == {"ok": True, "tables": [], "kind": "html"}
+        scan.assert_called_once_with()
+
+
+def test_scan_table_auto_falls_back_to_html_backend():
+    import server
+    with patch.object(server.vtable, "scan_vtable_columns", return_value={"ok": False, "reason": "no vtable"}), \
+         patch.object(server.html_table, "scan_html_table", return_value={"ok": True, "tables": [{"index": 0}]}) as scan_html:
+        result = server.scan_table(kind="auto")
+        assert result["ok"] is True
+        assert result["kind"] == "html"
+        assert result["fallback_from"] == "vtable"
+        assert result["vtable_reason"] == "no vtable"
+        scan_html.assert_called_once_with()
+
+
+def test_get_table_values_routes_to_html_backend():
+    import server
+    with patch.object(server.html_table, "get_html_table_values", return_value={"ok": True, "values": []}) as get_values:
+        assert server.get_table_values("订单号", kind="html") == {"ok": True, "values": [], "kind": "html"}
+        get_values.assert_called_once_with("订单号", 0)
+
+
+def test_click_table_cell_routes_to_vtable_backend_by_col():
+    import server
+    with patch.object(server.vtable, "click_cell", return_value={"ok": True, "col": 2, "row": 1}) as click_cell:
+        assert server.click_table_cell(row=1, col=2, kind="vtable") == {"ok": True, "col": 2, "row": 1, "kind": "vtable"}
+        click_cell.assert_called_once_with(2, 1, None, True, 0.3, False)
 
 
 def test_write_synchronized_serializes():
@@ -44,9 +162,7 @@ def test_write_synchronized_serializes():
     for t in threads:
         t.join()
 
-    # 验证串行化：enter/exit 对不交错
     assert len(results) == 6
-    # 每对 enter/exit 的 label 应相同
     for i in range(0, 6, 2):
         assert results[i][0] == "enter"
         assert results[i+1][0] == "exit"
@@ -62,15 +178,3 @@ def test_synchronized_returns_value():
         return a + b
 
     assert add(2, 3) == 5
-
-
-def test_new_tools_registered():
-    """新增的 find_elements/find_static/find_batch/get_frame 应存在。"""
-    import server
-    tools = asyncio.run(server.mcp.list_tools())
-    names = [t.name for t in tools]
-    assert "find_elements" in names, "find_elements 工具缺失"
-    assert "find_static" in names, "find_static 工具缺失"
-    assert "find_batch" in names, "find_batch 工具缺失"
-    assert "get_frame" in names, "get_frame 工具缺失"
-

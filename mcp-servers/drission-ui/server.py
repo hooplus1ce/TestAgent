@@ -120,7 +120,6 @@ def refresh_session() -> dict:
     return session_auth.refresh_session()
 
 
-@mcp.tool()
 @write_synchronized
 def login_ocr() -> dict:
     """OCR 识别验证码 + HTTP 登录获取 cookie → 清缓存 → 注入 → 刷新。用于首次登录或完全失效。"""
@@ -135,7 +134,6 @@ def check_session() -> dict:
 
 
 # ==================== 导航与 frame ====================
-@mcp.tool()
 @write_synchronized
 def expand_filter_area() -> dict:
     """展开筛选区：将弹窗模式切换为内联模式，并展开所有折叠筛选字段。
@@ -204,7 +202,6 @@ def enter_module(menu_text: str, timeout: float = 8, expand_filter: bool = True)
     return {"ok": True, "entered": menu_text, "iframe_ready": True, "expand_filter": expand_result}
 
 
-@mcp.tool()
 @write_synchronized
 def reset_to_initial(module_text: str, timeout: float = 20) -> dict:
     """重置到初始状态：关闭当前业务 tab → 重进模块 → 等 iframe+VTable 就绪。用例间隔离用。"""
@@ -405,7 +402,6 @@ def scan_page_elements(include_iframe: bool = True, max_items: int = 200) -> dic
     return data
 
 
-@mcp.tool()
 @read_synchronized
 def dom_overview(max_buttons: int = 100) -> dict:
     """页面俯瞰：顶部页签(含选中态) + 可见按钮文本(含 disabled)。不点击任何元素。
@@ -452,7 +448,6 @@ def find_elements(locator: str, in_frame: bool = True, timeout: float = 5) -> di
     return {"ok": True, "count": len(els), "elements": previews, "_truncated": len(els) > 50}
 
 
-@mcp.tool()
 @read_synchronized
 def find_static(locator: str = None, in_frame: bool = True, timeout: float = 5, index: int = 1) -> dict:
     """查找元素的静态版本（s_ele 封装）。速度极快，适合批量数据采集。
@@ -506,7 +501,6 @@ def find_batch(locators: list, in_frame: bool = True, timeout: float = 5,
         return {"ok": True, "results": result}
 
 
-@mcp.tool()
 @read_synchronized
 def get_frame(locator, timeout: float = 5) -> dict:
     """按定位符/序号/id/name 获取 iframe/frame 元素（get_frame 封装）。
@@ -679,16 +673,219 @@ def run_js(script: str, in_frame: bool = True, max_chars: int = 4000) -> dict:
     return {"ok": True, "result": res, "_truncated": True} if truncated else {"ok": True, "result": res}
 
 
-# ==================== VTable（canvas 表格）====================
+def _normalize_table_kind(kind: str) -> str:
+    kind = (kind or "auto").lower()
+    return kind if kind in {"auto", "vtable", "html"} else "auto"
+
+
+def _tag_table_result(kind: str, result: dict) -> dict:
+    if not isinstance(result, dict):
+        return {"ok": False, "kind": kind, "reason": "表格后端返回非 dict: %r" % (result,)}
+    tagged = dict(result)
+    tagged.setdefault("kind", kind)
+    return tagged
+
+
+def _find_vtable_col(column_title: str, max_col: int = 100):
+    scan = vtable.scan_vtable_columns(max_col)
+    if not scan.get("ok"):
+        return None, scan.get("reason", "VTable 扫描失败")
+    for col_info in scan.get("columns", []):
+        title = (col_info.get("title") or col_info.get("field") or "").strip()
+        if title == column_title:
+            return col_info.get("col"), None
+    return None, "VTable 列未找到: %s" % column_title
+
+
+def _scan_table_vtable(max_col: int) -> dict:
+    return _tag_table_result("vtable", vtable.scan_vtable_columns(max_col))
+
+
+def _scan_table_html(table_index: int = 0) -> dict:
+    result = html_table.scan_html_table()
+    tagged = _tag_table_result("html", result)
+    if tagged.get("ok") and table_index:
+        tables = tagged.get("tables") or []
+        tagged["tables"] = [tables[table_index]] if table_index < len(tables) else []
+    return tagged
+
+
+# ==================== 统一表格 facade（VTable / HTML Table）====================
 
 @mcp.tool()
+@read_synchronized
+def scan_table(kind: str = "auto", max_col: int = 50, table_index: int = 0) -> dict:
+    """统一扫描表格。kind=auto 优先 VTable，失败后回退 HTML Table；返回实际 kind。"""
+    kind = _normalize_table_kind(kind)
+    if kind == "vtable":
+        return _scan_table_vtable(max_col)
+    if kind == "html":
+        return _scan_table_html(table_index)
+
+    vt = _scan_table_vtable(max_col)
+    if vt.get("ok"):
+        return vt
+    ht = _scan_table_html(table_index)
+    if ht.get("ok") and (ht.get("tables") or []):
+        ht["fallback_from"] = "vtable"
+        ht["vtable_reason"] = vt.get("reason", "")
+        return ht
+    return {"ok": False, "kind": "auto", "reason": "未识别到 VTable 或 HTML 表格",
+            "vtable_reason": vt.get("reason", ""), "html_reason": ht.get("reason", "")}
+
+
+@mcp.tool()
+@read_synchronized
+def get_table_values(column_title: str, kind: str = "auto", raw: bool = False, table_index: int = 0) -> dict:
+    """统一按列标题读取表格列值。kind=auto 优先 VTable，失败后回退 HTML Table。"""
+    kind = _normalize_table_kind(kind)
+    if kind == "vtable":
+        return _tag_table_result("vtable", vtable.get_column_values(column_title, raw))
+    if kind == "html":
+        return _tag_table_result("html", html_table.get_html_table_values(column_title, table_index))
+
+    vt = _tag_table_result("vtable", vtable.get_column_values(column_title, raw))
+    if vt.get("ok"):
+        return vt
+    ht = _tag_table_result("html", html_table.get_html_table_values(column_title, table_index))
+    if ht.get("ok"):
+        ht["fallback_from"] = "vtable"
+        ht["vtable_reason"] = vt.get("reason", "")
+        return ht
+    return {"ok": False, "kind": "auto", "reason": "列值读取失败",
+            "vtable_reason": vt.get("reason", ""), "html_reason": ht.get("reason", "")}
+
+
+@mcp.tool()
+@read_synchronized
+def get_table_data(kind: str = "auto", table_index: int = 0) -> dict:
+    """统一读取表格完整数据。HTML Table 支持完整数据；VTable 请优先用 get_table_values。"""
+    kind = _normalize_table_kind(kind)
+    if kind == "vtable":
+        return {"ok": False, "kind": "vtable",
+                "reason": "VTable 暂不支持完整数据读取，请使用 get_table_values(column_title=...)"}
+    if kind == "html":
+        return _tag_table_result("html", html_table.get_html_table_data(table_index))
+
+    ht = _tag_table_result("html", html_table.get_html_table_data(table_index))
+    if ht.get("ok"):
+        return ht
+    vt = _scan_table_vtable(max_col=20)
+    if vt.get("ok"):
+        return {"ok": False, "kind": "vtable",
+                "reason": "检测到 VTable，但暂不支持完整数据读取，请使用 get_table_values(column_title=...)"}
+    return {"ok": False, "kind": "auto", "reason": "未能读取表格完整数据",
+            "html_reason": ht.get("reason", ""), "vtable_reason": vt.get("reason", "")}
+
+
+@mcp.tool()
+@write_synchronized
+def click_table_cell(row: int, col: int = None, column_title: str = None, kind: str = "auto",
+                     table_index: int = 0, icon_name: str = None, hover_first: bool = True,
+                     duration: float = 0.3, double_click: bool = False) -> dict:
+    """统一点击表格单元格。VTable 可用 col 或 column_title；HTML Table 使用 column_title。"""
+    kind = _normalize_table_kind(kind)
+
+    def _click_vtable():
+        target_col = col
+        if target_col is None and column_title:
+            target_col, reason = _find_vtable_col(column_title)
+            if target_col is None:
+                return {"ok": False, "kind": "vtable", "reason": reason}
+        if target_col is None:
+            return {"ok": False, "kind": "vtable", "reason": "VTable 点击需要 col 或 column_title"}
+        return _tag_table_result("vtable", vtable.click_cell(target_col, row, icon_name, hover_first, duration, double_click))
+
+    if kind == "vtable":
+        return _click_vtable()
+    if kind == "html":
+        if not column_title:
+            return {"ok": False, "kind": "html", "reason": "HTML 表格点击需要 column_title"}
+        return _tag_table_result("html", html_table.click_html_table_cell(column_title, row, table_index))
+
+    vt = _click_vtable()
+    if vt.get("ok"):
+        return vt
+    if column_title:
+        ht = _tag_table_result("html", html_table.click_html_table_cell(column_title, row, table_index))
+        if ht.get("ok"):
+            ht["fallback_from"] = "vtable"
+            ht["vtable_reason"] = vt.get("reason", "")
+            return ht
+        return {"ok": False, "kind": "auto", "reason": "表格单元格点击失败",
+                "vtable_reason": vt.get("reason", ""), "html_reason": ht.get("reason", "")}
+    return vt
+
+
+@mcp.tool()
+@write_synchronized
+def hover_table_cell(row: int, col: int = None, column_title: str = None, kind: str = "auto",
+                     table_index: int = 0, duration: float = 0.3) -> dict:
+    """统一悬停表格单元格。VTable 可用 col 或 column_title；HTML Table 使用 column_title。"""
+    kind = _normalize_table_kind(kind)
+
+    def _hover_vtable():
+        target_col = col
+        if target_col is None and column_title:
+            target_col, reason = _find_vtable_col(column_title)
+            if target_col is None:
+                return {"ok": False, "kind": "vtable", "reason": reason}
+        if target_col is None:
+            return {"ok": False, "kind": "vtable", "reason": "VTable 悬停需要 col 或 column_title"}
+        rect = vtable.get_cell_rect(target_col, row, scroll=True)
+        tagged = _tag_table_result("vtable", rect)
+        if not tagged.get("ok"):
+            return tagged
+        tab = browser_session.get_tab()
+        tab.actions.move_to((tagged["viewportX"], tagged["viewportY"]), duration=duration)
+        return tagged
+
+    if kind == "vtable":
+        return _hover_vtable()
+    if kind == "html":
+        if not column_title:
+            return {"ok": False, "kind": "html", "reason": "HTML 表格悬停需要 column_title"}
+        return _tag_table_result("html", html_table.hover_html_table_cell(column_title, row, table_index))
+
+    vt = _hover_vtable()
+    if vt.get("ok"):
+        return vt
+    if column_title:
+        ht = _tag_table_result("html", html_table.hover_html_table_cell(column_title, row, table_index))
+        if ht.get("ok"):
+            ht["fallback_from"] = "vtable"
+            ht["vtable_reason"] = vt.get("reason", "")
+            return ht
+        return {"ok": False, "kind": "auto", "reason": "表格单元格悬停失败",
+                "vtable_reason": vt.get("reason", ""), "html_reason": ht.get("reason", "")}
+    return vt
+
+
+@mcp.tool()
+@write_synchronized
+def resize_table_column(width: int, col: int = None, column_title: str = None, kind: str = "vtable") -> dict:
+    """统一调整表格列宽。目前仅 VTable 支持列宽拖拽，HTML Table 返回不支持。"""
+    kind = _normalize_table_kind(kind)
+    if kind == "html":
+        return {"ok": False, "kind": "html", "reason": "HTML 表格暂不支持列宽调整"}
+    target_col = col
+    if target_col is None and column_title:
+        target_col, reason = _find_vtable_col(column_title)
+        if target_col is None:
+            return {"ok": False, "kind": "vtable", "reason": reason}
+    if target_col is None:
+        return {"ok": False, "kind": "vtable", "reason": "调整列宽需要 col 或 column_title"}
+    return _tag_table_result("vtable", vtable.resize_column(target_col, width))
+
+
+# ==================== VTable（canvas 表格）====================
+
 @read_synchronized
 def mount_vtable() -> dict:
     """挂载 VTable 实例到 iframe 的 window._vtable（遍历 React fiber）。所有 VTable 工具的前置。"""
     return vtable.mount_vtable()
 
 
-@mcp.tool()
 @read_synchronized
 def scan_vtable_columns(max_col: int = 50) -> dict:
     """扫描 VTable 列定义：标题/body 行为(bodyBehavior/bodyType/bodyEditable)/表头图标(含顶层视口坐标 viewportX/Y)。
@@ -696,14 +893,12 @@ def scan_vtable_columns(max_col: int = 50) -> dict:
     return vtable.scan_vtable_columns(max_col)
 
 
-@mcp.tool()
 @read_synchronized
 def get_column_values(title: str, raw: bool = False) -> dict:
     """按中文列标题取该列所有单元格值。raw=False 视觉文本(与界面一致)；raw=True 原始字段值(如数字码)。筛选断言用。"""
     return vtable.get_column_values(title, raw)
 
 
-@mcp.tool()
 @read_synchronized
 def get_cell_rect(col: int, row: int, scroll: bool = True) -> dict:
     """取单元格中心顶层视口坐标(先 scrollToCell 确保可见)。返回 {viewportX, viewportY}。
@@ -717,7 +912,6 @@ def get_cell_rect(col: int, row: int, scroll: bool = True) -> dict:
     return vtable.get_cell_rect(col, row, scroll=scroll)
 
 
-@mcp.tool()
 @write_synchronized
 def scroll_to_cell(col: int, row: int) -> dict:
     """滚动 VTable 使目标单元格进入视口。"""
@@ -725,7 +919,6 @@ def scroll_to_cell(col: int, row: int) -> dict:
 
 
 @write_synchronized
-@mcp.tool()
 def click_cell(col: int, row: int, icon_name: str = None, hover_first: bool = True, duration: float = 0.3, double_click: bool = False) -> dict:
     """点击 VTable 单元格或其图标。icon_name(如 'sort')给定时点该图标(先 hover 再 click)；否则点单元格中心。
 
@@ -739,7 +932,6 @@ def click_cell(col: int, row: int, icon_name: str = None, hover_first: bool = Tr
     """
     return vtable.click_cell(col, row, icon_name, hover_first, duration, double_click)
 
-@mcp.tool()
 @write_synchronized
 def resize_column(col: int, width: int) -> dict:
     """拖拽调整 VTable 列宽（模拟鼠标拖拽列头右边框）。
@@ -756,7 +948,6 @@ def resize_column(col: int, width: int) -> dict:
 
 # ==================== 弹窗检测 / 网络 / 轨迹 ====================
 
-@mcp.tool()
 @read_synchronized
 def detect_modal(timeout: float = 0) -> dict:
     """点击后检测弹窗(三级优先级)：iframe 业务弹窗/消息 → top 层弹窗/通知/消息 → none。每次点击后必调。
@@ -778,7 +969,6 @@ def close_modal() -> dict:
     return modal.close_modal()
 
 
-@mcp.tool()
 @write_synchronized
 def observe_post_click(timeout: float = 10, signals: list = None,
                        listen_targets: str = None, poll_interval: float = 0.12) -> dict:
@@ -845,7 +1035,6 @@ def observe_wait(timeout: float = 8, poll_interval: float = 0.12) -> dict:
     return observe.observe_wait(timeout=timeout, poll_interval=poll_interval)
 
 
-@mcp.tool()
 @read_synchronized
 def detect_notification(timeout: float = 2) -> dict:
     """原子工具：检测 .ant-notification-notice（iframe 优先，回退 top）。
@@ -853,7 +1042,6 @@ def detect_notification(timeout: float = 2) -> dict:
     return observe.detect_notification(timeout=timeout)
 
 
-@mcp.tool()
 @read_synchronized
 def detect_message(timeout: float = 2) -> dict:
     """原子工具：检测 .ant-message-notice（含 success/info/warning/error/loading，iframe+top）。
@@ -861,7 +1049,6 @@ def detect_message(timeout: float = 2) -> dict:
     return observe.detect_message(timeout=timeout)
 
 
-@mcp.tool()
 @read_synchronized
 def detect_url_change(old_url: str, timeout: float = 5) -> dict:
     """原子工具：等待活动 iframe URL 变化。用 DrissionPage wait.url_change 事件驱动。
@@ -869,7 +1056,6 @@ def detect_url_change(old_url: str, timeout: float = 5) -> dict:
     return observe.detect_url_change(old_url=old_url, timeout=timeout)
 
 
-@mcp.tool()
 @read_synchronized
 def detect_tab_change(old_count: int, timeout: float = 5) -> dict:
     """原子工具：等待浏览器 tab 数量变化（新 tab 打开/关闭）。点击后判断是否新开 tab。"""
@@ -1081,7 +1267,6 @@ def set_permission(perm: str, allow: bool = True) -> dict:
 
 # ==================== HTML 表格（ant-table）====================
 
-@mcp.tool()
 @read_synchronized
 def scan_html_table() -> dict:
     """扫描页面所有 ant-design HTML 表格，返回列定义与元数据。
@@ -1092,7 +1277,6 @@ def scan_html_table() -> dict:
     return html_table.scan_html_table()
 
 
-@mcp.tool()
 @read_synchronized
 def get_html_table_values(column_title: str, table_index: int = 0) -> dict:
     """按列标题获取 HTML 表格中该列所有单元格值。
@@ -1103,7 +1287,6 @@ def get_html_table_values(column_title: str, table_index: int = 0) -> dict:
     return html_table.get_html_table_values(column_title, table_index)
 
 
-@mcp.tool()
 @write_synchronized
 def click_html_table_cell(column_title: str, row: int, table_index: int = 0) -> dict:
     """点击 HTML 表格中指定单元格。优先点击单元格内的链接或按钮。
@@ -1114,7 +1297,6 @@ def click_html_table_cell(column_title: str, row: int, table_index: int = 0) -> 
     return html_table.click_html_table_cell(column_title, row, table_index)
 
 
-@mcp.tool()
 @write_synchronized
 def hover_html_table_cell(column_title: str, row: int, table_index: int = 0) -> dict:
     """悬停 HTML 表格指定单元格。正确叠加 iframe 偏移后移动鼠标。
@@ -1127,7 +1309,6 @@ def hover_html_table_cell(column_title: str, row: int, table_index: int = 0) -> 
 
 
 
-@mcp.tool()
 @read_synchronized
 def get_html_table_data(table_index: int = 0) -> dict:
     """从 DOM 读取 HTML 表格的完整数据（表头 + 所有行）。

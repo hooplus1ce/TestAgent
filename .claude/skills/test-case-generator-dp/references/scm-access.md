@@ -17,16 +17,15 @@
 |------|------|------|
 | 1 | `connect(port=9222)` | 连接用户已打开的 Chrome，禁止启动新实例 |
 | 2 | `check_session()` | 检测是否过期 |
-| 3 | 如 session 失效 | `refresh_session()` 或 `login_ocr()` — 每次重新 OCR 登录获取新 cookie |
+| 3 | 如 session 失效 | `refresh_session()` — 每次重新 OCR 登录获取新 cookie |
 
-`login_ocr()` 内部完成：获取验证码图片 → `ddddocr` 识别（纯数字）→ HTTP 登录 → Cookie 注入 → 导航到 SCM Admin。
+`refresh_session()` 内部完成：获取验证码图片 → `ddddocr` 识别（纯数字）→ HTTP 登录 → Cookie 注入 → 导航到 SCM Admin。
 
 ## Session 维持
 
 探索过程中按优先级尝试：
 1. `check_session()` — 检测是否过期
 2. `refresh_session()` — 直接触发 OCR 登录获取新 cookie 并刷新（不再缓存）
-3. `login_ocr()` — 等同于 refresh_session，直接免登
 
 恢复后需重新 `enter_module()` 进入目标模块，筛选条件会丢失，需向用户确认。
 

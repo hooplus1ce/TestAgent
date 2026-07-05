@@ -11,7 +11,7 @@ metadata:
 
 **How to apply:**
 ```
-detect_modal() → 确认弹窗存在
+observe_start() → 触发动作 → observe_wait() → 确认弹窗存在
   ↓
 dom_tree(selector=".ant-modal", max_depth=8) → 获取弹窗完整结构
   ↓
@@ -19,9 +19,9 @@ dom_tree(selector=".ant-modal", max_depth=8) → 获取弹窗完整结构
   ↓
 click/input → 执行交互
   ↓
-detect_modal() → 确认状态变化
+observe_start() → 触发动作 → observe_wait() → 确认状态变化
 ```
 
-**Related:** `detect_modal` 已优化为优先检查 `ant-modal-wrap` 的 `display:none` 来判断弹窗是否关闭（而非依赖 `states.is_displayed` 或 `wait.ele_deleted`），因为React组件卸载不彻底时 `ant-modal` DOM节点残留但wrap已隐藏。
+**Related:** 点击结果观察已统一为 `observe_start` → action → `observe_wait`；残留弹窗/通知/消息用 `close_modal` 清理。
 
 See also [[test-case-generator-dp-skill]]

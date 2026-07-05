@@ -2,18 +2,18 @@
 
 ## 一、筛选字段扫描
 
-使用 `expand_filter_area()` 展开筛选区，再 `scan_filter_fields()` 获取字段矩阵。穷尽每个字段的运算符和下拉选项。
+使用 `scan_filter_fields()` 获取字段矩阵；工具内部会自动展开筛选区。穷尽每个字段的运算符和下拉选项。
 
 ## 二、筛选验证方法（MUST）
 
-生成筛选用例时，AI **必须先用 `get_column_values()` 在浏览器中执行验证**，确认筛选逻辑正确后，再将验证结论转化为**纯中文描述**写入 Excel 预期结果列(L)。
+生成筛选用例时，AI **必须先用 `get_table_values()` 在浏览器中执行验证**，确认筛选逻辑正确后，再将验证结论转化为**纯中文描述**写入 Excel 预期结果列(L)。
 
 > ⚠️ 不经验证直接写预期结果 = 凭空臆测，违反技能核心原则。
 
 ### 验证流程
 
 1. 执行筛选操作（`input` 填写值 → `click` 点查询）
-2. `get_column_values('目标列', raw=False)` 取目标列所有值
+2. `get_table_values('目标列', kind='auto', raw=False)` 取目标列所有值
 3. 内部断言：`all_match = all(v and '预期值' in v for v in values)`
 4. 结论 → 中文写入 Excel L 列
 
