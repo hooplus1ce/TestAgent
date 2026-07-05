@@ -24,6 +24,7 @@ import config
 import vtable
 import session_auth
 import modal
+import observe
 import html_table
 
 # 日志输出到 stderr（stdout 用于 MCP 协议帧，不可污染）
@@ -758,9 +759,11 @@ def resize_column(col: int, width: int) -> dict:
 @mcp.tool()
 @read_synchronized
 def detect_modal(timeout: float = 0) -> dict:
-    """点击后检测弹窗(三级优先级)：iframe 业务弹窗/消息 → top 层系统确认 → none。每次点击后必调。
+    """点击后检测弹窗(三级优先级)：iframe 业务弹窗/消息 → top 层弹窗/通知/消息 → none。每次点击后必调。
 
     timeout>0 时轮询直到弹窗出现或超时，找到就立即返回（智能等待），不用盲等。
+    顶层覆盖 confirm(→system_confirm)/interactive/notification/message，含 .ant-message-notice toast。
+    注意：极短寿命 toast 或需并发抓多信号时，改用 observe_post_click（MutationObserver 事件驱动）。
     """
     return modal.detect_modal(timeout=timeout)
 
@@ -773,6 +776,104 @@ def close_modal() -> dict:
     返回 {ok, closed:[...], errors:[...]}，可判断清理是否成功。
     """
     return modal.close_modal()
+
+
+@mcp.tool()
+@write_synchronized
+def observe_post_click(timeout: float = 10, signals: list = None,
+                       listen_targets: str = None, poll_interval: float = 0.12) -> dict:
+    """点击后统一观察器：并发监听 DOM 弹窗/通知/消息 + URL 跳转 + Tab 变化 + 网络响应，
+    任一信号命中立即返回（first-signal-wins）。DOM 走 MutationObserver 事件驱动，非固定 sleep 轮询。
+    点击后默认调用本工具，替代多次串行 detect_modal/dom_overview/get_active_frame。
+
+    Args:
+        timeout: 最长观察秒数（默认 10）。信号命中立即提前返回。
+        signals: 监听信号类型列表，默认 ['modal','notification','message','tab','url']。
+                 可选：'modal'/'notification'/'message'/'tab'/'url'/'network'。
+        listen_targets: 网络监听 URL 特征（逗号分隔）；仅 signals 含 'network' 时生效。
+        poll_interval: Python 侧读缓冲间隔秒数（默认 0.12）；DOM 实际由 MutationObserver 即时触发。
+
+    Returns:
+        命中：{type, scope?, payload?, elapsedMs, ...信号专属字段}
+        未命中：{type:'none', elapsedMs, watched:[...]}
+        type ∈ interactive/confirm/notification/message/tab_change/url_change/network/none
+
+    典型用法：保存成功 toast（顶层 .ant-message-notice，~3s 消失）会被 message 信号即时捕获，
+    解决 detect_modal 历史漏抓顶层短寿命 toast 的问题。
+    """
+    return observe.observe_post_click(timeout=timeout, signals=signals,
+                                      listen_targets=listen_targets, poll_interval=poll_interval)
+
+
+@mcp.tool()
+@write_synchronized
+def observe_start(signals: list = None, listen_targets: str = None) -> dict:
+    """两段式观察器·启动：**点击前**调用，安装 MutationObserver + 网络监听，立即返回。
+    observer 在点击前就已监听，消除「点击→观察」调用间隙（agent 思考时间可能 > toast 寿命），
+    可靠捕获短寿命 toast（如保存成功 ~3s）。必须配对调用 observe_wait() 读取信号并清理。
+
+    Args:
+        signals: 监听信号类型列表，默认 ['modal','notification','message','tab','url']。
+                 可选：'modal'/'notification'/'message'/'tab'/'url'/'network'。
+        listen_targets: 网络监听 URL 特征（逗号分隔）；仅 signals 含 'network' 时生效。
+
+    Returns:
+        {ok, session:'active', watched:[...], base_url, base_tab_count}
+
+    典型用法（抓保存成功 toast + 保存接口）：
+        observe_start(signals=["message","network"], listen_targets="gateway")
+        click(...)                       # 触发保存
+        observe_wait(timeout=8)          # 读首个信号 + 清理
+    """
+    return observe.observe_start(signals=signals, listen_targets=listen_targets)
+
+
+@mcp.tool()
+@write_synchronized
+def observe_wait(timeout: float = 8, poll_interval: float = 0.12) -> dict:
+    """两段式观察器·等待：轮询 observe_start 安装的 observer，任一信号命中立即返回（first-signal-wins），
+    随后清理 observer + listener。须在 observe_start 之后、点击之后调用。
+
+    Args:
+        timeout: 最长等待秒数（默认 8）。
+        poll_interval: Python 侧读缓冲间隔秒数（默认 0.12）；DOM 由 MutationObserver 即时触发。
+
+    Returns:
+        命中：{type, scope?, payload?, elapsedMs, ...信号专属字段}
+        未命中：{type:'none', elapsedMs, watched:[...]}
+    """
+    return observe.observe_wait(timeout=timeout, poll_interval=poll_interval)
+
+
+@mcp.tool()
+@read_synchronized
+def detect_notification(timeout: float = 2) -> dict:
+    """原子工具：检测 .ant-notification-notice（iframe 优先，回退 top）。
+    事件驱动 ele() 等待，非固定 sleep。单点排查通知类 toast 用。"""
+    return observe.detect_notification(timeout=timeout)
+
+
+@mcp.tool()
+@read_synchronized
+def detect_message(timeout: float = 2) -> dict:
+    """原子工具：检测 .ant-message-notice（含 success/info/warning/error/loading，iframe+top）。
+    事件驱动 ele() 等待。专门捕获「保存订单成功」这类短寿命 toast（detect_modal 历史盲区）。"""
+    return observe.detect_message(timeout=timeout)
+
+
+@mcp.tool()
+@read_synchronized
+def detect_url_change(old_url: str, timeout: float = 5) -> dict:
+    """原子工具：等待活动 iframe URL 变化。用 DrissionPage wait.url_change 事件驱动。
+    点击后判断是否跳转（如新增保存后 saleOrderCreate → saleOrderDetail）。"""
+    return observe.detect_url_change(old_url=old_url, timeout=timeout)
+
+
+@mcp.tool()
+@read_synchronized
+def detect_tab_change(old_count: int, timeout: float = 5) -> dict:
+    """原子工具：等待浏览器 tab 数量变化（新 tab 打开/关闭）。点击后判断是否新开 tab。"""
+    return observe.detect_tab_change(old_count=old_count, timeout=timeout)
 
 
 @mcp.tool()

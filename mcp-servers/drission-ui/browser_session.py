@@ -151,6 +151,18 @@ def list_tabs():
         return tabs
 
 
+def tab_count():
+    """返回当前 tab 数量（轻量，仅读 tab_ids 长度，供 detect_tab_change 高频轮询用）。"""
+    with _lock:
+        if _browser is None:
+            return 0
+        try:
+            return len(_browser.tab_ids)
+        except Exception as e:
+            logger.debug("tab_count 失败: %s", e)
+            return 0
+
+
 def get_tab():
     """取活动 tab，连接失效则自愈重连。"""
     with _lock:

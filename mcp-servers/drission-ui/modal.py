@@ -14,64 +14,59 @@ logger = logging.getLogger("drission-ui")
 
 
 def _detect_in_target(target):
-    """用 DrissionPage 原生方法检测 target（tab/frame）内的弹窗。返回 {type, ...} 或 {type: "none"}。"""
+    """用 JS 检测 target 自身文档内的弹窗（document.querySelector 不递归 iframe，scope 精确）。
+
+    修复两个历史 bug：
+    ① tab.ele('c:.ant-modal-content') 会递归进 iframe 找到残留隐藏 modal，导致跨 frame 误判；
+    ② 找到隐藏 modal 后早退 return none，跳过 notification/message 检查（保存成功 toast 被漏抓的根因）。
+
+    现：隐藏/残留 modal 不早退，落入 notification/message 检查；可见性用 getBoundingClientRect 判定。
+    """
     try:
-        modal = target.ele('c:.ant-modal-content', timeout=0.3)
-        if modal:
-            # 优先检查：ant-modal-wrap 为 display:none 则弹窗已关闭
-            # （React 组件卸载不彻底时 ant-modal 残留但 wrap 已隐藏，这是最可靠的关闭判定）
-            try:
-                wrap_hidden = target.run_js(
-                    "var w=document.querySelector('.ant-modal-wrap');"
-                    "if(!w)return true;"
-                    "return window.getComputedStyle(w).display==='none';"
-                )
-                if wrap_hidden:
-                    return {"type": "none"}
-            except Exception:
-                pass
-            # 二次确认：ghost element（已销毁但 DP 缓存未 GC）返回 false
-            try:
-                if not modal.states.is_displayed:
-                    return {"type": "none"}
-            except Exception:
-                pass
-        if modal:
-            title_el = modal.ele('c:.ant-modal-title', timeout=0.2)
-            content_el = modal.ele('c:.ant-modal-body', timeout=0.2)
-            buttons = [b.text for b in modal.eles('c:.ant-btn', timeout=0.2) if b.text]
-            has_close = modal.ele('c:.ant-modal-close', timeout=0.2) is not None
-            is_confirm = modal.ele('c:.ant-confirm-body', timeout=0.1) is not None
-            return {
-                "type": "confirm" if is_confirm else "interactive",
-                "title": title_el.text if title_el else "",
-                "content": content_el.text[:200] if content_el else "",
-                "buttons": buttons,
-                "hasClose": has_close,
+        res = target.run_js(r"""
+        function isVis(el){ var r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; }
+        var m = document.querySelector('.ant-modal-content');
+        if (m) {
+            var w = document.querySelector('.ant-modal-wrap');
+            var wrapHidden = !w || window.getComputedStyle(w).display === 'none';
+            if (!wrapHidden && isVis(m)) {
+                var isConfirm = !!m.querySelector('.ant-confirm-body');
+                var title = m.querySelector('.ant-modal-title');
+                var body = m.querySelector('.ant-modal-body');
+                var btns = [].slice.call(m.querySelectorAll('.ant-btn')).map(function(b){return (b.textContent||'').trim();}).filter(Boolean);
+                return JSON.stringify({type: isConfirm ? 'confirm' : 'interactive',
+                    title: title ? (title.textContent||'').trim() : '',
+                    content: body ? (body.textContent||'').trim().slice(0,200) : '',
+                    buttons: btns, hasClose: !!m.querySelector('.ant-modal-close')});
             }
-
-        notif = target.ele('c:.ant-notification-notice', timeout=0.2)
-        if notif:
-            msg_el = notif.ele('c:.ant-notification-notice-message', timeout=0.1)
-            desc_el = notif.ele('c:.ant-notification-notice-description', timeout=0.1)
-            return {
-                "type": "notification",
-                "message": (msg_el.text if msg_el else "") or (desc_el.text if desc_el else ""),
-            }
-
-        msg = target.ele('c:.ant-message-notice', timeout=0.2)
-        if msg:
-            text_el = msg.ele('c:.ant-message-notice-content', timeout=0.1)
-            return {"type": "message", "message": text_el.text[:200] if text_el else ""}
-
+            // modal 隐藏/残留 → 不早退，继续查 notification/message
+        }
+        var n = document.querySelector('.ant-notification-notice');
+        if (n && isVis(n)) {
+            var m1 = n.querySelector('.ant-notification-notice-message');
+            var d1 = n.querySelector('.ant-notification-notice-description');
+            return JSON.stringify({type:'notification',
+                message: ((m1 ? m1.textContent : '') || (d1 ? d1.textContent : '')).trim()});
+        }
+        var g = document.querySelector('.ant-message-notice');
+        if (g && isVis(g)) {
+            var c = g.querySelector('.ant-message-notice-content');
+            return JSON.stringify({type:'message', message: c ? (c.textContent||'').trim().slice(0,200) : ''});
+        }
+        return JSON.stringify({type:'none'});
+        """)
+        d = json.loads(res) if isinstance(res, str) else res
+        return d if isinstance(d, dict) else {"type": "none"}
     except Exception:
-        pass
-    return {"type": "none"}
+        return {"type": "none"}
 
 
 def detect_modal(timeout: float = 0):
-    """按优先级检测弹窗：①活动 iframe 内业务弹窗/消息 ②top 层系统确认弹窗 ③none。
+    """按优先级检测弹窗：①活动 iframe 内业务弹窗/消息 ②top 层弹窗/通知/消息 ③none。
     使用 DrissionPage 原生 ele() 检测，不依赖 JS 注入。
+
+    顶层覆盖：confirm（→system_confirm，向后兼容）/ interactive / notification / message。
+    修复历史盲区：顶层 .ant-message-notice（如「保存订单成功」toast，寿命~3s）此前被丢弃。
     """
     deadline = time.time() + timeout if timeout > 0 else None
     while True:
@@ -83,8 +78,10 @@ def detect_modal(timeout: float = 0):
                 info["scope"] = "iframe"
                 return info
         top = _detect_in_target(tab)
-        if top.get("type") == "confirm":
-            top["type"] = "system_confirm"
+        if top.get("type") != "none":
+            # 顶层系统确认弹窗保留 system_confirm 类型名（向后兼容旧契约）
+            if top.get("type") == "confirm":
+                top["type"] = "system_confirm"
             top["scope"] = "top"
             return top
         if deadline is None or time.time() >= deadline:

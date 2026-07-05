@@ -1,11 +1,19 @@
 # 弹窗类型参考
 
-## 检测优先级
+## 检测工具选择
 
-每次点击操作后按顺序检测：
-1. iframe 内交互弹窗/消息提醒 → 无则
-2. top 层系统级确认弹窗 → 无则
-3. 正常继续
+| 场景 | 工具 | 说明 |
+|------|------|------|
+| **点击后默认观察** | `observe_post_click` | 统一观察器：并发抓 弹窗/通知/消息/Tab/URL/网络，first-signal-wins，MutationObserver 事件驱动。能抓短寿命 toast（~3s） |
+| 单点复核弹窗 | `detect_modal` | 三级优先级轮询，返回单个弹窗/通知/消息 |
+| 单信号专项 | `detect_notification` / `detect_message` / `detect_url_change` / `detect_tab_change` | 原子工具，事件驱动 wait |
+
+## detect_modal 内部优先级（单点复核时）
+
+按顺序检测，首个命中即返回：
+1. iframe 内交互弹窗/通知/消息 → 无则
+2. top 层弹窗/通知/消息 → 无则
+3. `none`
 
 ## 三种弹窗类型
 
@@ -38,18 +46,43 @@
 | 特征 | 警告图标 + 文字提示 + 单一操作按钮 |
 | 处理方式 | `check_session()` → 过期则 `refresh_session()` → 失败则 `login_ocr()` |
 
+## observe_post_click 返回值结构
+
+```python
+# 命中（任一信号触发即返回）
+{
+  "type": "interactive" | "confirm" | "system_confirm" | "notification" | "message"
+          | "tab_change" | "url_change" | "network",
+  "scope": "top" | "iframe",        # DOM 信号附带
+  "payload": {...},                  # DOM 信号的完整分类结果（title/content/buttons/kind/message）
+  "elapsedMs": int,                  # 从观察到命中耗时
+  ...信号专属字段                    # network: url/method/status; tab_change: tab_count; url_change: url/old_url
+}
+# 未命中
+{"type": "none", "elapsedMs": int, "watched": [...]}
+```
+
+调用：`observe_post_click(timeout=8, signals=["modal","notification","message","tab","url"], listen_targets="gateway")`
+- `signals` 默认 `["modal","notification","message","tab","url"]`，加 `"network"` 需配 `listen_targets`
+- `listen_targets` 用 `"gateway"` 抓 SCM 所有 API（保存接口走 `gateway.hoolinks.com/api/gateway`，业务关键词不命中）
+- ⚠️ **保存校验 notification 异步耗时 ~18s**：销售订单保存后前端调后端校验明细，~18s 后才弹 notification（如"序号为【1】的货物未填写销售数量..."）。`observe_wait`/`observe_post_click` timeout 需 ≥ 25s，否则漏抓（实测 timeout=15 漏抓、timeout=35 成功，elapsedMs=18732）。保存类操作统一用 timeout=30+；失败 notification 是持久型（.ant-notification-notice），不会自动消失，超时后用 `run_js` 读 `.ant-notification-notice` 文本可兜底复核。
+
 ## detect_modal 返回值结构
 
 ```python
 {
-  "type": "none" | "notification" | "message" | "interactive" | "business_confirm" | "system_confirm",
-  "title": str,
-  "content": str,
-  "buttons": [str],
-  "hasClose": bool,
-  "message": str
+  "type": "none" | "notification" | "message" | "interactive" | "confirm" | "system_confirm",
+  "scope": "iframe" | "top",
+  "title": str,          # interactive/confirm/system_confirm
+  "content": str,        # interactive/confirm/system_confirm
+  "buttons": [str],      # interactive/confirm/system_confirm
+  "hasClose": bool,      # interactive/confirm/system_confirm
+  "message": str         # notification/message
 }
 ```
+
+> **type 语义**：iframe 内 `.ant-modal-content` → `interactive`（含 `.ant-confirm-body` 则 `confirm`）；top 层 `.ant-modal-content` 含 `.ant-confirm-body` → `system_confirm`（向后兼容旧契约），其余按 `interactive`/`notification`/`message`。
+> **已修复盲区**：顶层 `.ant-message-notice`（保存成功 toast）/ `.ant-notification-notice` 此前被丢弃，现已覆盖；隐藏/残留 modal 不再早退遮挡其他信号。
 
 ## 各类型处理逻辑
 

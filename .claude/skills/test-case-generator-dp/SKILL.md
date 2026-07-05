@@ -77,20 +77,22 @@ description: 为 WMS/MOM/ERP 等企业系统迭代生成测试用例（DrissionP
 
 ```
 用户 → 指令（如「测一下批量排产按钮」）
-  Agent → 执行（click / detect_modal / scan / listen_wait）
+  Agent → 执行（click / observe_post_click / scan / listen_wait）
   Agent → 汇报结果 + 询问下一步
 用户 → 继续或调整方向
 ```
 
-**每次 `click`/`click_cell`/`click_xy` 后 MUST 立即 `detect_modal()`**。
+**每次 `click`/`click_cell`/`click_xy` 后 MUST 立即观察页面变化**。优先用 `observe_post_click`（统一观察器，一次调用并发抓 弹窗/通知/消息/Tab/URL/网络，first-signal-wins，MutationObserver 事件驱动不漏短寿命 toast）：
 
-点击后三步排查（VTable 单元格交互后结果不一定是弹窗）：
 ```
-① detect_modal()          → 弹窗类型
-② dom_overview()          → 新 Tab 出现？
-③ get_active_frame()      → iframe URL 变了？
-// 都没变 → 同 iframe 内容变更
+observe_post_click(timeout=8, signals=["modal","notification","message","tab","url"])
+  → 返回首个命中信号 {type, scope, payload?, elapsedMs}
+  → type ∈ interactive/confirm/system_confirm/notification/message/tab_change/url_change/none
 ```
+
+`observe_post_click` 替代旧的「detect_modal → dom_overview → get_active_frame」三步串行排查——一次调用覆盖所有信号，且能抓到 `detect_modal` 历史漏掉的**顶层短寿命 toast**（如「保存订单成功」`.ant-message-notice`，~3s 消失）。需要抓接口时加 `signals=[...,"network"]` + `listen_targets="gateway"`。
+
+何时仍用 `detect_modal` / 原子工具：单点复核弹窗类型、或 `observe_post_click` 返回 none 后二次确认。`detect_notification`/`detect_message`/`detect_url_change`/`detect_tab_change` 用于单信号专项排查。
 
 **断点续传**：每完成一个区域，调用 `scripts/load-exploration-state.py` 保存进度。
 
@@ -154,10 +156,11 @@ dom_tree(selector=".page-query")  // 验证出现 .legions-pro-quick-filter-rema
 如果当前已经是内联模式，直接继续扫描筛选字段；不要重复切换。
 
 ### 弹窗检测
-详见 `references/modal-types.md`。每次点击后 `detect_modal()`，三级优先级：
-iframe 交互弹窗 → top 层系统确认 → 无弹窗正常继续。
+详见 `references/modal-types.md`。点击后优先 `observe_post_click`（并发抓所有信号，first-signal-wins）；单点复核用 `detect_modal`（三级优先级：iframe 弹窗/通知/消息 → top 层弹窗/通知/消息 → none）。
 
-⚠️ VTable 筛选弹窗（`.vtable-filter-menu`）非 ant-design 组件，`detect_modal` 不检测。点击列头筛选图标后需用 `run_js` 补充探测。
+`detect_modal` 已修复历史盲区：现覆盖顶层 `.ant-message-notice`（如保存成功 toast）和 `.ant-notification-notice`，隐藏/残留 modal 不再早退遮挡其他信号。
+
+⚠️ VTable 筛选弹窗（`.vtable-filter-menu`）非 ant-design 组件，`detect_modal`/`observe_post_click` 不检测。点击列头筛选图标后需用 `run_js` 补充探测。
 
 ### 弹窗交互策略
 **与弹窗交互前 MUST 先用 `dom_tree` 获取弹窗完整 DOM 结构**，无论是要点击按钮、输入文本还是关闭弹窗。
@@ -166,7 +169,7 @@ iframe 交互弹窗 → top 层系统确认 → 无弹窗正常继续。
 
 流程：
 ```
-detect_modal() → 确认弹窗存在
+observe_post_click() 或 detect_modal() → 确认弹窗存在
   ↓
 dom_tree(selector=".ant-modal", max_depth=8)  → 获取弹窗完整结构
   ↓
@@ -174,7 +177,7 @@ dom_tree(selector=".ant-modal", max_depth=8)  → 获取弹窗完整结构
   ↓
 click(input/...) → 执行交互
   ↓
-detect_modal() → 确认弹窗状态变化
+observe_post_click() 或 detect_modal() → 确认弹窗状态变化
 ```
 
 ### 会话维持
@@ -202,4 +205,4 @@ detect_modal() → 确认弹窗状态变化
 - [ ] 用户已确认变量配置
 - [ ] 输出目录有写入权限
 - [ ] 每条用例通过质量门禁
-- [ ] 每次点击后都调用了 `detect_modal`
+- [ ] 每次点击后都调用了 `observe_post_click`（或 `detect_modal`）观察页面变化
