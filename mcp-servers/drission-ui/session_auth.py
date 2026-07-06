@@ -64,7 +64,7 @@ def get_login_auth():
     import httpx
 
     ocr = ddddocr.DdddOcr(show_ad=False)
-    ocr.set_ranges("0123456789")  # 纯数字字符集
+    ocr.set_ranges("0123456789")
 
     cookies = {"SESSION": str(uuid.uuid4())}
     with httpx.Client(base_url=config.SCM_BASE_URL, timeout=config.REFRESH_HTTP_TIMEOUT) as client:
@@ -145,27 +145,13 @@ def _bounded_reload(tab):
 
 
 def login_ocr():
-    """OCR 识别验证码 + HTTP 登录 → 清缓存 → 注入 cookie → 刷新。
-
-    顺序关键：先确保 tab 在目标域 → clear_cache 清旧 cookie/localStorage →
-    注入新 cookie → tab.refresh。若先注入再 tab.get 导航，服务端会在导航
-    响应里 Set-Cookie 覆盖掉刚注入的有效 SESSION，浏览器残留失效 SESSION，
-    导致 gateway.hoolinks.com 收到失效 SESSION 返回 403「会话超时」。
-    clear_cache 一步清掉 cookies + localStorage + sessionStorage + cache，
-    无需 CDP 介入。
-    """
+    """OCR 识别验证码 + HTTP 登录 → 进入目标页 → 注入 cookie → 刷新。"""
     started = perf_counter()
     timings = {}
     tab = browser_session.get_tab()
-    # 1. 先到目标域：clear_cache 才能定位到该域的缓存。已在目标域时跳过慢导航。
-    navigation = _stage(timings, "ensure_admin_host", lambda: _ensure_on_admin_host(tab))
-    # 2. 清旧 cookie + localStorage + sessionStorage + cache，杜绝 SESSION 冲突
-    _stage(timings, "clear_cache", tab.clear_cache)
-    # 3. OCR 登录获取新 cookie（list[{name, value}]）
     auth_cookies = _stage(timings, "get_login_auth", get_login_auth)
-    # 4. 注入（补 domain=.hoolinks.com，确保发给 gateway 等所有子域）
+    navigation = _stage(timings, "ensure_admin_host", lambda: _ensure_on_admin_host(tab))
     injected = _stage(timings, "inject_cookies", lambda: _inject_cookies(auth_cookies, tab))
-    # 5. 刷新使 cookie 生效（refresh 而非 get，避免服务端 Set-Cookie 覆盖）
     reload_loaded = _stage(timings, "reload", lambda: _bounded_reload(tab))
     timings["total"] = round(perf_counter() - started, 3)
     return {"ok": True, "cookies": [c["name"] for c in injected],
