@@ -2,11 +2,7 @@
   "mcpServers": {
     "drission-ui": {
       "command": "uv",
-      "args": ["run", "python", "mcp-servers/drission-ui/server.py"]
-    },
-    "playwright": {
-      "command": "bash",
-      "args": ["-c", "PLAYWRIGHT_BROWSERS_PATH=$HOME/.cache/ms-playwright npx @playwright/mcp@latest"]
+      "args": ["run", "python", "drission_ui_mcp.py"]
     }
   }
 }

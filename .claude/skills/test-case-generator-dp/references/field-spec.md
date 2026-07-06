@@ -1,11 +1,11 @@
 # 字段规范 — 19 字段完整定义
 
-> 本文件是 Excel 测试用例字段的**唯一权威来源**。SKILL.md 的 Phase 2、`excel-export-template.py` 的 `HEADERS_18` 都必须与本表对齐。
+> 本文件是 Excel 测试用例字段的**唯一权威来源**。SKILL.md 的 Phase 2、`generate_from_json.py` 的 `HEADERS_19` 都必须与本表对齐。
 > ⚠️ 历史问题：v1 的 SKILL.md Phase 2 字段表存在「L 预期结果」重复占位、I/J/K 编号错乱的问题，本文件已修正。
 
 ## 字段 ↔ 列字母 ↔ 模板字段名 三方对照
 
-| 列 | 字段名(中文) | 模板字段(HEADERS_18) | 必填 | 要求 |
+| 列 | 字段名(中文) | 模板字段(HEADERS_19) | 必填 | 要求 |
 |----|------------|---------------------|------|------|
 | **A** | 用例编号 | `"用例编号"` | ✅ | `{ENTERPRISE_PREFIX}_{MODULE_PINYIN}_{分组字母}{3位数字}`，如 `NB_ZZPC_F001` |
 | **B** | 用例标题 | `"用例标题"` | ✅ | 动宾结构，如「按制令单号筛选工单」 |
@@ -27,26 +27,24 @@
 | **R** | 备注 | `"备注"` | ❌ | 骨架用例填 `[待确认]`，其余留空 |
 | **S** | 自动化建议 | `"自动化建议"` | ✅ | 面向 drission-ui MCP 自动执行的动作与断言建议，如使用 `scan_filter_fields`、`input`、`select_date_range`、`get_column_values`、`listen_wait` 等 |
 
-## 与 Python 模板的对应关系
+## 与 JSON 导出器的对应关系
 
-`excel-export-template.py` 中 `HEADERS_19` 数组顺序 = 上表 A→S 顺序，**一一对应，无错位**。AI 在 Phase 4 填 `test_cases` 时，每行 list 的 19 个元素按下标 0-18 依次填入：
+`generate_from_json.py` 中 `HEADERS_19` 数组顺序 = 上表 A→S 顺序，**一一对应，无错位**。AI 在 Phase 4 写入项目级 `test_cases/<MODULE_PINYIN>/*.json` 后，由 `generate_from_json.py` 将 JSON 字段映射到 Excel：
 
-```python
-test_cases = [
-    [f"{ENTERPRISE_PREFIX}_{MODULE_PINYIN}_F001",  # A 用例编号
-     "按制令单号筛选工单",                            # B 用例标题
-     "中级",                                        # C 级别
-     "筛选结果正确性",                                # D 验证点
-     MODULE_LEVEL1, MODULE_LEVEL2,                  # E/F 模块
-     "功能测试", "查询",                             # G 测试类型 / H 功能
-     "1. 已登录 SCM\n2. 已进入制造排产页面",          # I 前置条件
-     "1. 在制令单号字段输入 MO202606\n2. 点击查询",   # J 测试步骤
-     "制令单号:MO202606",                            # K 测试数据
-     "表格所有制令单号均包含「MO202606」，无不符合记录", # L 预期结果
-     "", "", "",                                    # M/N/O 执行信息（空）
-     DEFAULT_AUTHOR, date.today().isoformat(), "",     # P/Q/R
-     "使用 input 设置筛选值，click 查询，get_column_values 断言结果"]  # S 自动化建议
-]
+```json
+{
+  "case_id": "F001",
+  "case_title": "按制令单号筛选工单",
+  "priority": "中级",
+  "verify_point": "筛选结果正确性",
+  "test_type": "功能测试",
+  "function": "查询",
+  "preconditions": ["已登录 SCM", "在制造排产页面"],
+  "test_steps": ["在制令单号字段输入 MO202606", "点击查询"],
+  "test_data": {"制令单号": "MO202606"},
+  "expected_result": "表格所有制令单号均包含「MO202606」，无不符合记录",
+  "automation_suggestion": "使用 input 设置筛选值，click 查询，get_column_values 断言结果"
+}
 ```
 
 ## 分组字母约定（A 列编号前缀）
@@ -59,7 +57,7 @@ test_cases = [
 | B | 批量操作/导出/打印 | `NB_ZZPC_B001` |
 | P | 页面级（刷新/布局/切换） | `NB_ZZPC_P001` |
 
-## 模板样式规则（与 `excel-export-template.py` 对齐）
+## 模板样式规则（与 `generate_from_json.py` 对齐）
 
 - **左对齐列**：B 标题、D 验证点、I 前置条件、J 测试步骤、K 测试数据、L 预期结果、S 自动化建议
 - **居中列**：其余所有列

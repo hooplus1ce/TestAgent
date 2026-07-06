@@ -2,7 +2,7 @@
 """
 通用测试用例Excel生成器
 功能：读取JSON格式的测试用例数据 → 生成标准化Excel文件
-用法：python generate_from_json.py <json_file1> <json_file2> ...
+用法：uv run python .claude/skills/test-case-generator-dp/scripts/generate_from_json.py <json_file1> <json_file2> ...
 """
 
 import os
@@ -265,14 +265,14 @@ def main():
     import sys
     
     if len(sys.argv) < 2:
-        print("用法: python generate_from_json.py <json_file1> [<json_file2> ...]")
+        print("用法: uv run python .claude/skills/test-case-generator-dp/scripts/generate_from_json.py <json_file1> [<json_file2> ...]")
         print("\n示例:")
         print("  # 单个文件")
-        print("  python generate_from_json.py data/SCJKMX_F.json")
+        print("  uv run python .claude/skills/test-case-generator-dp/scripts/generate_from_json.py test_cases/SCJKMX/SCJKMX_01_筛选查询类.json")
         print("  # 多个文件合并")
-        print("  python generate_from_json.py data/SCJKMX_*.json")
-        print("  # 当前目录所有JSON")
-        print("  python generate_from_json.py data/*.json")
+        print("  uv run python .claude/skills/test-case-generator-dp/scripts/generate_from_json.py test_cases/SCJKMX/SCJKMX_*.json")
+        print("  # 其他模块")
+        print("  uv run python .claude/skills/test-case-generator-dp/scripts/generate_from_json.py test_cases/OTHER/OTHER_*.json")
         return
     
     # 处理通配符

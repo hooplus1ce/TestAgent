@@ -4,7 +4,7 @@
 
 | 场景 | 工具 | 说明 |
 |------|------|------|
-| **点击默认观察** | `observe_start` → action → `observe_wait` | 点击前安装 MutationObserver + 网络监听，点击后读取首个信号并清理，能抓短寿命 toast（~3s） |
+| **点击默认观察** | `observe_start` → action → `observe_wait` | 点击前安装观察器，点击后读取首个信号并清理，能抓短寿命提示 |
 | 弹窗清理 | `close_modal` | 清理残留弹窗/通知/消息，避免干扰后续交互 |
 
 ## 统一观察器优先级
@@ -20,19 +20,17 @@
 
 | 属性 | 值 |
 |------|-----|
-| 检测位置 | iframe 内 |
-| CSS 选择器 | `.ant-modal-content`（含 `.ant-confirm-body-wrapper`） |
+| 检测位置 | 由 MCP 返回的 `scope` 判断 |
 | 特征 | 有标题 + 内容区 + 操作按钮（确定/取消/关闭×） |
 | 处理方式 | DFS 探索弹窗内所有按钮和字段后，点击关闭×或取消返回 |
 
-**判断逻辑**：iframe 内的 `.ant-modal-content` **全部**视为业务弹窗。只有 top 层的 `.ant-confirm` 才视为系统级确认弹窗。
+**判断逻辑**：业务模块内出现的可交互弹窗优先视为业务弹窗；顶层会话/权限/系统确认类弹窗按系统级确认处理。
 
 ### 2. 消息提醒
 
 | 属性 | 值 |
 |------|-----|
-| 检测位置 | iframe 内 |
-| CSS 选择器 | `.ant-notification-notice` / `.ant-message-notice` |
+| 检测位置 | 由 MCP 返回的 `scope` 判断 |
 | 特征 | 只有文字提示，无业务操作按钮 |
 | 处理方式 | 提取文字内容后关闭或等待自动消失 |
 
@@ -40,8 +38,7 @@
 
 | 属性 | 值 |
 |------|-----|
-| 检测位置 | top 层主页面 |
-| CSS 选择器 | `.ant-modal-content:has(.ant-confirm-body-wrapper)` |
+| 检测位置 | 由 MCP 返回的 `scope` 判断 |
 | 特征 | 警告图标 + 文字提示 + 单一操作按钮 |
 | 处理方式 | `check_session()` → 过期则 `refresh_session()` |
 
@@ -64,7 +61,7 @@
 调用：先 `observe_start(signals=["modal","notification","message","tab","url"], listen_targets="gateway")`，执行 action 后 `observe_wait(timeout=8)`
 - `signals` 默认 `["modal","notification","message","tab","url"]`，加 `"network"` 需配 `listen_targets`
 - `listen_targets` 用 `"gateway"` 抓 SCM 所有 API（保存接口走 `gateway.hoolinks.com/api/gateway`，业务关键词不命中）
-- ⚠️ **保存校验 notification 异步耗时 ~18s**：销售订单保存后前端调后端校验明细，~18s 后才弹 notification（如"序号为【1】的货物未填写销售数量..."）。`observe_wait` timeout 需 ≥ 25s，否则漏抓（实测 timeout=15 漏抓、timeout=35 成功，elapsedMs=18732）。保存类操作统一用 timeout=30+；失败 notification 是持久型（.ant-notification-notice），不会自动消失，超时后用 `run_js` 读 `.ant-notification-notice` 文本可兜底复核。
+- 保存、提交、审核等后端校验类操作可能延迟返回提示；保存类操作统一使用更长 `observe_wait` 超时时间（建议 30s+）。若超时但页面出现明显反馈，应补充截图和 DOM 观察结果，不在 skill 中内联 raw JS 兜底。
 
 
 ## 各类型处理逻辑

@@ -66,7 +66,7 @@ mcp-servers/drission-ui/
 .claude/skills/test-case-generator-dp/
   SKILL.md             # 4 阶段工作流骨架
   references/           # 细节文档（field-spec / filter-validation / modal-types / vtable-interaction / scm-access / quality-rubric）
-  scripts/             # excel-export-template.py（Excel 导出）、load-exploration-state.py（断点续传）
+  scripts/             # generate_from_json.py（JSON→Excel 导出）、load-exploration-state.py（断点续传）
   assets/              # exploration-state.schema.json
 
 .mcp.json              # 项目级 MCP 注册
@@ -359,9 +359,9 @@ PYTHONIOENCODING=utf-8 uv run python verify_live.py
 **断点续传**：每完成一个区域调用 `load-exploration-state.py` 的 `save_state()`，重启技能时先 `load_state()` 续传。
 
 #### Phase 4 — Excel 导出
-1. 按 `scripts/excel-export-template.py` 模板组装数据
+1. 将探索产物按分类追加到 `data/*.json`
 2. 按视觉布局排序：筛选区(F) → 页签/按钮(I) → VTable 交互(I) → 页面级(P)
-3. 在 `eval` kernel 中执行
+3. 执行 `uv run python scripts/generate_from_json.py data/*.json`
 4. 告知用户文件路径
 
 ---

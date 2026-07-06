@@ -1,0 +1,11 @@
+interface:
+  display_name: "Enterprise Test Case Generator"
+  short_description: "Generate SCM/MOM/ERP test cases from real browser exploration."
+  default_prompt: "Generate test cases for the requested enterprise system module using drission-ui MCP evidence."
+
+dependencies:
+  tools:
+    - type: "mcp"
+      value: "drission-ui"
+      description: "Project-specific DrissionPage MCP server for SCM/MOM/ERP browser automation."
+      transport: "stdio"

@@ -44,7 +44,7 @@ description: 为 WMS/MOM/ERP 等企业系统迭代生成测试用例（DrissionP
 
 ## 2. 迭代工作流
 
-严格按 4 阶段推进，**不可跳步**。
+严格按 5 个阶段推进，**不可跳步**。Phase 1.5 是覆盖率保障阶段，完成页面资产采集后必须先建覆盖模型，再生成用例。
 
 ### Phase 1 — 需求采集
 
@@ -58,6 +58,19 @@ description: 为 WMS/MOM/ERP 等企业系统迭代生成测试用例（DrissionP
 8. DFS 穷尽按钮 + 弹窗探索
 9. 用实际页面数据替代用户描述
 
+### Phase 1.5 — 覆盖建模
+
+完成页面结构采集后，先按 `references/coverage-model.md` 建立覆盖模型，禁止直接进入用例生成。
+
+必须输出：
+- 页面资产清单：筛选字段、按钮、页签、表格列、行操作、弹窗、接口、状态字段、关键数据样本
+- 可测功能点清单：每个页面资产对应的可验证行为
+- 场景覆盖矩阵：正向、反向、边界、组合、状态流转、幂等、权限/可见性、数据一致性
+- 覆盖状态：`已验证` / `待验证` / `需用户确认` / `工具缺口`
+- 下一轮探索清单：优先补齐核心功能的反向、边界和状态场景
+
+只把 `已验证` 场景写成正式用例；`待验证` 场景进入下一轮探索，`需用户确认` 场景只有在用户要求占位时才生成骨架用例并在备注标注 `[待确认]`。
+
 ### Phase 2 — 用例生成
 
 每个用例 **19 个字段**，字段定义见 `references/field-spec.md`。
@@ -67,8 +80,9 @@ description: 为 WMS/MOM/ERP 等企业系统迭代生成测试用例（DrissionP
 - 自动化建议(S) 必须说明可由 drission-ui MCP 执行的关键动作与断言方式
 - 级别(C) 按决策树分配
 - DFS 衍生用例导出前去重
+- 每条用例必须能映射回 Phase 1.5 覆盖矩阵中的一个 `已验证` 场景
 
-**必须覆盖**：正常流程、异常流程、业务规则验证、数据状态流转。
+**必须覆盖**：正常流程、异常流程、业务规则验证、数据状态流转。详见 `references/coverage-model.md` 的最低覆盖目标；达不到时必须列出原因和剩余缺口。
 
 ### Phase 3 — 分区域迭代探索（对话驱动）
 
@@ -97,10 +111,12 @@ observe_wait(timeout=8)
 
 ### Phase 4 — Excel 导出
 
-1. 按 `scripts/excel-export-template.py` 模板组装数据
+1. 将探索产物按分类追加到项目级 `test_cases/<MODULE_PINYIN>/*.json`
 2. MUST 按视觉布局排序：筛选区(F) → 页签/按钮(I) → 表格交互(I) → 页面级(P)
-3. 用 `bash` 执行 Python 文件脚本导出
+3. 用 `uv run python .claude/skills/test-case-generator-dp/scripts/generate_from_json.py test_cases/<MODULE_PINYIN>/*.json` 导出 Excel
 4. 告知用户文件路径
+
+新流程禁止把用例硬编码进 Python。用例数据必须先沉淀为 JSON，再由通用导出器生成 Excel。
 
 ---
 
@@ -117,25 +133,9 @@ VTable 是 canvas 渲染，无真实 DOM 节点。所有点击走坐标，工具
 ### 筛选区显示模式
 筛选区必须优先使用**内联模式**，不要让高级筛选以弹窗形式显示。
 
-进入模块或开始筛选区探索后，若页面存在筛选区模式切换按钮（`.legions-pro-quick-filter-actions button:nth-last-child(2)`，图标通常为 `anticon-bars`），按以下流程切换并验证：
+进入模块或开始筛选区探索后，优先通过 `enter_module("<模块名>", expand_filter=True)` 和 `scan_filter_fields()` 让 MCP 工具完成筛选区展开、模式切换和字段矩阵提取。AI 层只消费工具返回的结构化字段、运算符和值域，不写 CSS 选择器和 DOM 切换细节。
 
-```
-dom_tree(selector=".page-query")
-  ↓
-click(selector=".legions-pro-quick-filter-actions button:nth-last-child(2)")  // 打开“内联模式/弹窗模式”菜单
-  ↓
-dom_tree(selector=".ant-dropdown:not(.ant-dropdown-hidden)")  // 确认菜单结构
-  ↓
-click(text="内联模式")
-  ↓
-dom_tree(selector=".page-query")  // 验证出现 .legions-pro-quick-filter-remaining 且按钮变为“收起▲”
-```
-
-判定标准：
-- `.ant-dropdown` 菜单关闭或隐藏；
-- `.page-query` 内出现 `.legions-pro-quick-filter-remaining`；
-- 原 `展开▼` 按钮变为 `收起▲`；
-- 高级筛选字段直接显示在页面内，而不是通过 `.ant-modal` 的“高级搜索”弹窗显示。
+判定标准：MCP 返回的筛选字段应直接来自页面内联筛选区，而不是高级搜索弹窗。若工具无法确认内联模式，记录为工具能力缺口，不用临时 JS 或脆弱选择器绕过。
 
 筛选字段三段式约束：
 - 每个筛选字段由“字段名下拉 / 操作符下拉 / 值控件”组成；
@@ -145,11 +145,9 @@ dom_tree(selector=".page-query")  // 验证出现 .legions-pro-quick-filter-rema
 - 若第三段值控件是下拉框，标记为 `valueMode=must-select-option`，必须先获取 `options`，后续输入/筛选只能选择 `options` 中已有内容，不能任意填写，否则前端不会成功录入。
 
 遍历下拉框强约束：
-- 每次打开一个下拉框前，先确认页面不存在可见的 `.ant-select-dropdown` / `.ant-dropdown` 浮层；
-- 打开下拉框后，优先使用 DrissionPage 智能等待：`wait.ele_displayed()` 等待浮层和菜单项出现；
-- 读取完当前下拉框选项后，通过 body click / Escape 等方式关闭；
-- 关闭后使用 `wait.ele_hidden()` 确认所有可见下拉浮层均已隐藏，再继续打开下一个下拉框；
-- 不要使用固定 sleep 或 JS busy-wait 代替 DrissionPage 智能等待；
+- 每次只打开并扫描一个下拉框；
+- 读取完当前下拉框选项后，必须确认浮层已关闭再继续下一个字段；
+- 不要使用固定 sleep 或 JS busy-wait 代替 MCP/DrissionPage 的智能等待；
 - 不能在前一个下拉框未确认收起时直接点击下一个下拉框，否则容易读取到旧浮层选项或造成 React 状态错乱。
 
 如果当前已经是内联模式，直接继续扫描筛选字段；不要重复切换。
@@ -157,20 +155,20 @@ dom_tree(selector=".page-query")  // 验证出现 .legions-pro-quick-filter-rema
 ### 弹窗检测
 详见 `references/modal-types.md`。点击前调用 `observe_start`，点击后调用 `observe_wait`，由统一观察器并发捕获弹窗、通知、消息、Tab/URL 变化和可选网络响应。
 
-⚠️ VTable 筛选弹窗（`.vtable-filter-menu`）非 ant-design 组件，统一观察器不检测。点击列头筛选图标后需用 `run_js` 补充探测。
+VTable 列头筛选、单元格编辑器、虚拟下拉等特殊浮层必须通过 `drission-ui` 的 VTable facade 处理。若当前工具无法返回结构化结果，记录工具缺口并降级生成低级展示类用例，不在 skill 中内联 raw JS。
 
 ### 弹窗交互策略
 **与弹窗交互前 MUST 先用 `dom_tree` 获取弹窗完整 DOM 结构**，无论是要点击按钮、输入文本还是关闭弹窗。
 
-原因：SCM 系统大量使用自定义封装的弹窗组件（如带 `modal-minimize-btn`/`modal-maximize-btn` 的高级搜索弹窗），React 合成事件与 DrissionPage 原生模拟点击之间存在兼容性差异。先通过 `dom_tree(selector=".ant-modal")` 拿到弹窗内部精确的按钮层级、class 和文本后，再用精确选择器定位交互，可避免盲目猜测导致点击无效。
+原因：SCM 系统大量使用自定义封装的弹窗组件。先通过 `dom_tree` 拿到弹窗内部按钮、字段、文案和层级后，再选择稳定文本或 MCP 返回的结构化目标执行交互，可避免盲目猜测导致点击无效。
 
 流程：
 ```
 observe_start() → click/input/... → observe_wait() → 确认弹窗存在
   ↓
-dom_tree(selector=".ant-modal", max_depth=8)  → 获取弹窗完整结构
+dom_tree(...)  → 获取弹窗完整结构
   ↓
-分析 DOM → 确定精确的交互目标选择器（如 .ant-modal-footer button、css:.ant-modal-close-x）
+分析 DOM → 确定稳定文本或 MCP 返回的结构化交互目标
   ↓
 click(input/...) → 执行交互
   ↓
@@ -201,5 +199,8 @@ observe_start() → click/input/... → observe_wait() → 确认弹窗状态变
 - [ ] `connect` 成功 + `check_session` 通过
 - [ ] 用户已确认变量配置
 - [ ] 输出目录有写入权限
+- [ ] 已完成 Phase 1.5 覆盖建模
+- [ ] 每条正式用例都映射到覆盖矩阵中的 `已验证` 场景
+- [ ] 已向用户说明 `待验证` / `需用户确认` / `工具缺口` 项
 - [ ] 每条用例通过质量门禁
 - [ ] 每次点击前后都执行了 `observe_start` → action → `observe_wait` 观察页面变化

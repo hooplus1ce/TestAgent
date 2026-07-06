@@ -1,0 +1,28 @@
+# Project-scoped Codex configuration.
+# Codex loads this file only when the project is trusted.
+
+[mcp_servers.drission-ui]
+command = "bash"
+args = ["-lc", "cd \"$(git rev-parse --show-toplevel)\" && uv run python drission_ui_mcp.py"]
+enabled = true
+required = false
+startup_timeout_sec = 30
+tool_timeout_sec = 120
+default_tools_approval_mode = "auto"
+env_vars = [
+  "HL_SCM_URL",
+  "HL_SCM_BASE_URL",
+  "HL_SCM_LOGIN_PAGE",
+  "HL_SCM_USERNAME",
+  "HL_SCM_USERPWD",
+  "HL_COOKIE_DOMAIN",
+  "HL_ACCESS_DOMAIN",
+  "HL_TARGET_HINT",
+  "HL_REMOTE_PORT",
+  "HL_SHOT_DIR",
+  "HL_CHROME_PATH",
+  "HL_HEADLESS",
+]
+
+[mcp_servers.drission-ui.env]
+DRISSION_UI_CAPS = "core,vtable,filter,observe,network"
