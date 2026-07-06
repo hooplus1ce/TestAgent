@@ -1,0 +1,123 @@
+{
+  "module_info": {
+    "enterprise_prefix": "NB",
+    "module_name": "生产管理_生产缴库明细",
+    "module_level1": "生产管理",
+    "module_level2": "生产缴库明细",
+    "module_pinyin": "SCJKMX",
+    "author": "Hooplus1ce"
+  },
+  "category": "T - 表格操作类",
+  "test_cases": [
+    {
+      "case_id": "T001",
+      "case_title": "VTable列宽向右拖拽调整",
+      "priority": "低级",
+      "verify_point": "拖拽列右边界可扩大列宽，后续列自动右移",
+      "test_type": "功能测试",
+      "function": "列宽调整",
+      "preconditions": [
+        "已登录系统",
+        "在生产缴库明细页面",
+        "数据表格已加载完成"
+      ],
+      "test_steps": [
+        "鼠标移动到缴入仓库列的右边界",
+        "按住鼠标向右拖拽380像素",
+        "释放鼠标"
+      ],
+      "test_data": {
+        "调整列": "缴入仓库",
+        "拖拽距离": "380px"
+      },
+      "expected_result": "1. 缴入仓库列宽从120px变为500px\n2. 右侧所有列同步右移380px\n3. 列内容显示完整无截断",
+      "automation_suggestion": "resize_table_column设置缴入仓库列为500px，scan_table读取列坐标计算宽度变化量验证调整生效"
+    },
+    {
+      "case_id": "T002",
+      "case_title": "VTable表格横向滚动查看右侧列",
+      "priority": "低级",
+      "verify_point": "横向滚动表格可查看视口外的列，内容显示正常",
+      "test_type": "功能测试",
+      "function": "滚动操作",
+      "preconditions": [
+        "已登录系统",
+        "在生产缴库明细页面",
+        "数据表格已加载完成"
+      ],
+      "test_steps": [
+        "在数据表格区域向右横向滚动鼠标滚轮"
+      ],
+      "test_data": {
+        "滚动距离": "380px"
+      },
+      "expected_result": "1. 表格内容向左移动\n2. 原视口左侧的列移出视口\n3. 右侧的列（如销售订单、客户名称、商品规格等）进入视口可见区域\n4. 滚动后所有列内容显示正常",
+      "automation_suggestion": "scan_table获取初始列坐标，触发wheel事件向右滚动，再次scan_table验证列坐标变化量匹配"
+    },
+    {
+      "case_id": "T003",
+      "case_title": "表格首列复选框点击勾选",
+      "priority": "低级",
+      "verify_point": "点击行首复选框可勾选该行记录",
+      "test_type": "功能测试",
+      "function": "勾选",
+      "preconditions": [
+        "已登录系统",
+        "在生产缴库明细页面",
+        "数据表格已加载完成",
+        "所有行未勾选"
+      ],
+      "test_steps": [
+        "点击第一行的复选框"
+      ],
+      "test_data": {},
+      "expected_result": "1. 第一行复选框显示为勾选状态\n2. 该行高亮显示（如有选中样式）\n3. 不影响其他行的勾选状态",
+      "automation_suggestion": "click_table_cell点击第一行复选框单元格，scan_table验证复选框选中状态"
+    },
+    {
+      "case_id": "T004",
+      "case_title": "表头全选复选框点击功能",
+      "priority": "低级",
+      "verify_point": "点击表头复选框可全选所有行，再次点击取消全选",
+      "test_type": "功能测试",
+      "function": "全选",
+      "preconditions": [
+        "已登录系统",
+        "在生产缴库明细页面",
+        "数据表格已加载完成",
+        "所有行未勾选"
+      ],
+      "test_steps": [
+        "点击表头的全选复选框"
+      ],
+      "test_data": {},
+      "expected_result": "1. 表格所有行记录被勾选\n2. 每行记录复选框均显示选中状态",
+      "automation_suggestion": "click_table_cell点击表头复选框单元格，scan_table验证所有行checkbox状态"
+    },
+    {
+      "case_id": "T005",
+      "case_title": "已勾选行点击复选框取消勾选",
+      "priority": "低级",
+      "verify_point": "已勾选行再次点击复选框可取消选中",
+      "test_type": "功能测试",
+      "function": "取消勾选",
+      "preconditions": [
+        "已登录系统",
+        "在生产缴库明细页面",
+        "数据表格已加载完成",
+        "第一行已勾选"
+      ],
+      "test_steps": [
+        "再次点击第一行的复选框"
+      ],
+      "test_data": {},
+      "expected_result": "1. 第一行复选框取消勾选状态\n2. 该行高亮样式移除（如有）\n3. 不影响其他行的勾选状态",
+      "automation_suggestion": "click_table_cell勾选第一行，再次click_table_cell取消勾选，scan_table验证状态变化"
+    }
+  ],
+  "meta_data": {
+    "exploration_note": "以上所有用例基于真实VTable探索验证：列宽拖拽、横向滚动、复选框勾选均实际操作验证过",
+    "generated_at": "2026-07-06",
+    "testcase_count": 5
+  }
+}

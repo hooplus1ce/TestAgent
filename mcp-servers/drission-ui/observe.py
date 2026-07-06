@@ -261,11 +261,22 @@ def _poll_once(sess, now):
             pkt = None
         if pkt:
             p = pkt[0] if isinstance(pkt, list) else pkt
+            url = getattr(p, "url", "")
+            method = getattr(p, "method", "")
+            status = getattr(p.response, "status", None) if getattr(p, "response", None) else None
+            api_target = ""
+            post_data = None
+            if getattr(p, "request", None):
+                headers = dict(p.request.headers) if hasattr(p.request, "headers") else {}
+                api_target = headers.get("api-target", "")
+                post_data = p.request.postData if hasattr(p.request, "postData") else None
             return {
                 "type": "network",
-                "url": getattr(p, "url", ""),
-                "method": getattr(p, "method", ""),
-                "status": getattr(p.response, "status", None) if getattr(p, "response", None) else None,
+                "url": url,
+                "method": method,
+                "api_target": api_target,
+                "post_data": post_data,
+                "status": status,
                 "elapsedMs": int((now - sess["start"]) * 1000),
             }
     return None
@@ -313,7 +324,7 @@ def observe_wait(timeout: float = 8.0, poll_interval: float = 0.12) -> dict:
         sess = dict(_session)
     if not sess.get("active"):
         return {"type": "none", "reason": "no active observe session; call observe_start first"}
-    deadline = sess["start"] + timeout
+    deadline = time.time() + timeout
     try:
         while time.time() < deadline:
             sig = _poll_once(sess, time.time())

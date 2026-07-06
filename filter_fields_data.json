@@ -1,0 +1,472 @@
+[
+  {
+    "index": 0,
+    "field": "重量",
+    "operator": "等于",
+    "value_type": "free-text",
+    "operator_options": [
+      "等于",
+      "不等于",
+      "大于",
+      "大于等于",
+      "小于",
+      "小于等于",
+      "为空",
+      "不为空"
+    ],
+    "value_options": []
+  },
+  {
+    "index": 1,
+    "field": "应生产数量",
+    "operator": "等于",
+    "value_type": "free-text",
+    "operator_options": [
+      "等于",
+      "不等于",
+      "大于",
+      "大于等于",
+      "小于",
+      "小于等于",
+      "为空",
+      "不为空"
+    ],
+    "value_options": []
+  },
+  {
+    "index": 2,
+    "field": "批次号",
+    "operator": "包含",
+    "value_type": "free-text",
+    "operator_options": [
+      "包含",
+      "不包含",
+      "等于",
+      "不等于",
+      "为空",
+      "不为空"
+    ],
+    "value_options": []
+  },
+  {
+    "index": 4,
+    "field": "缴入仓库",
+    "operator": "等于",
+    "value_type": "select",
+    "operator_options": [
+      "等于",
+      "不等于",
+      "在列表中",
+      "不在列表中（含空）"
+    ],
+    "value_options": [
+      "自动化测试仓库_编042308345731",
+      "自动化测试仓库_0422151625",
+      "4F CTU仓",
+      "2F 自动化立体仓",
+      "压铸仓库",
+      "商品-半成品仓",
+      "样品仓",
+      "不良品仓",
+      "包装材料仓",
+      "塑料仓",
+      "铁材仓",
+      "半成品仓",
+      "成品仓",
+      "First Stock",
+      "5F 测试仓库",
+      "1F 生产仓库"
+    ]
+  },
+  {
+    "index": 5,
+    "field": "销售订单",
+    "operator": "包含",
+    "value_type": "free-text",
+    "operator_options": [
+      "包含",
+      "等于",
+      "在列表中"
+    ],
+    "value_options": []
+  },
+  {
+    "index": 6,
+    "field": "客户名称",
+    "operator": "包含",
+    "value_type": "free-text",
+    "operator_options": [
+      "包含",
+      "等于",
+      "在列表中"
+    ],
+    "value_options": []
+  },
+  {
+    "index": 7,
+    "field": "客户编码",
+    "operator": "包含",
+    "value_type": "free-text",
+    "operator_options": [
+      "包含",
+      "等于",
+      "在列表中"
+    ],
+    "value_options": []
+  },
+  {
+    "index": 8,
+    "field": "缴库单号",
+    "operator": "包含",
+    "value_type": "free-text",
+    "operator_options": [
+      "包含",
+      "不包含",
+      "等于",
+      "在列表中"
+    ],
+    "value_options": []
+  },
+  {
+    "index": 9,
+    "field": "缴库订单号",
+    "operator": "包含",
+    "value_type": "free-text",
+    "operator_options": [
+      "包含",
+      "不包含",
+      "等于",
+      "在列表中"
+    ],
+    "value_options": []
+  },
+  {
+    "index": 10,
+    "field": "审批状态",
+    "operator": "等于",
+    "value_type": "select",
+    "operator_options": [
+      "等于",
+      "在列表中",
+      "不在列表中（含空）"
+    ],
+    "value_options": [
+      "审批中",
+      "已通过",
+      "已驳回",
+      "已删除"
+    ]
+  },
+  {
+    "index": 11,
+    "field": "审批人",
+    "operator": "等于",
+    "value_type": "select",
+    "operator_options": [
+      "等于",
+      "包含",
+      "为空",
+      "不为空"
+    ],
+    "value_options": [
+      "小小001",
+      "lsr",
+      "pda演示",
+      "nb_szh",
+      "lsr_PDA",
+      "伟坚2",
+      "伟坚",
+      "测试",
+      "用户3",
+      "用户2",
+      "用户1",
+      "测试工作台",
+      "NB_Hoo",
+      "nb_luoxihao",
+      "诺贝_康韶洋",
+      "NBJB",
+      "小珍测试2（诺贝）",
+      "小珍测试1（诺贝）",
+      "产品",
+      "NB_zhy2",
+      "段广(诺贝)",
+      "nb_009",
+      "郭晓君(诺贝)",
+      "NB_zhy",
+      "谭文钊",
+      "xyh",
+      "nb_sgf",
+      "万棚",
+      "测试账号02",
+      "测试账号01",
+      "nb_sc0001",
+      "黄小珍",
+      "彭扬帆",
+      "赵紫薇",
+      "李树荣",
+      "诺贝小程序",
+      "诺贝黄小珍",
+      "李海珍",
+      "仓库",
+      "销售",
+      "研发部",
+      "采购员",
+      "车间",
+      "PMC",
+      "NB_lzy",
+      "PDA_002",
+      "张三2",
+      "NB_yjl",
+      "PDA用户1",
+      "张三",
+      "NB_008",
+      "NB_007",
+      "NB_006",
+      "NB_005",
+      "004",
+      "NB_003",
+      "NB_002",
+      "NB_001",
+      "st_sgf",
+      "13698545215"
+    ]
+  },
+  {
+    "index": 12,
+    "field": "商品识别码",
+    "operator": "包含",
+    "value_type": "free-text",
+    "operator_options": [
+      "包含",
+      "不包含",
+      "等于",
+      "在列表中"
+    ],
+    "value_options": []
+  },
+  {
+    "index": 13,
+    "field": "商品名称",
+    "operator": "包含",
+    "value_type": "free-text",
+    "operator_options": [
+      "包含",
+      "不包含",
+      "等于",
+      "在列表中"
+    ],
+    "value_options": []
+  },
+  {
+    "index": 14,
+    "field": "商品规格",
+    "operator": "包含",
+    "value_type": "free-text",
+    "operator_options": [
+      "包含",
+      "不包含",
+      "等于",
+      "不等于",
+      "为空",
+      "不为空"
+    ],
+    "value_options": []
+  },
+  {
+    "index": 15,
+    "field": "加工方式",
+    "operator": "等于",
+    "value_type": "select",
+    "operator_options": [
+      "等于",
+      "不等于"
+    ],
+    "value_options": [
+      "自制",
+      "外购",
+      "外发加工",
+      "自制&外购",
+      "外发加工&外购",
+      "自制&外发加工"
+    ]
+  },
+  {
+    "index": 16,
+    "field": "中类名称",
+    "operator": "包含",
+    "value_type": "free-text",
+    "operator_options": [
+      "包含",
+      "不包含",
+      "等于",
+      "在列表中"
+    ],
+    "value_options": []
+  },
+  {
+    "index": 17,
+    "field": "关联单号",
+    "operator": "包含",
+    "value_type": "free-text",
+    "operator_options": [
+      "包含",
+      "不包含",
+      "等于",
+      "在列表中"
+    ],
+    "value_options": []
+  },
+  {
+    "index": 18,
+    "field": "生产部门",
+    "operator": "包含",
+    "value_type": "free-text",
+    "operator_options": [
+      "包含",
+      "不包含",
+      "等于",
+      "在列表中"
+    ],
+    "value_options": []
+  },
+  {
+    "index": 19,
+    "field": "备注",
+    "operator": "包含",
+    "value_type": "free-text",
+    "operator_options": [
+      "包含",
+      "不包含",
+      "等于",
+      "在列表中",
+      "为空",
+      "不为空"
+    ],
+    "value_options": []
+  },
+  {
+    "index": 20,
+    "field": "制单时间",
+    "operator": "范围",
+    "value_type": "other",
+    "operator_options": [
+      "范围"
+    ],
+    "value_options": []
+  },
+  {
+    "index": 21,
+    "field": "缴库时间",
+    "operator": "范围",
+    "value_type": "other",
+    "operator_options": [
+      "范围"
+    ],
+    "value_options": []
+  },
+  {
+    "index": 22,
+    "field": "缴库数量",
+    "operator": "等于",
+    "value_type": "free-text",
+    "operator_options": [
+      "等于",
+      "不等于",
+      "大于",
+      "大于等于",
+      "小于",
+      "小于等于"
+    ],
+    "value_options": []
+  },
+  {
+    "index": 23,
+    "field": "经办人",
+    "operator": "包含",
+    "value_type": "select",
+    "operator_options": [
+      "包含",
+      "等于",
+      "不等于",
+      "为空",
+      "不为空"
+    ],
+    "value_options": [
+      "小小001",
+      "lsr",
+      "pda演示",
+      "nb_szh",
+      "lsr_PDA",
+      "伟坚2",
+      "伟坚",
+      "测试",
+      "用户3",
+      "用户2",
+      "用户1",
+      "测试工作台",
+      "NB_Hoo",
+      "nb_luoxihao",
+      "诺贝_康韶洋",
+      "NBJB",
+      "小珍测试2（诺贝）",
+      "小珍测试1（诺贝）",
+      "产品",
+      "NB_zhy2",
+      "段广(诺贝)",
+      "nb_009",
+      "郭晓君(诺贝)",
+      "NB_zhy",
+      "谭文钊",
+      "xyh",
+      "nb_sgf",
+      "万棚",
+      "测试账号02",
+      "测试账号01",
+      "nb_sc0001",
+      "黄小珍",
+      "彭扬帆",
+      "赵紫薇",
+      "李树荣",
+      "诺贝小程序",
+      "诺贝黄小珍",
+      "李海珍",
+      "仓库",
+      "销售",
+      "研发部",
+      "采购员",
+      "车间",
+      "PMC",
+      "NB_lzy",
+      "PDA_002",
+      "张三2",
+      "NB_yjl",
+      "PDA用户1",
+      "张三",
+      "NB_008",
+      "NB_007",
+      "NB_006",
+      "NB_005",
+      "004",
+      "NB_003",
+      "NB_002",
+      "NB_001",
+      "st_sgf",
+      "13698545215"
+    ]
+  },
+  {
+    "index": 24,
+    "field": "入库状态",
+    "operator": "等于",
+    "value_type": "select",
+    "operator_options": [
+      "等于",
+      "在列表中",
+      "不在列表中（含空）"
+    ],
+    "value_options": [
+      "已缴库",
+      "待缴库"
+    ]
+  }
+]

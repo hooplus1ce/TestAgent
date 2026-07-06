@@ -1096,18 +1096,34 @@ def listen_start(targets, method: str = None) -> dict:
 @mcp.tool()
 @read_synchronized
 def listen_wait(count: int = 1, timeout: float = 10) -> dict:
-    """等待监听的数据包。返回 {url, method, status, body}(body 自动解析 JSON)。count>1 返回 packets 列表。"""
+    """等待监听的数据包。返回 {url, method, api_target, post_data, status, body}。
+    api_target 为请求头中的接口路由标识（同一 gateway URL 下区分不同接口）。
+    post_data 为 POST 请求体（JSON 字符串），含查询参数如 conditions/isDelivery 等。
+    count>1 返回 packets 列表。"""
     tab = browser_session.get_tab()
     pkt = tab.listen.wait(count=count, timeout=timeout)
     if not pkt:
         return {"ok": False, "reason": "timeout", "hint": "确认 listen_start 的 targets 是否正确，或增大 timeout"}
 
     def conv(p):
+        url = getattr(p, "url", "")
+        method = getattr(p, "method", "")
+        status = getattr(p.response, "status", None) if p.response else None
+        body = getattr(p.response, "body", None) if p.response else None
+        # 提取 api-target 请求头（同一 URL 下区分不同接口的路由标识）
+        api_target = ""
+        post_data = None
+        if p.request:
+            headers = dict(p.request.headers) if hasattr(p.request, "headers") else {}
+            api_target = headers.get("api-target", "")
+            post_data = p.request.postData if hasattr(p.request, "postData") else None
         return {
-            "url": getattr(p, "url", ""),
-            "method": getattr(p, "method", ""),
-            "status": getattr(p.response, "status", None) if p.response else None,
-            "body": getattr(p.response, "body", None) if p.response else None,
+            "url": url,
+            "method": method,
+            "api_target": api_target,
+            "post_data": post_data,
+            "status": status,
+            "body": body,
         }
 
     if isinstance(pkt, list):

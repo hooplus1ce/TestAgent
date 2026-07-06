@@ -1,0 +1,192 @@
+{
+  "module_info": {
+    "enterprise_prefix": "NB",
+    "module_name": "生产管理_生产缴库明细",
+    "module_level1": "生产管理",
+    "module_level2": "生产缴库明细",
+    "module_pinyin": "SCJKMX",
+    "author": "Hooplus1ce"
+  },
+  "category": "F - 筛选查询类",
+  "test_cases": [
+    {
+      "case_id": "F001",
+      "case_title": "按缴入仓库筛选缴库记录",
+      "priority": "低级",
+      "verify_point": "筛选后表格仅显示指定仓库的数据",
+      "test_type": "功能测试",
+      "function": "查询",
+      "preconditions": [
+        "已登录系统",
+        "在生产缴库明细页面",
+        "数据表格已加载完成"
+      ],
+      "test_steps": [
+        "在缴入仓库下拉选择「样品仓」",
+        "点击查询按钮"
+      ],
+      "test_data": {
+        "缴入仓库": "样品仓"
+      },
+      "expected_result": "1. 表格仅显示缴入仓库为「样品仓」的记录\n2. 所有行缴入仓库列值均为「样品仓」\n3. 无不符合条件的记录",
+      "automation_suggestion": "click点击缴入库下拉选择选项，click_xy点击查询按钮，get_table_values验证缴入仓库列值"
+    },
+    {
+      "case_id": "F002",
+      "case_title": "制单时间范围筛选验证",
+      "priority": "低级",
+      "verify_point": "筛选后表格仅显示指定日期范围内的数据",
+      "test_type": "功能测试",
+      "function": "查询",
+      "preconditions": [
+        "已登录系统",
+        "在生产缴库明细页面",
+        "数据表格已加载完成"
+      ],
+      "test_steps": [
+        "制单时间开始日期选择2026-07-01",
+        "制单时间结束日期选择2026-07-05",
+        "点击查询按钮"
+      ],
+      "test_data": {
+        "制单时间开始": "2026-07-01",
+        "制单时间结束": "2026-07-05"
+      },
+      "expected_result": "1. 表格仅显示制单时间在2026-07-01至2026-07-05范围内的记录\n2. 所有行制单时间均在此区间内",
+      "automation_suggestion": "使用select_date_range设置制单时间范围，click_xy点击查询按钮，get_table_values扫描制单时间列验证"
+    },
+    {
+      "case_id": "F003",
+      "case_title": "重置按钮清空所有筛选条件",
+      "priority": "低级",
+      "verify_point": "点击重置后所有筛选字段恢复为空，表格显示全部数据",
+      "test_type": "功能测试",
+      "function": "重置",
+      "preconditions": [
+        "已登录系统",
+        "在生产缴库明细页面",
+        "缴入仓库已设置为样品仓，制单时间已设置日期范围"
+      ],
+      "test_steps": [
+        "点击重置按钮"
+      ],
+      "test_data": {},
+      "expected_result": "1. 所有筛选字段输入框清空\n2. 表格显示全部缴库记录",
+      "automation_suggestion": "click_xy点击重置按钮坐标，scan_filter_fields验证所有字段value为空"
+    },
+    {
+      "case_id": "F004",
+      "case_title": "按审批状态筛选已通过记录",
+      "priority": "低级",
+      "verify_point": "筛选后仅显示审批状态为已通过的记录",
+      "test_type": "功能测试",
+      "function": "查询",
+      "preconditions": [
+        "已登录系统",
+        "在生产缴库明细页面",
+        "数据表格已加载完成"
+      ],
+      "test_steps": [
+        "在审批状态下拉选择「已通过」",
+        "点击查询按钮"
+      ],
+      "test_data": {
+        "审批状态": "已通过"
+      },
+      "expected_result": "1. 表格仅显示审批状态为「已通过」的记录\n2. 所有行审批状态列均为「已通过」",
+      "automation_suggestion": "click点击审批状态下拉，click选择已通过，click_xy点击查询按钮，get_table_values验证审批状态列"
+    },
+    {
+      "case_id": "F005",
+      "case_title": "审批状态选择待审批筛选",
+      "priority": "低级",
+      "verify_point": "筛选后仅显示审批状态为待审批的记录",
+      "test_type": "功能测试",
+      "function": "查询",
+      "preconditions": [
+        "已登录系统",
+        "在生产缴库明细页面",
+        "数据表格已加载完成"
+      ],
+      "test_steps": [
+        "在审批状态下拉选择「待审批」",
+        "点击查询按钮"
+      ],
+      "test_data": {
+        "审批状态": "待审批"
+      },
+      "expected_result": "1. 表格仅显示审批状态为「待审批」的记录\n2. 所有行审批状态列均为「待审批」",
+      "automation_suggestion": "click点击审批状态下拉，click选择待审批，click_xy点击查询按钮，get_table_values验证审批状态列"
+    },
+    {
+      "case_id": "F006",
+      "case_title": "缴入仓库选择成品仓筛选",
+      "priority": "低级",
+      "verify_point": "筛选后仅显示成品仓的缴库记录",
+      "test_type": "功能测试",
+      "function": "查询",
+      "preconditions": [
+        "已登录系统",
+        "在生产缴库明细页面",
+        "数据表格已加载完成"
+      ],
+      "test_steps": [
+        "在缴入仓库下拉选择「成品仓」",
+        "点击查询按钮"
+      ],
+      "test_data": {
+        "缴入仓库": "成品仓"
+      },
+      "expected_result": "1. 表格仅显示缴入仓库为「成品仓」的记录\n2. 所有行缴入仓库列均为「成品仓」",
+      "automation_suggestion": "click点击缴入库下拉选择成品仓，click_xy点击查询按钮，get_table_values验证缴入仓库列"
+    },
+    {
+      "case_id": "F007",
+      "case_title": "缴入仓库+审批状态多条件组合筛选",
+      "priority": "低级",
+      "verify_point": "两个筛选条件同时生效，结果取交集",
+      "test_type": "功能测试",
+      "function": "查询",
+      "preconditions": [
+        "已登录系统",
+        "在生产缴库明细页面",
+        "数据表格已加载完成"
+      ],
+      "test_steps": [
+        "在缴入仓库下拉选择「样品仓」",
+        "在审批状态下拉选择「已通过」",
+        "点击查询按钮"
+      ],
+      "test_data": {
+        "缴入仓库": "样品仓",
+        "审批状态": "已通过"
+      },
+      "expected_result": "1. 表格仅显示缴入仓库为「样品仓」且审批状态为「已通过」的记录\n2. 所有行同时满足两个条件",
+      "automation_suggestion": "依次设置两个筛选条件，click_xy点击查询按钮，get_table_values同时验证两列数据"
+    },
+    {
+      "case_id": "F008",
+      "case_title": "筛选条件为空点击查询显示全部数据",
+      "priority": "低级",
+      "verify_point": "不设置任何筛选条件点击查询，显示全部数据",
+      "test_type": "功能测试",
+      "function": "查询",
+      "preconditions": [
+        "已登录系统",
+        "在生产缴库明细页面",
+        "所有筛选字段为空"
+      ],
+      "test_steps": [
+        "直接点击查询按钮"
+      ],
+      "test_data": {},
+      "expected_result": "1. 表格正常刷新显示全部数据\n2. 无报错弹窗或异常提示",
+      "automation_suggestion": "observe_start监听notification和network，click_xy点击查询，observe_wait验证无报错"
+    }
+  ],
+  "meta_data": {
+    "exploration_note": "以上所有用例基于真实浏览器探索验证，不含任何臆造功能",
+    "generated_at": "2026-07-06",
+    "testcase_count": 8
+  }
+}
