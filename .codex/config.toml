@@ -1,9 +1,14 @@
 # Project-scoped Codex configuration.
 # Codex loads this file only when the project is trusted.
 
+sandbox_mode = "danger-full-access"
 [mcp_servers.drission-ui]
-command = "bash"
-args = ["-lc", "cd \"$(git rev-parse --show-toplevel)\" && uv run python drission_ui_mcp.py"]
+# Keep this shell-free so the same project config works from Windows PowerShell
+# and Linux bash. Codex starts project-scoped MCP servers from the repository
+# root, so no `cd`, command substitution, or platform-specific shell path is
+# needed here.
+command = "uv"
+args = ["run", "python", "drission_ui_mcp.py"]
 enabled = true
 required = false
 startup_timeout_sec = 30
@@ -21,7 +26,14 @@ env_vars = [
   "HL_REMOTE_PORT",
   "HL_SHOT_DIR",
   "HL_CHROME_PATH",
+  "HL_EDGE_MODE",
+  "HL_PROXY",
   "HL_HEADLESS",
+  "HL_DISABLE_PDF_PREVIEW",
+  "HL_REMOVE_TEST_TYPE",
+  "HL_REFRESH_NAV_TIMEOUT",
+  "HL_REFRESH_LOAD_TIMEOUT",
+  "HL_REFRESH_HTTP_TIMEOUT",
 ]
 
 [mcp_servers.drission-ui.env]

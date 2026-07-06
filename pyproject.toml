@@ -15,6 +15,12 @@ dependencies = [
 [project.scripts]
 drission-ui-mcp = "drission_ui_mcp:main"
 
+[tool.uv]
+package = true
+
+[tool.setuptools]
+py-modules = ["drission_ui_mcp"]
+
 [[tool.uv.index]]
 url = "https://mirrors.aliyun.com/pypi/simple/"
 default = true

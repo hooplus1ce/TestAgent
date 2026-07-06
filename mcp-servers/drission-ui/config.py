@@ -15,6 +15,9 @@
   HL_EDGE_MODE         使用 Edge 浏览器（true/1 启用）
   HL_PROXY             代理地址，格式 'http://user:pass@ip:port'
   HL_HEADLESS          无头模式（true/1 启用）——CI/CD 无图形环境场景，跳过图形环境探测
+  HL_REFRESH_NAV_TIMEOUT   会话刷新时进入 SCM 域的导航超时（秒）
+  HL_REFRESH_LOAD_TIMEOUT  会话刷新后等待页面加载的超时（秒）
+  HL_REFRESH_HTTP_TIMEOUT  OCR 登录 HTTP 请求超时（秒）
 """
 import os
 
@@ -49,6 +52,11 @@ REMOVE_TEST_TYPE = os.environ.get("HL_REMOVE_TEST_TYPE", "").lower() in ("true",
 
 # 无头模式：CI/CD 等无图形环境场景。启用时跳过 Linux 图形环境探测，并加 --no-sandbox。
 HEADLESS = os.environ.get("HL_HEADLESS", "").lower() in ("true", "1", "yes")
+
+# 会话刷新必须短超时、少重试，避免 MCP 单次工具调用被页面加载等待拖到外层超时。
+REFRESH_NAV_TIMEOUT = float(os.environ.get("HL_REFRESH_NAV_TIMEOUT", "10"))
+REFRESH_LOAD_TIMEOUT = float(os.environ.get("HL_REFRESH_LOAD_TIMEOUT", "15"))
+REFRESH_HTTP_TIMEOUT = float(os.environ.get("HL_REFRESH_HTTP_TIMEOUT", "15"))
 
 
 def make_chromium_options():

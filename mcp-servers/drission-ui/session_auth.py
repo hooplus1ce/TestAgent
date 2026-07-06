@@ -7,6 +7,8 @@ clear_cache 清旧 cookie/localStorage → 注入新 cookie → tab.refresh。
 import json
 import logging
 import uuid
+from time import perf_counter
+from urllib.parse import urlparse
 
 import browser_session
 import config
@@ -15,6 +17,27 @@ logger = logging.getLogger("drission-ui")
 
 SCM_ADMIN_URL = config.SCM_ADMIN_URL
 NEEDED_COOKIES = config.NEEDED_COOKIES
+
+
+def _is_admin_app_url(url: str) -> bool:
+    try:
+        current = urlparse(url or "")
+        target = urlparse(SCM_ADMIN_URL)
+    except Exception:
+        return False
+    if (current.hostname or "") != (target.hostname or ""):
+        return False
+    current_path = (current.path or "/").rstrip("/") + "/"
+    target_path = (target.path or "/").rstrip("/") + "/"
+    return current_path.startswith(target_path)
+
+
+def _stage(timings: dict, name: str, func):
+    started = perf_counter()
+    try:
+        return func()
+    finally:
+        timings[name] = round(perf_counter() - started, 3)
 
 
 def _require_creds():
@@ -43,22 +66,22 @@ def get_login_auth():
     ocr = ddddocr.DdddOcr(show_ad=False)
     ocr.set_ranges("0123456789")  # 纯数字字符集
 
-    client = httpx.Client(base_url=config.SCM_BASE_URL)
     cookies = {"SESSION": str(uuid.uuid4())}
-    resp = client.get(
-        "/validateCode.json",
-        params={"key": "regValidateCode"},
-        headers={"Referer": config.SCM_LOGIN_PAGE},
-        cookies=cookies,
-    )
-    vcode = ocr.classification(resp.read())
+    with httpx.Client(base_url=config.SCM_BASE_URL, timeout=config.REFRESH_HTTP_TIMEOUT) as client:
+        resp = client.get(
+            "/validateCode.json",
+            params={"key": "regValidateCode"},
+            headers={"Referer": config.SCM_LOGIN_PAGE},
+            cookies=cookies,
+        )
+        vcode = ocr.classification(resp.read())
 
-    data = {"username": config.SCM_USERNAME, "userpwd": config.SCM_USERPWD, "vcode": vcode}
-    resp = client.post("/signin.html", data=data, cookies=cookies)
-    return [{"name": k, "value": v} for k, v in resp.cookies.items()]
+        data = {"username": config.SCM_USERNAME, "userpwd": config.SCM_USERPWD, "vcode": vcode}
+        resp = client.post("/signin.html", data=data, cookies=cookies)
+        return [{"name": k, "value": v} for k, v in resp.cookies.items()]
 
 
-def _inject_cookies(cookies: list):
+def _inject_cookies(cookies: list, tab=None):
     """用 DrissionPage 内置方法注入 cookies，自动处理域名解析、格式校验、前缀处理。
 
     注意：OCR 登录返回的 cookies 不含 domain 字段。set.cookies 不带 domain 时
@@ -66,7 +89,7 @@ def _inject_cookies(cookies: list):
     gateway.hoolinks.com 等其他子域。手动补 domain=.hoolinks.com 确保所有子域
     都能携带认证 cookie。
     """
-    tab = browser_session.get_tab()
+    tab = tab or browser_session.get_tab()
     enriched = []
     for c in cookies:
         c = dict(c)
@@ -74,6 +97,7 @@ def _inject_cookies(cookies: list):
             c["domain"] = config.SCM_ACCESS_DOMAIN
         enriched.append(c)
     tab.set.cookies(enriched)
+    return enriched
 
 
 def refresh_session():
@@ -82,30 +106,71 @@ def refresh_session():
     return login_ocr()
 
 
+def _ensure_on_admin_host(tab):
+    """进入 SCM Admin 应用页；只有已经在应用页时才跳过导航。"""
+    current_url = getattr(tab, "url", "")
+    if _is_admin_app_url(current_url):
+        return {"skipped": True, "reason": "already_on_admin_page", "url": current_url}
+
+    result = tab.get(
+        SCM_ADMIN_URL,
+        retry=0,
+        interval=0,
+        timeout=config.REFRESH_NAV_TIMEOUT,
+        raise_err=False,
+    )
+    ok = bool(getattr(result, "ok", result))
+    if not ok:
+        logger.warning("refresh_session 导航到 SCM 域未在 %.1fs 内完成，继续尝试清缓存",
+                       config.REFRESH_NAV_TIMEOUT)
+        try:
+            tab.stop_loading()
+        except Exception:
+            pass
+    return {"skipped": False, "ok": ok, "url": getattr(tab, "url", "")}
+
+
+def _bounded_reload(tab):
+    """用 DrissionPage refresh() 刷新页面，再用短超时等待加载完成。"""
+    tab.refresh(ignore_cache=False)
+    loaded = bool(tab.wait.doc_loaded(timeout=config.REFRESH_LOAD_TIMEOUT, raise_err=False))
+    if not loaded:
+        logger.warning("refresh_session reload 后页面未在 %.1fs 内完成加载，执行 stop_loading",
+                       config.REFRESH_LOAD_TIMEOUT)
+        try:
+            tab.stop_loading()
+        except Exception:
+            pass
+    return loaded
+
+
 def login_ocr():
     """OCR 识别验证码 + HTTP 登录 → 清缓存 → 注入 cookie → 刷新。
 
-    顺序关键：先 tab.get 到目标域 → clear_cache 清旧 cookie/localStorage →
+    顺序关键：先确保 tab 在目标域 → clear_cache 清旧 cookie/localStorage →
     注入新 cookie → tab.refresh。若先注入再 tab.get 导航，服务端会在导航
     响应里 Set-Cookie 覆盖掉刚注入的有效 SESSION，浏览器残留失效 SESSION，
     导致 gateway.hoolinks.com 收到失效 SESSION 返回 403「会话超时」。
     clear_cache 一步清掉 cookies + localStorage + sessionStorage + cache，
     无需 CDP 介入。
     """
+    started = perf_counter()
+    timings = {}
     tab = browser_session.get_tab()
-    # 1. 先到目标域：clear_cache 才能定位到该域的缓存
-    tab.get(SCM_ADMIN_URL)
+    # 1. 先到目标域：clear_cache 才能定位到该域的缓存。已在目标域时跳过慢导航。
+    navigation = _stage(timings, "ensure_admin_host", lambda: _ensure_on_admin_host(tab))
     # 2. 清旧 cookie + localStorage + sessionStorage + cache，杜绝 SESSION 冲突
-    tab.clear_cache()
+    _stage(timings, "clear_cache", tab.clear_cache)
     # 3. OCR 登录获取新 cookie（list[{name, value}]）
-    auth_cookies = get_login_auth()
+    auth_cookies = _stage(timings, "get_login_auth", get_login_auth)
     # 4. 注入（补 domain=.hoolinks.com，确保发给 gateway 等所有子域）
-    _inject_cookies(auth_cookies)
+    injected = _stage(timings, "inject_cookies", lambda: _inject_cookies(auth_cookies, tab))
     # 5. 刷新使 cookie 生效（refresh 而非 get，避免服务端 Set-Cookie 覆盖）
-    tab.refresh()
-    tab.wait.doc_loaded(timeout=15)
-    return {"ok": True, "cookies": [c["name"] for c in auth_cookies],
-            "url": tab.url, "title": tab.title}
+    reload_loaded = _stage(timings, "reload", lambda: _bounded_reload(tab))
+    timings["total"] = round(perf_counter() - started, 3)
+    return {"ok": True, "cookies": [c["name"] for c in injected],
+            "url": tab.url, "title": tab.title, "navigation": navigation,
+            "reload_loaded": reload_loaded, "timings": timings}
 
 
 def check_session():
