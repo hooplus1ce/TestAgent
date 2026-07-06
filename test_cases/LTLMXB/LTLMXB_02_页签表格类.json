@@ -1,0 +1,106 @@
+{
+  "module_info": {
+    "enterprise_prefix": "NB",
+    "module_name": "生产管理_领退料明细表",
+    "module_level1": "生产管理",
+    "module_level2": "领退料明细表",
+    "module_pinyin": "LTLMXB",
+    "author": "Hooplus1ce"
+  },
+  "category": "T - 页签表格类",
+  "test_cases": [
+    {
+      "case_id": "T001",
+      "case_title": "生产备料按领退单页签表格列展示",
+      "priority": "高级",
+      "verify_point": "按领退单页签展示领退单维度的VTable列",
+      "test_type": "功能测试",
+      "function": "表格展示",
+      "preconditions": [
+        "已登录系统",
+        "进入生产管理-领退料明细表页面",
+        "当前页签为生产备料（按领退单）"
+      ],
+      "test_steps": [
+        "扫描当前页签表格列",
+        "核对表头字段"
+      ],
+      "test_data": {
+        "页签": "生产备料（按领退单）",
+        "关键列": "领退单号、关联单号、审批状态、审批人、客商/生产部门、领/退料人、领退类型、制单时间、操作时间、领退料状态、发货模式、预计出货时间、成品识别码、制令单、备注、创建人、打印次数、优先级、是否推送仓库"
+      },
+      "expected_result": "1. 表格类型为VTable\n2. 表格展示复选框列和序号列\n3. 表头包含领退单号、关联单号、审批状态、领退类型、领退料状态、是否推送仓库等领退单维度字段",
+      "automation_suggestion": "scan_table(kind=auto,max_col=80)读取VTable列定义并校验关键表头"
+    },
+    {
+      "case_id": "T002",
+      "case_title": "生产备料按物料页签表格列展示",
+      "priority": "高级",
+      "verify_point": "按物料页签展示物料维度的VTable列",
+      "test_type": "功能测试",
+      "function": "页签切换",
+      "preconditions": [
+        "已登录系统",
+        "进入生产管理-领退料明细表页面",
+        "页面已显示生产备料（按物料）页签"
+      ],
+      "test_steps": [
+        "点击生产备料（按物料）页签",
+        "扫描当前页签表格列",
+        "核对物料维度字段"
+      ],
+      "test_data": {
+        "页签": "生产备料（按物料）",
+        "新增物料列": "成品名称、物料识别码、物料名称、单位、需求数量、领退料数量、仓库"
+      },
+      "expected_result": "1. 页签切换成功，表格仍为VTable\n2. 表格在领退单基础字段之外展示成品名称、物料识别码、物料名称、单位、需求数量、领退料数量、仓库等物料维度字段\n3. 表格保留领退单号、关联单号、审批状态、领退类型、制令单、打印次数、优先级、是否推送仓库等字段",
+      "automation_suggestion": "close_modal清理通知，click点击生产备料（按物料）页签，scan_table校验物料维度列"
+    },
+    {
+      "case_id": "T003",
+      "case_title": "领退单号列支持查看明细入口",
+      "priority": "中级",
+      "verify_point": "领退单号列被识别为可弹窗或跳转候选交互列",
+      "test_type": "功能测试",
+      "function": "表格交互",
+      "preconditions": [
+        "已登录系统",
+        "进入生产管理-领退料明细表页面",
+        "当前页签为生产备料（按领退单）",
+        "表格至少存在一条领退料记录"
+      ],
+      "test_steps": [
+        "扫描表格列交互属性",
+        "查看领退单号列表格行为"
+      ],
+      "test_data": {
+        "列名": "领退单号",
+        "示例值": "M20260706002"
+      },
+      "expected_result": "1. 领退单号列展示业务单号值\n2. 领退单号列表格行为被识别为自定义弹窗或跳转候选\n3. 该列可作为后续明细查看或跳转类用例的入口",
+      "automation_suggestion": "scan_table读取bodyBehavior，必要时observe_start后click_table_cell点击首行业务单号并观察modal/url/tab变化"
+    },
+    {
+      "case_id": "T004",
+      "case_title": "表格记录状态值覆盖验证",
+      "priority": "中级",
+      "verify_point": "领退料状态列能展示出入库与取消等状态",
+      "test_type": "功能测试",
+      "function": "表格展示",
+      "preconditions": [
+        "已登录系统",
+        "进入生产管理-领退料明细表页面",
+        "空条件查询已加载全量列表"
+      ],
+      "test_steps": [
+        "读取领退料状态列值",
+        "统计出现的业务状态"
+      ],
+      "test_data": {
+        "状态样本": "未出库、已出库、未入库、已入库、已取消"
+      },
+      "expected_result": "1. 领退料状态列可展示未出库、已出库、未入库、已入库、已取消等状态\n2. 状态值为中文业务状态，不应显示空白占位或系统内部编码\n3. 不同领退类型的记录状态展示符合出入库业务语义",
+      "automation_suggestion": "get_table_values(column_title='领退料状态')读取状态列并校验状态集合"
+    }
+  ]
+}

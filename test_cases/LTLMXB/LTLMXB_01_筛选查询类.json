@@ -1,0 +1,110 @@
+{
+  "module_info": {
+    "enterprise_prefix": "NB",
+    "module_name": "生产管理_领退料明细表",
+    "module_level1": "生产管理",
+    "module_level2": "领退料明细表",
+    "module_pinyin": "LTLMXB",
+    "author": "Hooplus1ce"
+  },
+  "category": "F - 筛选查询类",
+  "test_cases": [
+    {
+      "case_id": "F001",
+      "case_title": "按领退单号包含条件查询领退料记录",
+      "priority": "高级",
+      "verify_point": "输入领退单号后，查询接口按 receiveReturnNo 包含条件返回匹配记录",
+      "test_type": "功能测试",
+      "function": "查询",
+      "preconditions": [
+        "已登录系统",
+        "进入生产管理-领退料明细表页面",
+        "当前页签为生产备料（按领退单）",
+        "筛选区已展开且表格已加载完成"
+      ],
+      "test_steps": [
+        "在领退单号输入框填写 M20260706002",
+        "点击查询按钮",
+        "查看表格领退单号列"
+      ],
+      "test_data": {
+        "领退单号": "M20260706002",
+        "查询接口": "scmpsm/psm/erp/material_preparation/list",
+        "接口条件": "receiveReturnNo CONTAINS M20260706002"
+      },
+      "expected_result": "1. 查询接口返回成功，conditions包含receiveReturnNo字段、CONTAINS操作符和值M20260706002\n2. 表格仅展示匹配的领退单号记录\n3. 领退单号列出现M20260706002，无不匹配的业务行",
+      "automation_suggestion": "listen_start监听gateway，input填写领退单号，click_xy点击查询按钮，listen_wait校验post_data.conditions，get_table_values校验领退单号列"
+    },
+    {
+      "case_id": "F002",
+      "case_title": "重置按钮清空领退单号筛选条件",
+      "priority": "中级",
+      "verify_point": "点击重置后筛选区输入条件恢复为空",
+      "test_type": "功能测试",
+      "function": "重置",
+      "preconditions": [
+        "已登录系统",
+        "进入生产管理-领退料明细表页面",
+        "领退单号已填写为M20260706002"
+      ],
+      "test_steps": [
+        "点击重置按钮",
+        "扫描筛选区字段值"
+      ],
+      "test_data": {
+        "重置前领退单号": "M20260706002"
+      },
+      "expected_result": "1. 领退单号字段值被清空\n2. 关联单号、客商/生产部门、领/退料人等文本字段保持为空\n3. 日期范围字段开始日期和结束日期均为空",
+      "automation_suggestion": "close_modal清理残留通知，click_xy点击重置按钮，scan_filter_fields验证字段value为空"
+    },
+    {
+      "case_id": "F003",
+      "case_title": "空条件查询恢复领退料全量列表",
+      "priority": "中级",
+      "verify_point": "筛选条件为空时点击查询，接口按空conditions查询当前页签数据",
+      "test_type": "功能测试",
+      "function": "查询",
+      "preconditions": [
+        "已登录系统",
+        "进入生产管理-领退料明细表页面",
+        "筛选区所有字段为空"
+      ],
+      "test_steps": [
+        "点击查询按钮",
+        "查看接口请求参数",
+        "查看表格领退单号列"
+      ],
+      "test_data": {
+        "conditions": "[]",
+        "tabType": "0",
+        "pageSize": "999999"
+      },
+      "expected_result": "1. 查询接口返回成功，conditions为空数组\n2. 请求参数tabType为0，表示生产备料（按领退单）页签\n3. 表格恢复显示多条领退料记录，领退单号列包含M20260706002、M20260706001、ML20260703008等记录",
+      "automation_suggestion": "listen_start监听gateway，click_xy点击查询，listen_wait验证conditions为空和tabType=0，get_table_values验证领退单号列恢复多条数据"
+    },
+    {
+      "case_id": "F004",
+      "case_title": "筛选字段矩阵完整性验证",
+      "priority": "低级",
+      "verify_point": "筛选区展示领退料明细表所需的主要查询字段、输入方式和操作符",
+      "test_type": "功能测试",
+      "function": "筛选区",
+      "preconditions": [
+        "已登录系统",
+        "进入生产管理-领退料明细表页面",
+        "筛选区已展开"
+      ],
+      "test_steps": [
+        "扫描筛选区字段",
+        "核对字段名称、输入类型、操作符和下拉选项"
+      ],
+      "test_data": {
+        "字段数量": "19",
+        "下拉字段": "审批状态、审批人、领退类型、创建人、是否推送仓库",
+        "日期范围字段": "制单时间、操作时间、预计出货时间"
+      },
+      "expected_result": "1. 筛选区包含19个字段\n2. 审批状态选项包含审批中、审批通过、审批驳回\n3. 领退类型选项包含生产退料、生产领料、生产补料、委外加工领料、受托加工材料收料、受托加工材料退料、委外退料、委外补料、非生产退料、非生产领料、非生产补料、模具领用、模具归还\n4. 是否推送仓库选项包含否、是\n5. 打印次数和优先级支持等于、不等于、大于、大于等于、小于、小于等于操作符",
+      "automation_suggestion": "scan_filter_fields读取字段矩阵并断言字段数量、输入类型、操作符和下拉选项"
+    }
+  ]
+}

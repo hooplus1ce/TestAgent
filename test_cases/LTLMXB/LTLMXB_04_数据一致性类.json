@@ -1,0 +1,109 @@
+{
+  "module_info": {
+    "enterprise_prefix": "NB",
+    "module_name": "生产管理_领退料明细表",
+    "module_level1": "生产管理",
+    "module_level2": "领退料明细表",
+    "module_pinyin": "LTLMXB",
+    "author": "Hooplus1ce"
+  },
+  "category": "D - 数据一致性类",
+  "test_cases": [
+    {
+      "case_id": "D001",
+      "case_title": "审批状态列不显示内部编码",
+      "priority": "高级",
+      "verify_point": "审批状态列应展示中文状态，不应暴露数字编码",
+      "test_type": "异常测试",
+      "function": "数据展示",
+      "preconditions": [
+        "已登录系统",
+        "进入生产管理-领退料明细表页面",
+        "空条件查询已加载全量列表"
+      ],
+      "test_steps": [
+        "读取审批状态列值",
+        "检查是否存在数字编码或非中文状态值"
+      ],
+      "test_data": {
+        "已观察异常值": "2",
+        "正常展示样本": "已通过、审批中"
+      },
+      "expected_result": "1. 审批状态列只展示空值或中文审批状态\n2. 不应出现数字2等内部编码\n3. 若存在内部编码，应作为展示映射缺陷记录并修复字典映射",
+      "automation_suggestion": "get_table_values(column_title='审批状态')读取全量值，断言非空值必须属于已通过、审批中、审批驳回等中文集合"
+    },
+    {
+      "case_id": "D002",
+      "case_title": "领退类型筛选选项与表格展示值一致",
+      "priority": "高级",
+      "verify_point": "领退类型下拉字典应覆盖表格中实际出现的领退类型",
+      "test_type": "异常测试",
+      "function": "数据字典",
+      "preconditions": [
+        "已登录系统",
+        "进入生产管理-领退料明细表页面",
+        "筛选区已展开",
+        "空条件查询已加载全量列表"
+      ],
+      "test_steps": [
+        "扫描领退类型筛选下拉选项",
+        "读取表格领退类型列值",
+        "对比筛选选项与表格展示值"
+      ],
+      "test_data": {
+        "表格已观察值": "托工领料、托工补料、托工退料",
+        "筛选下拉已观察选项": "委外加工领料、委外退料、委外补料"
+      },
+      "expected_result": "1. 表格中出现的领退类型均能在筛选下拉中找到对应选项或明确同义映射\n2. 若表格展示托工领料、托工补料、托工退料，下拉应提供同名选项或业务认可的委外同义映射说明\n3. 不应出现用户无法通过筛选条件选择的展示值",
+      "automation_suggestion": "scan_filter_fields读取领退类型options，get_table_values读取领退类型列，比较去重后的表格值是否被下拉选项覆盖"
+    },
+    {
+      "case_id": "D003",
+      "case_title": "是否推送仓库字段展示与筛选选项一致",
+      "priority": "中级",
+      "verify_point": "是否推送仓库筛选选项和表格列值均为是/否",
+      "test_type": "功能测试",
+      "function": "数据字典",
+      "preconditions": [
+        "已登录系统",
+        "进入生产管理-领退料明细表页面",
+        "筛选区已展开",
+        "空条件查询已加载全量列表"
+      ],
+      "test_steps": [
+        "扫描是否推送仓库筛选下拉选项",
+        "读取表格是否推送仓库列值",
+        "核对字典值"
+      ],
+      "test_data": {
+        "筛选选项": "否、是",
+        "表格样本": "是、否"
+      },
+      "expected_result": "1. 是否推送仓库筛选下拉包含否、是两个选项\n2. 表格是否推送仓库列仅展示是或否\n3. 筛选选项与表格展示值保持一致",
+      "automation_suggestion": "scan_filter_fields读取是否推送仓库options，get_table_values读取是否推送仓库列并校验值集合"
+    },
+    {
+      "case_id": "D004",
+      "case_title": "关联单号允许为空记录展示",
+      "priority": "低级",
+      "verify_point": "部分领退料记录无关联单号时，表格应稳定展示为空，不影响列表查询",
+      "test_type": "功能测试",
+      "function": "数据展示",
+      "preconditions": [
+        "已登录系统",
+        "进入生产管理-领退料明细表页面",
+        "空条件查询已加载全量列表"
+      ],
+      "test_steps": [
+        "读取关联单号列值",
+        "查看空关联单号记录与非空关联单号记录是否同时展示"
+      ],
+      "test_data": {
+        "非空样本": "TW20260706004、SO20260703011",
+        "空值样本": "null或空字符串"
+      },
+      "expected_result": "1. 关联单号列允许展示为空值记录\n2. 空关联单号记录不影响整页列表加载\n3. 非空关联单号记录仍展示正确业务单号",
+      "automation_suggestion": "get_table_values(column_title='关联单号')读取列值，验证存在非空业务单号且空值展示不导致接口或表格异常"
+    }
+  ]
+}

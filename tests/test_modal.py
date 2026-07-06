@@ -225,3 +225,21 @@ def test_close_modal_nothing_to_close():
     assert result["ok"] is True
     assert result["closed"] == []
     assert result["errors"] == []
+
+
+def test_clear_transient_overlays_scans_iframe_and_top():
+    """点击前清理应同时覆盖 iframe 和 top 里的 notification/message。"""
+    import modal
+    iframe_t = _FakeTarget(run_js_return='[{"type":"notification","message":"请勾选记录"}]')
+    top_t = _FakeTarget(run_js_return='[{"type":"message","message":"处理中"}]')
+
+    with patch.object(modal.browser_session, "get_tab", return_value=top_t), \
+         patch.object(modal.browser_session, "get_active_frame", return_value=iframe_t):
+        result = modal.clear_transient_overlays()
+
+    assert result["ok"] is True
+    assert result["errors"] == []
+    assert result["closed"] == [
+        {"type": "notification", "message": "请勾选记录", "scope": "iframe"},
+        {"type": "message", "message": "处理中", "scope": "top"},
+    ]

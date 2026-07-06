@@ -1,5 +1,6 @@
 """server.py 测试：公开工具面 + synchronized 串行化。"""
 import asyncio
+from types import SimpleNamespace
 import threading
 import time
 from unittest.mock import patch
@@ -178,3 +179,168 @@ def test_synchronized_returns_value():
         return a + b
 
     assert add(2, 3) == 5
+
+
+class _FakeSetter:
+    def __init__(self, kind, calls, allowed):
+        self.kind = kind
+        self.calls = calls
+        self.allowed = allowed
+
+    def all(self):
+        self.calls.append((self.kind, "all"))
+        return self
+
+    def ws(self, only=False):
+        self.calls.append((self.kind, "WebSocket", only))
+        return self
+
+    def __getattr__(self, name):
+        if name not in self.allowed:
+            raise ValueError(name)
+
+        def _call(only=False):
+            self.calls.append((self.kind, name, only))
+            return self
+
+        return _call
+
+
+class _FakeListen:
+    def __init__(self, wait_return=None):
+        self.calls = []
+        self.set_method = _FakeSetter("method", self.calls, {"GET", "POST", "PUT", "DELETE"})
+        self.set_res_type = _FakeSetter("res_type", self.calls, {"XHR", "Fetch", "WebSocket"})
+        self.started = None
+        self.wait_kwargs = None
+        self.wait_return = wait_return
+
+    def start(self, **kwargs):
+        self.started = kwargs
+
+    def wait(self, **kwargs):
+        self.wait_kwargs = kwargs
+        return self.wait_return
+
+
+def test_scan_controls_uses_drission_viewport_click_point():
+    import server
+
+    class FakeElement:
+        tag = "button"
+        text = "查 询"
+        rect = SimpleNamespace(size=(80, 32), viewport_click_point=(1152.2, 211.7))
+
+        def attr(self, name):
+            return {"class": "el-button", "type": "button"}.get(name)
+
+    class FakeTarget:
+        def eles(self, locator, timeout=2):
+            assert locator.startswith("c:")
+            return [FakeElement()]
+
+    items, seq = server._scan_controls_in_context(FakeTarget(), "active_iframe", 0, 10)
+    assert seq == 1
+    assert items[0]["cx"] == 1152
+    assert items[0]["cy"] == 212
+    assert items[0]["viewportX"] == 1152.2
+    assert items[0]["viewportY"] == 211.7
+    assert items[0]["coordinate_space"] == "top-viewport"
+    assert items[0]["coord_source"] == "DrissionPage.Element.rect.viewport_click_point"
+
+
+def test_listen_start_sets_http_listener_state_for_drissionpage_42():
+    import server
+
+    fake_listen = _FakeListen()
+    fake_tab = SimpleNamespace(listen=fake_listen)
+
+    with patch.object(server.browser_session, "get_tab", return_value=fake_tab):
+        result = server.listen_start("gateway, scmpsm", method="POST")
+
+    assert result == {
+        "ok": True,
+        "targets": ["gateway", "scmpsm"],
+        "method": "POST",
+        "resource_type": "ALL",
+    }
+    assert ("res_type", "all") in fake_listen.calls
+    assert ("method", "POST", True) in fake_listen.calls
+    assert fake_listen.started == {"urls": ["gateway", "scmpsm"]}
+
+
+def test_listen_start_falls_back_to_get_post_for_unknown_method():
+    import server
+
+    fake_listen = _FakeListen()
+    fake_tab = SimpleNamespace(listen=fake_listen)
+
+    with patch.object(server.browser_session, "get_tab", return_value=fake_tab):
+        result = server.listen_start("gateway", method="BREW")
+
+    assert result["method"] == "GET,POST"
+    assert ("method", "GET", True) in fake_listen.calls
+    assert ("method", "POST", False) in fake_listen.calls
+
+
+def test_listen_wait_passes_fit_count_to_drissionpage():
+    import server
+
+    fake_listen = _FakeListen(wait_return=None)
+    fake_tab = SimpleNamespace(listen=fake_listen)
+
+    with patch.object(server.browser_session, "get_tab", return_value=fake_tab):
+        result = server.listen_wait(count=3, timeout=1, fit_count=False)
+
+    assert result["ok"] is False
+    assert fake_listen.wait_kwargs == {"count": 3, "timeout": 1, "fit_count": False}
+
+
+def test_listen_ws_start_sets_websocket_listener_state_for_drissionpage_42():
+    import server
+
+    fake_listen = _FakeListen()
+    fake_tab = SimpleNamespace(listen=fake_listen)
+
+    with patch.object(server.browser_session, "get_tab", return_value=fake_tab):
+        result = server.listen_ws_start("socket")
+
+    assert result == {
+        "ok": True,
+        "targets": ["socket"],
+        "method": "ALL",
+        "resource_type": "WebSocket",
+    }
+    assert ("method", "all") in fake_listen.calls
+    assert ("res_type", "WebSocket", True) in fake_listen.calls
+    assert fake_listen.started == {"urls": ["socket"]}
+
+
+def test_click_xy_cleans_transient_overlays_before_click():
+    import server
+
+    class FakeActions:
+        def __init__(self):
+            self.moves = []
+            self.clicked = False
+
+        def move_to(self, point, duration=0):
+            self.moves.append((point, duration))
+            return self
+
+        def click(self):
+            self.clicked = True
+            return self
+
+    actions = FakeActions()
+    fake_tab = SimpleNamespace(actions=actions)
+    cleanup = {"ok": True, "closed": [{"scope": "iframe", "type": "notification"}], "errors": []}
+
+    with patch.object(server.modal, "clear_transient_overlays", return_value=cleanup) as clear, \
+         patch.object(server.browser_session, "get_tab", return_value=fake_tab):
+        result = server.click_xy(12.5, 20.5)
+
+    clear.assert_called_once_with()
+    assert actions.moves == [((12.5, 20.5), 0.3)]
+    assert actions.clicked is True
+    assert result["pre_cleaned"] == cleanup["closed"]

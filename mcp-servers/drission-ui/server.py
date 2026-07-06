@@ -399,24 +399,166 @@ def dom_tree(selector: str = "", max_depth: int = 6, max_children: int = 50,
 
 # ==================== 通用 DOM 原语 ====================
 
+_INTERACTIVE_SELECTOR = (
+    "button,a[href],input,select,textarea,"
+    "[role=button],[role=menuitem],[role=tab],[role=checkbox],[role=switch],[role=link],"
+    "[onclick],.el-button,.ant-btn,[class*=btn]"
+)
+
+
+def _attr(ele, name: str):
+    try:
+        return ele.attr(name)
+    except Exception:
+        return None
+
+
+def _element_text(ele) -> str:
+    for name in ("aria-label", "title", "placeholder", "value"):
+        val = _attr(ele, name)
+        if val:
+            return str(val).strip().replace("\n", " ")[:40]
+    try:
+        text = ele.text or ""
+    except Exception:
+        text = ""
+    return " ".join(text.split())[:40]
+
+
+def _scan_controls_in_context(target, frame_label: str, start_seq: int, max_items: int):
+    """Scan visible controls and return top-viewport click coordinates.
+
+    DrissionPage's ``rect.viewport_click_point`` already accounts for iframe
+    offset, so returned ``cx/cy`` can be passed directly to ``click_xy``.
+    """
+    out = []
+    seq = start_seq
+    try:
+        nodes = target.eles(f"c:{_INTERACTIVE_SELECTOR}", timeout=2)
+    except Exception:
+        return out, seq
+
+    for ele in nodes:
+        if len(out) >= max_items:
+            break
+        try:
+            w, h = ele.rect.size
+            if not w or not h:
+                continue
+            vx, vy = ele.rect.viewport_click_point
+        except Exception:
+            continue
+
+        seq += 1
+        cls = _attr(ele, "class") or ""
+        role = _attr(ele, "role") or ""
+        typ = _attr(ele, "type") or role
+        disabled = bool(_attr(ele, "disabled") or _attr(ele, "aria-disabled") == "true")
+        out.append({
+            "ref": f"e{seq}",
+            "frame": frame_label,
+            "tag": ele.tag,
+            "type": typ or "",
+            "text": _element_text(ele),
+            "cls": str(cls)[:50],
+            "disabled": disabled,
+            # Backward-compatible names, now top-viewport absolute coordinates.
+            "cx": round(vx),
+            "cy": round(vy),
+            "viewportX": round(vx, 1),
+            "viewportY": round(vy, 1),
+            "coordinate_space": "top-viewport",
+            "coord_source": "DrissionPage.Element.rect.viewport_click_point",
+        })
+    return out, seq
+
+
+def _normalize_listen_targets(targets):
+    """Convert MCP input to DrissionPage listener urls."""
+    if targets is None:
+        return True
+    if isinstance(targets, str):
+        values = [t.strip() for t in targets.split(",") if t.strip()]
+        return values or True
+    return targets
+
+
+def _set_http_listen_method(listener, method: str = None) -> str:
+    """Set DrissionPage 4.2 listener method state and return the effective value."""
+    if not method:
+        listener.set_method.GET(only=True).POST()
+        return "GET,POST"
+
+    methods = [m.strip().upper() for m in str(method).split(",") if m.strip()]
+    if not methods:
+        listener.set_method.GET(only=True).POST()
+        return "GET,POST"
+    if len(methods) == 1 and methods[0] == "ALL":
+        listener.set_method.all()
+        return "ALL"
+
+    try:
+        getattr(listener.set_method, methods[0])(only=True)
+        for m in methods[1:]:
+            getattr(listener.set_method, m)()
+    except (ValueError, TypeError, AttributeError) as e:
+        logger.warning("不支持的监听方法 %r（%s），回退默认 GET+POST", method, e)
+        listener.set_method.GET(only=True).POST()
+        return "GET,POST"
+    return ",".join(methods)
+
+
+def _pre_click_cleanup(clean_overlays: bool = True):
+    """Remove transient notification/message overlays before a new click."""
+    if not clean_overlays:
+        return None
+    try:
+        return modal.clear_transient_overlays()
+    except Exception as e:
+        logger.debug("点击前清理通知失败: %s", e)
+        return {"ok": False, "closed": [], "errors": [str(e)]}
+
+
+def _attach_cleanup(result: dict, cleanup: dict = None) -> dict:
+    if cleanup and cleanup.get("closed"):
+        result["pre_cleaned"] = cleanup.get("closed")
+    if cleanup and cleanup.get("errors"):
+        result["pre_clean_errors"] = cleanup.get("errors")
+    return result
+
+
 @mcp.tool()
 @read_synchronized
 def scan_page_elements(include_iframe: bool = True, max_items: int = 200, filename: str = None) -> dict:
     """扫描页面所有可见交互控件(button/a/input/role=*/canvas)，递归穿透同源 iframe，
-    按 frame 分组返回，含中心坐标和稳定引用 ref ID（e1/e2/...），后续可用 ref 定位。
+    按 frame 分组返回，含可直接传给 click_xy 的顶层视口坐标和稳定引用 ref ID（e1/e2/...）。
     进入模块后第一件事。
     max_items 限制返回元素数（超出截断并标 _truncated），避免吃尽上下文。
     filename 提供时保存到文件，不返回大 JSON。"""
     tab = browser_session.get_tab()
-    script = browser_session.load_js("element-scan.js") + "\nreturn JSON.stringify(scanInteractiveControls());"
-    res = tab.run_js(script)
-    data = json.loads(res) if isinstance(res, str) else res
-    if isinstance(data, dict):
-        els = data.get("elements", [])
-        if len(els) > max_items:
-            data["elements"] = els[:max_items]
-            data["_truncated"] = True
-            data["returned"] = max_items
+    elements, seq = _scan_controls_in_context(tab, "", 0, max_items)
+
+    if include_iframe and len(elements) < max_items:
+        fr = browser_session.get_active_frame(tab)
+        if fr is not None:
+            frame_name = getattr(fr, "name", "") or getattr(fr, "id", "") or "active_iframe"
+            iframe_elements, seq = _scan_controls_in_context(
+                fr, frame_name, seq, max_items - len(elements)
+            )
+            elements.extend(iframe_elements)
+
+    data = {
+        "url": tab.url,
+        "title": tab.title,
+        "total": len(elements),
+        "elements": elements,
+        "coordinate_space": "top-viewport",
+        "coord_source": "DrissionPage.Element.rect.viewport_click_point",
+    }
+
+    if len(elements) >= max_items:
+        data["_truncated"] = True
+        data["returned"] = max_items
 
     # filename 参数优先
     if filename:
@@ -471,11 +613,24 @@ def find_elements(locator: str, in_frame: bool = True, timeout: float = 5) -> di
     for i, e in enumerate(els):
         if i >= 50:
             break
-        previews.append({
+        item = {
             "tag": e.tag,
             "text": (e.text or "")[:100],
             "attrs": {k: e.attr(k) for k in ("id", "class", "href", "src", "title", "aria-label", "placeholder") if e.attr(k)}
-        })
+        }
+        try:
+            vx, vy = e.rect.viewport_click_point
+            item.update({
+                "cx": round(vx),
+                "cy": round(vy),
+                "viewportX": round(vx, 1),
+                "viewportY": round(vy, 1),
+                "coordinate_space": "top-viewport",
+                "coord_source": "DrissionPage.Element.rect.viewport_click_point",
+            })
+        except Exception:
+            pass
+        previews.append(item)
     return {"ok": True, "count": len(els), "elements": previews, "_truncated": len(els) > 50}
 
 
@@ -551,9 +706,11 @@ def get_frame(locator, timeout: float = 5) -> dict:
 
 @mcp.tool()
 @write_synchronized
-def click(locator: str, in_frame: bool = True, by_js: bool = False, timeout: float = 5) -> dict:
+def click(locator: str, in_frame: bool = True, by_js: bool = False, timeout: float = 5,
+          clean_overlays: bool = True) -> dict:
     """点击元素。locator 为 DrissionPage 定位符(#id/.cls/@attr=v/text:文/css:选择器)。
     in_frame 优先在活动 iframe 内查找。by_js=True 用 JS 点击(绕过遮挡)。timeout 为查找超时秒数。
+    clean_overlays=True 时先清理上一操作残留的 Ant notification/message，避免干扰本次点击观察。
 
     定位语法参考：
       #id / .cls / tag:div / t:div / text:文 / tx=文
@@ -563,6 +720,7 @@ def click(locator: str, in_frame: bool = True, by_js: bool = False, timeout: flo
     简化写法：text→tx, tag→t, css→c, xpath→x
     文档：https://drissionpage.cn/browser_control/get_elements/syntax
     """
+    cleanup = _pre_click_cleanup(clean_overlays)
     ele = browser_session.find(locator, in_frame=in_frame, timeout=timeout)
     if not ele and locator.startswith("text:") and in_frame:
         raw_text = locator[5:]
@@ -590,21 +748,27 @@ def click(locator: str, in_frame: bool = True, by_js: bool = False, timeout: flo
             if isinstance(res, str):
                 res = json.loads(res)
             if res and res.get("ok"):
-                return {"ok": True, "locator": locator, "fallback": "js-text"}
-            return {"ok": False, "reason": "元素未找到: %s（等待 %.1fs，DP 降级+JS 均失败）" % (locator, timeout)}
+                return _attach_cleanup({"ok": True, "locator": locator, "fallback": "js-text"}, cleanup)
+            return _attach_cleanup(
+                {"ok": False, "reason": "元素未找到: %s（等待 %.1fs，DP 降级+JS 均失败）" % (locator, timeout)},
+                cleanup,
+            )
     if not ele:
-        return {"ok": False, "reason": "元素未找到: %s（等待 %.1fs）" % (locator, timeout)}
+        return _attach_cleanup({"ok": False, "reason": "元素未找到: %s（等待 %.1fs）" % (locator, timeout)}, cleanup)
     ele.click(by_js=by_js)
-    return {"ok": True, "locator": locator}
+    return _attach_cleanup({"ok": True, "locator": locator}, cleanup)
 
 
 @mcp.tool()
 @write_synchronized
-def click_xy(x: float, y: float, hover_first: bool = True, duration: float = 0.3) -> dict:
-    """按顶层视口坐标点击(用于 canvas)。hover_first 先移动到目标(hover)再点击——VTable 排序图标需要。"""
+def click_xy(x: float, y: float, hover_first: bool = True, duration: float = 0.3,
+             clean_overlays: bool = True) -> dict:
+    """按顶层视口坐标点击(用于 canvas)。hover_first 先移动到目标(hover)再点击——VTable 排序图标需要。
+    clean_overlays=True 时先清理上一操作残留的 Ant notification/message。"""
+    cleanup = _pre_click_cleanup(clean_overlays)
     tab = browser_session.get_tab()
     tab.actions.move_to((x, y), duration=duration if hover_first else 0).click()
-    return {"ok": True, "x": x, "y": y}
+    return _attach_cleanup({"ok": True, "x": x, "y": y}, cleanup)
 
 @mcp.tool()
 @write_synchronized
@@ -864,8 +1028,11 @@ def get_table_data(kind: str = "auto", table_index: int = 0, filename: str = Non
 @write_synchronized
 def click_table_cell(row: int, col: int = None, column_title: str = None, kind: str = "auto",
                      table_index: int = 0, icon_name: str = None, hover_first: bool = True,
-                     duration: float = 0.3, double_click: bool = False) -> dict:
-    """统一点击表格单元格。VTable 可用 col 或 column_title；HTML Table 使用 column_title。"""
+                     duration: float = 0.3, double_click: bool = False,
+                     clean_overlays: bool = True) -> dict:
+    """统一点击表格单元格。VTable 可用 col 或 column_title；HTML Table 使用 column_title。
+    clean_overlays=True 时先清理上一操作残留的 Ant notification/message。"""
+    cleanup = _pre_click_cleanup(clean_overlays)
     kind = _normalize_table_kind(kind)
 
     def _click_vtable():
@@ -879,24 +1046,27 @@ def click_table_cell(row: int, col: int = None, column_title: str = None, kind: 
         return _tag_table_result("vtable", vtable.click_cell(target_col, row, icon_name, hover_first, duration, double_click))
 
     if kind == "vtable":
-        return _click_vtable()
+        return _attach_cleanup(_click_vtable(), cleanup)
     if kind == "html":
         if not column_title:
-            return {"ok": False, "kind": "html", "reason": "HTML 表格点击需要 column_title"}
-        return _tag_table_result("html", html_table.click_html_table_cell(column_title, row, table_index))
+            return _attach_cleanup({"ok": False, "kind": "html", "reason": "HTML 表格点击需要 column_title"}, cleanup)
+        return _attach_cleanup(_tag_table_result("html", html_table.click_html_table_cell(column_title, row, table_index)), cleanup)
 
     vt = _click_vtable()
     if vt.get("ok"):
-        return vt
+        return _attach_cleanup(vt, cleanup)
     if column_title:
         ht = _tag_table_result("html", html_table.click_html_table_cell(column_title, row, table_index))
         if ht.get("ok"):
             ht["fallback_from"] = "vtable"
             ht["vtable_reason"] = vt.get("reason", "")
-            return ht
-        return {"ok": False, "kind": "auto", "reason": "表格单元格点击失败",
-                "vtable_reason": vt.get("reason", ""), "html_reason": ht.get("reason", "")}
-    return vt
+            return _attach_cleanup(ht, cleanup)
+        return _attach_cleanup(
+            {"ok": False, "kind": "auto", "reason": "表格单元格点击失败",
+             "vtable_reason": vt.get("reason", ""), "html_reason": ht.get("reason", "")},
+            cleanup,
+        )
+    return _attach_cleanup(vt, cleanup)
 
 
 @mcp.tool()
@@ -1001,7 +1171,9 @@ def scroll_to_cell(col: int, row: int) -> dict:
 
 
 @write_synchronized
-def click_cell(col: int, row: int, icon_name: str = None, hover_first: bool = True, duration: float = 0.3, double_click: bool = False) -> dict:
+def click_cell(col: int, row: int, icon_name: str = None, hover_first: bool = True,
+               duration: float = 0.3, double_click: bool = False,
+               clean_overlays: bool = True) -> dict:
     """点击 VTable 单元格或其图标。icon_name(如 'sort')给定时点该图标(先 hover 再 click)；否则点单元格中心。
 
     Args:
@@ -1012,7 +1184,8 @@ def click_cell(col: int, row: int, icon_name: str = None, hover_first: bool = Tr
         duration: hover 动画时长
         double_click: 是否双击（用于 bodyBehavior='链接/按钮' 的单元格）
     """
-    return vtable.click_cell(col, row, icon_name, hover_first, duration, double_click)
+    cleanup = _pre_click_cleanup(clean_overlays)
+    return _attach_cleanup(vtable.click_cell(col, row, icon_name, hover_first, duration, double_click), cleanup)
 
 @write_synchronized
 def resize_column(col: int, width: int) -> dict:
@@ -1148,42 +1321,33 @@ def detect_tab_change(old_count: int, timeout: float = 5) -> dict:
 @write_synchronized
 def listen_start(targets, method: str = None) -> dict:
     """启动网络监听。targets 为 URL 特征：单个字符串、逗号分隔的多个特征、或列表。
-    method 可选 'POST'/'GET' 等，采用 4.2 set_method 链式 API 只监听指定方法；
-    不传则默认监听 GET+POST。
+    method 可选 'POST'/'GET'/'GET,POST'/'ALL' 等，采用 4.2 set_method 链式 API；
+    不传则默认监听 GET+POST。每次启动都会重置 resource type，避免继承 WS-only 状态。
 
-    4.2 起 listen.start() 删除 method/res_type 参数，改用 listen.set_method 链式 API：
+    4.2 起 listen.start() 删除 method/res_type 参数，改用 listen.set_method / set_res_type 链式 API：
       tab.listen.set_method.GET(only=True)   # 只监听 GET
-      tab.listen.set_method.POST().GET()     # 监听 GET+POST
+      tab.listen.set_method.GET(only=True).POST()  # 监听 GET+POST
       tab.listen.set_method.all()            # 监听全部
     """
     tab = browser_session.get_tab()
-    # 统一为列表：逗号分隔 → 拆分去空，避免 "a,b" 被当成单个特征串
-    if isinstance(targets, str):
-        targets = [t.strip() for t in targets.split(",") if t.strip()]
-    elif targets is None:
-        targets = ""
-    if method:
-        # 4.2：listen.set_method 是 property，返回 MethodSetter 对象，
-        # 用属性名（GET/POST/PUT/...）链式调用，only=True 表示只监听该方法。
-        # MethodSetter.__getattr__ 对不在 _ALLOW 中的名字调用时 raise ValueError。
-        m = method.upper()
-        try:
-            getattr(tab.listen.set_method, m)(only=True)
-        except (ValueError, TypeError) as e:
-            logger.warning("不支持的监听方法 %r（%s），回退默认 GET+POST", method, e)
-    tab.listen.start(targets)
-    return {"ok": True, "targets": targets}
+    # 4.2：method/resourceType 不再传给 listen.start()，而是作为监听器独立状态。
+    # 因此每次启动监听都显式设置 method/res_type，避免继承上一次 WS-only 或方法限制。
+    tab.listen.set_res_type.all()
+    effective_method = _set_http_listen_method(tab.listen, method)
+    urls = _normalize_listen_targets(targets)
+    tab.listen.start(urls=urls)
+    return {"ok": True, "targets": urls, "method": effective_method, "resource_type": "ALL"}
 
 
 @mcp.tool()
 @read_synchronized
-def listen_wait(count: int = 1, timeout: float = 10) -> dict:
+def listen_wait(count: int = 1, timeout: float = 10, fit_count: bool = False) -> dict:
     """等待监听的数据包。返回 {url, method, api_target, post_data, status, body}。
     api_target 为请求头中的接口路由标识（同一 gateway URL 下区分不同接口）。
     post_data 为 POST 请求体（JSON 字符串），含查询参数如 conditions/isDelivery 等。
-    count>1 返回 packets 列表。"""
+    count>1 返回 packets 列表。fit_count=False 时超时前抓到多少返回多少，适合探索式断言。"""
     tab = browser_session.get_tab()
-    pkt = tab.listen.wait(count=count, timeout=timeout)
+    pkt = tab.listen.wait(count=count, timeout=timeout, fit_count=fit_count)
     if not pkt:
         return {"ok": False, "reason": "timeout", "hint": "确认 listen_start 的 targets 是否正确，或增大 timeout"}
 
@@ -1275,26 +1439,28 @@ def download_by_browser(url: str, save_path: str = None, rename: str = None,
 def listen_ws_start(targets: str = None) -> dict:
     """启动 WebSocket 监听(4.2 新增)。targets 可选 URL 特征过滤；不传则监听所有 WS 帧。"""
     tab = browser_session.get_tab()
-    kwargs = {"ws_only": True}
-    if targets:
-        kwargs["targets"] = targets
-    tab.listen.start(**kwargs)
-    return {"ok": True, "targets": targets or "(all)"}
+    urls = _normalize_listen_targets(targets)
+    # WebSocket 回调的 method 不是普通 GET/POST；必须放开 method，并只监听 WebSocket 资源。
+    tab.listen.set_method.all()
+    tab.listen.set_res_type.ws(only=True)
+    tab.listen.start(urls=urls)
+    return {"ok": True, "targets": urls, "method": "ALL", "resource_type": "WebSocket"}
 
 
 @mcp.tool()
 @read_synchronized
-def listen_ws_wait(count: int = 1, timeout: float = 10) -> dict:
+def listen_ws_wait(count: int = 1, timeout: float = 10, fit_count: bool = False) -> dict:
     """等待 WebSocket 数据包。返回 {ok, packets:[{is_sent, payload, timestamp}]}。"""
     tab = browser_session.get_tab()
-    pkt = tab.listen.wait(count=count, timeout=timeout)
+    pkt = tab.listen.wait(count=count, timeout=timeout, fit_count=fit_count)
     if not pkt:
         return {"ok": False, "reason": "timeout", "hint": "确认 listen_ws_start 的 targets 是否正确，或增大 timeout"}
 
     def conv(p):
         return {
             "is_sent": getattr(p, "is_sent", None),
-            "payload": getattr(p, "payload", None),
+            "payload": getattr(p, "data", None),
+            "url": getattr(p, "url", None),
             "timestamp": getattr(p, "timestamp", None),
         }
 

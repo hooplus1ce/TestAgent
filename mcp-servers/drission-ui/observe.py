@@ -174,7 +174,11 @@ def _build_session(signals, listen_targets, timeout_for_net=None):
         if isinstance(tg, str):
             tg = [t.strip() for t in tg.split(",") if t.strip()]
         try:
-            tab.listen.start(tg)
+            # DrissionPage 4.2 将 method/resourceType 作为监听器状态保存；
+            # 观察器默认看普通 HTTP GET+POST，避免继承 WS-only 等上一次状态。
+            tab.listen.set_res_type.all()
+            tab.listen.set_method.GET(only=True).POST()
+            tab.listen.start(urls=tg or True)
         except Exception as e:
             logger.debug("listen start 失败: %s", e)
             watch_network = False

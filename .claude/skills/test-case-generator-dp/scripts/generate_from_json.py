@@ -182,7 +182,6 @@ def build_excel(module_info, test_cases, output_dir=".", custom_filename=None):
     for i, w in enumerate(COL_WIDTHS, 1):
         ws1.column_dimensions[chr(64 + i)].width = w
     
-    ws1.freeze_panes = "E2"
     ws1.auto_filter.ref = f"A1:{ws1.cell(1, ws1.max_column).column_letter}{ws1.max_row}"
     
     # ===================== Sheet 2: 测试数据 =====================

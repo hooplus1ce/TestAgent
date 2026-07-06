@@ -222,8 +222,9 @@ PYTHONIOENCODING=utf-8 uv run python verify_live.py
 ### 4.3 通用 DOM 原语
 
 #### `scan_page_elements(include_iframe=True)`
-扫描页面所有可见交互控件（button/a/input/role=*/canvas），递归穿透同源 iframe，按 frame 分组返回，含中心坐标。**进入模块后第一件事**。
-- **返回**：`{url, title, total, elements:[{frame, tag, type, text, cls, disabled, cx, cy}]}`
+扫描页面所有可见交互控件（button/a/input/role=*/canvas），递归穿透同源 iframe，按 frame 分组返回，含可直接点击的顶层视口坐标。**进入模块后第一件事**。
+- **返回**：`{url, title, total, elements:[{frame, tag, type, text, cls, disabled, cx, cy, viewportX, viewportY, coordinate_space, coord_source}]}`
+- **坐标来源**：`DrissionPage.Element.rect.viewport_click_point`，已包含 iframe 相对顶层视口的偏移；不要把 iframe 内 `getBoundingClientRect()` 的局部坐标直接传给 `click_xy`。
 - **示例输出**：`{total: 65, groups: ["ReactIframe01010001", "(main)"]}`
 
 #### `click(locator, in_frame=True, by_js=False)`
@@ -232,14 +233,19 @@ PYTHONIOENCODING=utf-8 uv run python verify_live.py
   - `locator` DrissionPage 定位符
   - `in_frame` 优先在活动 iframe 内查找
   - `by_js=True` 用 JS 点击（绕过遮挡）
+  - `clean_overlays=True` 点击前先清理上一操作残留的 Ant `notification/message`
 - **返回**：`{ok, locator}` 或 `{ok: false, reason}`
 - **示例**：`click("text:新 增")`、`click("#submitBtn")`、`click(".ant-btn-primary")`
 
 #### `click_xy(x, y, hover_first=True, duration=0.3)`
 按顶层视口坐标点击（用于 canvas）。
 - **参数**：`hover_first` 先移动到目标（hover）再点击——**VTable 排序图标需要 hover 才出现**
+- **前置清理**：默认 `clean_overlays=True`，会清掉上一操作遗留的 `ant-notification` / `ant-message`，避免污染本次观察；业务 modal / confirm 不会自动关闭，需显式 `close_modal()`。
 - **返回**：`{ok, x, y}`
 - **示例**：`click_xy(201.5, 247.5, hover_first=true)`
+
+#### 网络监听 API 注意事项
+DrissionPage 4.2 中 `listen.start()` 只接收 URL 过滤条件；`method` / `resourceType` 需先用 `tab.listen.set_method`、`tab.listen.set_res_type` 链式 API 设置。MCP 的 `listen_start()` 已内置普通 HTTP 默认值 `GET,POST + ALL resourceType`，`listen_ws_start()` 已内置 `ALL method + WebSocket resourceType`。探索式等待多包时默认使用 `fit_count=False`，超时前抓到多少返回多少。
 
 #### `input(locator, text, in_frame=True, clear=True)`
 向输入框填入文本。`clear=True` 先清空。

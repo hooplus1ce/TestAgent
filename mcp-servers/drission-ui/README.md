@@ -7,7 +7,7 @@
 - **"手"与"脑"分离**：本服务器只做确定性浏览器原语（"手"）；测试编排与判断留在技能层（"脑"）。
 - **接管而非启动**：连接用户已在 `9222` 端口打开的 Chrome，不启动新实例、不无头。
 - **脆弱 JS 被封装**：VTable 扫描/列值/坐标计算等依赖 React fiber 与 canvas scenegraph 的逻辑，作为工具的**内部实现**（`frame.run_js(bundled JS)`），AI 调用即得结构化 JSON，不再每轮手写 `eval`。
-- **坐标自动换算**：注入 JS 经 `window.frameElement` 一次算到顶层视口坐标 → 输出可直接点击的落点（Python 侧不再叠加偏移）。
+- **坐标自动换算**：DOM 控件使用 DrissionPage `ele.rect.viewport_click_point` 获取顶层视口坐标；VTable canvas 坐标由内置 JS 一次换算到顶层视口 → 输出可直接点击的落点（调用侧不再叠加 iframe 偏移）。
 - **Token 效率优先**：借鉴 Playwright MCP，工具支持 `filename` 参数将大输出保存到文件，避免占用 LLM 上下文；支持 `DRISSION_UI_CAPS` 环境变量按需启用工具分组。
 
 ## 注册
@@ -161,6 +161,10 @@ get_table_data(filename="table-data.json")
 
 ## 坐标换算（关键）
 
+`scan_page_elements` / `find_elements` 返回的 `cx/cy`、`viewportX/viewportY` 均为**顶层视口坐标**，来源为 DrissionPage 官方元素信息接口 `ele.rect.viewport_click_point`。这个坐标已经包含 iframe 相对顶层视口的偏移，可直接传给 `click_xy` / `hover`。
+
+不要在 iframe 内用 `getBoundingClientRect()` 结果直接点击顶层视口；该结果只表示元素相对 iframe 当前视口的位置，缺少 iframe 自身在顶层页面里的偏移。
+
 `scan_table` / `click_table_cell` / `hover_table_cell` / `resize_table_column` 在 VTable 后端返回的 `viewportX/viewportY` 是**顶层视口坐标**，全部在 JS 端一次算好，Python 不再叠加 iframe 偏移：
 
 ```
@@ -168,6 +172,29 @@ get_table_data(filename="table-data.json")
 ```
 
 JS 通过 `window.frameElement.getBoundingClientRect()` 直接拿到 iframe 在顶层视口的偏移（恒为视口坐标，不受页面滚动影响），再叠加 `.vtable` 元素偏移与 cell 的 `globalAABBBounds`，一次得到可点击坐标。原 puppeteer 版在 iframe 上下文里查询顶层 iframe 元素恒为 null，存在坐标偏移隐患；本版由 JS 端经 `frameElement` 一次算定，Python 侧无需叠加。
+
+## 网络监听（DrissionPage 4.2）
+
+DrissionPage 4.2 中 `listen.start()` 只接收 `urls/is_regex/targets`，`method` 与 `resourceType` 是监听器状态，必须先通过链式 API 设置：
+
+```python
+tab.listen.set_method.GET(only=True).POST()
+tab.listen.set_res_type.all()
+tab.listen.start(urls=["gateway"])
+tab.listen.wait(count=5, timeout=10, fit_count=False)
+```
+
+因此 MCP 工具每次 `listen_start` 都会显式重置为普通 HTTP `GET,POST + ALL resourceType`；`listen_ws_start` 则显式切换为 `ALL method + WebSocket resourceType`，避免继承上一轮监听状态。
+
+## 点击前清理
+
+`click` / `click_xy` / `click_table_cell` 默认会在真正点击前清理上一操作残留的 Ant Design `notification` / `message`：
+
+```python
+click_xy(x=858.8, y=107.6)  # 默认 clean_overlays=True
+```
+
+这只清理短提示，不会关闭业务 modal / confirm。需要关闭业务弹窗时仍显式调用 `close_modal()`，避免误关下一步正要操作的确认框。
 
 ## 冒烟测试
 

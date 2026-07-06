@@ -102,6 +102,77 @@ def mouse_trail(on: bool = True):
             logger.debug("iframe show_trail 失败: %s", e)
     return {"ok": True, "on": on}
 
+
+_CLEAR_TRANSIENT_JS = r"""
+function isVis(el){
+  var r = el.getBoundingClientRect();
+  return r.width > 0 && r.height > 0;
+}
+var closed = [];
+document.querySelectorAll('.ant-notification-notice').forEach(function(n){
+  if (!isVis(n)) return;
+  var m = n.querySelector('.ant-notification-notice-message');
+  var d = n.querySelector('.ant-notification-notice-description');
+  var msg = ((m ? m.textContent : '') || (d ? d.textContent : '')).trim();
+  var btn = n.querySelector('.ant-notification-notice-close');
+  try { if (btn) btn.click(); } catch(e) {}
+  if (n.parentNode) n.parentNode.removeChild(n);
+  closed.push({type: 'notification', message: msg});
+});
+document.querySelectorAll('.ant-message-notice').forEach(function(m){
+  if (!isVis(m)) return;
+  var c = m.querySelector('.ant-message-notice-content');
+  var msg = c ? (c.textContent || '').trim() : '';
+  if (m.parentNode) m.parentNode.removeChild(m);
+  closed.push({type: 'message', message: msg});
+});
+return JSON.stringify(closed);
+"""
+
+
+def _target_contexts(tab):
+    contexts = []
+    try:
+        fr = browser_session.get_active_frame(tab)
+    except Exception:
+        fr = None
+    if fr is not None:
+        contexts.append(("iframe", fr))
+    contexts.append(("top", tab))
+    return contexts
+
+
+def _normalize_js_list(res):
+    if not res:
+        return []
+    if isinstance(res, str):
+        try:
+            res = json.loads(res)
+        except Exception:
+            return []
+    return res if isinstance(res, list) else []
+
+
+def clear_transient_overlays(tab=None):
+    """Remove leftover Ant notification/message toasts before the next click.
+
+    This intentionally does not close business modals/confirm dialogs; tests may
+    need to click their buttons as the next action.
+    """
+    tab = tab or browser_session.get_tab()
+    closed = []
+    errors = []
+    for scope, target in _target_contexts(tab):
+        try:
+            for item in _normalize_js_list(target.run_js(_CLEAR_TRANSIENT_JS)):
+                item["scope"] = scope
+                closed.append(item)
+        except Exception as e:
+            logger.debug("clear transient overlays 失败(%s): %s", scope, e)
+            errors.append("%s: %s" % (scope, e))
+    return {"ok": not errors, "closed": closed, "errors": errors}
+
+
 def close_modal(tab=None):
     """关闭当前残留的弹窗/通知/消息，避免积累在 DOM 中干扰后续操作。
     通知→点×关闭；业务弹窗→点取消或×。
@@ -109,66 +180,46 @@ def close_modal(tab=None):
     返回 {ok, closed:[...], errors:[...]}，调用方可判断清理是否真正成功。
     """
     tab = tab or browser_session.get_tab()
-    fr = browser_session.get_active_frame(tab)
-    target = fr if fr is not None else tab
     closed = []
     errors = []
+    transient = clear_transient_overlays(tab)
+    for item in transient.get("closed", []):
+        closed.append("%s:%s" % (item.get("scope", ""), item.get("type", "")))
+    errors.extend(transient.get("errors", []))
+
     try:
-        # 关闭通知
-        notices = target.eles('c:.ant-notification-notice', timeout=0.5)
-        for n in notices:
-            btn = n.ele('c:.ant-notification-notice-close', timeout=0.3)
-            if btn:
-                btn.click()
-                try:
-                    n.wait.ele_deleted(timeout=2)
-                    closed.append("notification")
-                except Exception:
-                    errors.append("notification: 等待关闭超时")
-
-        # 关闭消息
-        for m in target.eles('c:.ant-message-notice', timeout=0.3):
-            btn = m.ele('c:.ant-message-notice-close', timeout=0.3)
-            try:
-                if btn:
-                    btn.click()
+        for scope, target in _target_contexts(tab):
+            # 关闭业务弹窗（点取消优先，其次×）
+            modal = target.ele('c:.ant-modal-content', timeout=0.5)
+            if modal:
+                cancel = modal.ele('c:.ant-btn:not(.ant-btn-primary)', timeout=0.3)
+                if cancel:
+                    cancel.click()
                 else:
-                    m.run_js("this.remove()")
-                closed.append("message")
-            except Exception as e:
-                errors.append("message: %s" % e)
-
-        # 关闭业务弹窗（点取消优先，其次×）
-        modal = target.ele('c:.ant-modal-content', timeout=0.5)
-        if modal:
-            cancel = modal.ele('c:.ant-btn:not(.ant-btn-primary)', timeout=0.3)
-            if cancel:
-                cancel.click()
-            else:
-                close_x = modal.ele('c:.ant-modal-close', timeout=0.3)
-                if close_x:
-                    close_x.click()
-                else:
-                    errors.append("modal: 无可点击的取消/关闭按钮")
-            if "modal: 无可点击的取消/关闭按钮" not in errors:
-                # 优先等元素从 DOM 删除，超时后降级检查 ant-modal-wrap 是否 display:none
-                try:
-                    modal.wait.ele_deleted(timeout=3)
-                    closed.append("modal")
-                except Exception:
-                    # React 组件卸载不彻底时 ant-modal 残留但 wrap 已隐藏
+                    close_x = modal.ele('c:.ant-modal-close', timeout=0.3)
+                    if close_x:
+                        close_x.click()
+                    else:
+                        errors.append("%s modal: 无可点击的取消/关闭按钮" % scope)
+                if not any(e.startswith("%s modal: 无可点击" % scope) for e in errors):
+                    # 优先等元素从 DOM 删除，超时后降级检查 ant-modal-wrap 是否 display:none
                     try:
-                        wrap_hidden = target.run_js(
-                            "var w=document.querySelector('.ant-modal-wrap');"
-                            "if(!w)return true;"
-                            "return window.getComputedStyle(w).display==='none';"
-                        )
-                        if wrap_hidden:
-                            closed.append("modal")
-                        else:
-                            errors.append("modal: 等待关闭超时")
+                        modal.wait.ele_deleted(timeout=3)
+                        closed.append("%s:modal" % scope)
                     except Exception:
-                        errors.append("modal: 等待关闭超时")
+                        # React 组件卸载不彻底时 ant-modal 残留但 wrap 已隐藏
+                        try:
+                            wrap_hidden = target.run_js(
+                                "var w=document.querySelector('.ant-modal-wrap');"
+                                "if(!w)return true;"
+                                "return window.getComputedStyle(w).display==='none';"
+                            )
+                            if wrap_hidden:
+                                closed.append("%s:modal" % scope)
+                            else:
+                                errors.append("%s modal: 等待关闭超时" % scope)
+                        except Exception:
+                            errors.append("%s modal: 等待关闭超时" % scope)
     except Exception as e:
         logger.debug("close_modal 失败: %s", e)
         errors.append(str(e))
