@@ -1,0 +1,129 @@
+"""能力分组（Capability Tiers）
+
+借鉴 Playwright MCP 的 `--caps` 设计，按场景分组暴露工具，
+避免所有 40+ 工具一次性加载到 LLM 上下文造成 token 浪费。
+
+使用方式：
+  export DRISSION_UI_CAPS=core,vtable,filter  # 启用指定分组
+  export DRISSION_UI_CAPS=all                 # 启用所有分组
+
+分组说明：
+  core      - 核心自动化（默认）：连接、导航、通用交互
+  vtable    - Canvas 表格操作
+  filter    - 筛选区操作
+  observe   - 观察/弹窗检测
+  network   - 网络监听
+  storage   - 存储/浏览器上下文
+  devtools  - 调试/高级功能
+"""
+import os
+
+
+# 能力分组定义
+CAP_GROUPS = {
+    "core": [
+        # 连接与会话
+        "connect", "refresh_session", "check_session",
+        # 导航与 frame
+        "enter_module", "get_active_frame",
+        # 通用 DOM 原语
+        "click", "click_xy", "input", "insert_text", "hover",
+        # 页面理解
+        "scan_page_elements", "find_elements", "find_batch", "dom_tree",
+        # 调试
+        "screenshot", "close_modal",
+        # 新增：浏览器管理（借鉴 Playwright MCP）
+        "browser_tabs",
+        # 新增：滚动操作（借鉴 Playwright MCP）
+        "browser_scroll",
+        # 新增：按键操作（借鉴 Playwright MCP）
+        "browser_press_key",
+        # 新增：元素状态查询（借鉴 Playwright MCP）
+        "browser_get_element_state",
+        # 新增：caps 管理
+        "browser_list_caps",
+    ],
+    "vtable": [
+        # 统一表格 facade
+        "scan_table", "get_table_values", "get_table_data",
+        "click_table_cell", "hover_table_cell", "resize_table_column",
+    ],
+    "filter": [
+        # 筛选区
+        "scan_filter_fields", "select_date_range",
+    ],
+    "observe": [
+        # 观察器
+        "observe_start", "observe_wait",
+    ],
+    "network": [
+        # 网络监听
+        "listen_start", "listen_wait", "listen_stop",
+        "listen_ws_start", "listen_ws_wait",
+    ],
+    "storage": [
+        # 存储/上下文
+        "new_context", "switch_context", "list_contexts",
+        "set_permission",
+    ],
+    "devtools": [
+        # 调试/高级功能
+        "run_js", "mouse_trail", "download_by_browser",
+        # 新增：PDF 导出（借鉴 Playwright MCP）
+        "browser_save_pdf",
+    ],
+}
+
+
+def get_enabled_caps() -> set[str]:
+    """从环境变量获取启用的能力分组"""
+    caps_env = os.environ.get("DRISSION_UI_CAPS", "")
+    if not caps_env:
+        # 默认启用 core + vtable + filter（兼容当前行为）
+        return {"core", "vtable", "filter"}
+    if caps_env.strip().lower() == "all":
+        return set(CAP_GROUPS.keys())
+    return {c.strip() for c in caps_env.split(",") if c.strip()}
+
+
+ENABLED_CAPS = get_enabled_caps()
+
+
+def is_tool_enabled(tool_name: str) -> bool:
+    """检查工具是否在启用的分组中"""
+    if "all" in ENABLED_CAPS:
+        return True
+    for cap, tools in CAP_GROUPS.items():
+        if cap in ENABLED_CAPS and tool_name in tools:
+            return True
+    return False
+
+
+def get_tool_group(tool_name: str) -> str | None:
+    """获取工具所属的分组"""
+    for cap, tools in CAP_GROUPS.items():
+        if tool_name in tools:
+            return cap
+    return None
+
+
+def list_caps() -> dict:
+    """列出所有分组及其包含的工具"""
+    return {
+        "enabled": sorted(ENABLED_CAPS),
+        "available": {
+            cap: tools for cap, tools in CAP_GROUPS.items()
+        },
+    }
+
+
+# 未分类的工具（内部使用，不暴露）
+_INTERNAL_TOOLS = {
+    "expand_filter_area", "reset_to_initial", "dom_overview",
+    "find_static", "get_frame", "mount_vtable", "scan_vtable_columns",
+    "get_column_values", "get_cell_rect", "scroll_to_cell", "click_cell",
+    "resize_column", "detect_modal", "detect_notification",
+    "detect_message", "detect_url_change", "detect_tab_change",
+    "scan_html_table", "get_html_table_values", "click_html_table_cell",
+    "hover_html_table_cell", "get_html_table_data",
+}

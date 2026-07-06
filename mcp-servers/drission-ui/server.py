@@ -26,6 +26,7 @@ import session_auth
 import modal
 import observe
 import html_table
+import caps
 
 # 日志输出到 stderr（stdout 用于 MCP 协议帧，不可污染）
 logging.basicConfig(
@@ -241,7 +242,8 @@ def get_active_frame() -> dict:
 @read_synchronized
 def dom_tree(selector: str = "", max_depth: int = 6, max_children: int = 50,
              text: bool = False, text_limit: int = 100, show_hidden: bool = False,
-             save_path: str = "", save_format: str = "yml", max_chars: int = 8000) -> dict:
+             filename: str = None, save_path: str = "", save_format: str = "yml",
+             max_chars: int = 8000) -> dict:
     """打印页面或元素的 DOM 树结构（结构化 JSON，便于 AI 识别）。
 
     Args:
@@ -251,6 +253,7 @@ def dom_tree(selector: str = "", max_depth: int = 6, max_children: int = 50,
         text: 是否提取元素文本
         text_limit: 每节点文本最大字符数（默认 100），同时整树文本总量限制 5000 字符
         show_hidden: 是否包含 script/style/comment 等隐藏节点（默认 False）
+        filename: 优先保存到指定文件名（相对于截图目录），提供时不返回大文本
         save_path: 指定文件路径则同时写入磁盘（如 "screenshots/dom-tree.yml"）
         save_format: 输出格式，"json" 或 "yml"（默认 yml，更省 token）
         max_chars: 输出字符串最大字符数（默认 8000），超出截断并标 _truncated
@@ -330,6 +333,8 @@ def dom_tree(selector: str = "", max_depth: int = 6, max_children: int = 50,
         tree_dict = json.loads(res) if isinstance(res, str) else res
         result = {"ok": True, "save_format": save_format}
 
+        # 生成文本内容
+        content_str = ""
         if save_format == "yml":
             def _yaml(obj, i=0):
                 p = "  " * i
@@ -357,23 +362,35 @@ def dom_tree(selector: str = "", max_depth: int = 6, max_children: int = 50,
                 else:
                     s = str(obj)
                     return f"'{s}'" if (" " in s or s == "") else s
-            result["tree"] = _yaml(tree_dict)
+            content_str = _yaml(tree_dict)
         else:
-            result["tree"] = tree_dict
+            content_str = json.dumps(tree_dict, ensure_ascii=False, indent=2)
 
-        # 输出截断保护：防止 DOM 树过大撑爆上下文
-        tree_str = result.get("tree", "")
-        if isinstance(tree_str, str) and len(tree_str) > max_chars:
-            result["tree"] = tree_str[:max_chars] + (
-                f"\n...(_truncated at {max_chars} chars, original {len(tree_str)})")
+        # filename 参数优先：直接保存到文件，不返回大文本
+        if filename:
+            full_path = os.path.join(config.SHOT_DIR, filename)
+            os.makedirs(os.path.dirname(full_path) or ".", exist_ok=True)
+            with open(full_path, "w", encoding="utf-8") as f:
+                f.write(content_str)
+            return {
+                "ok": True,
+                "saved_to": os.path.abspath(full_path),
+                "save_format": save_format,
+                "content_length": len(content_str),
+            }
+
+        # 无 filename 时：正常返回，带截断保护
+        result["tree"] = content_str
+        if len(content_str) > max_chars:
+            result["tree"] = content_str[:max_chars] + (
+                f"\n...(_truncated at {max_chars} chars, original {len(content_str)})")
             result["_truncated"] = True
-            result["_original_chars"] = len(tree_str)
+            result["_original_chars"] = len(content_str)
 
         if save_path:
             os.makedirs(os.path.dirname(save_path) or ".", exist_ok=True)
             with open(save_path, "w", encoding="utf-8") as f:
-                f.write(result["tree"] if save_format == "yml"
-                        else json.dumps(tree_dict, ensure_ascii=False, indent=2))
+                f.write(content_str)
             result["saved_to"] = os.path.abspath(save_path)
 
         return result
@@ -384,11 +401,12 @@ def dom_tree(selector: str = "", max_depth: int = 6, max_children: int = 50,
 
 @mcp.tool()
 @read_synchronized
-def scan_page_elements(include_iframe: bool = True, max_items: int = 200) -> dict:
+def scan_page_elements(include_iframe: bool = True, max_items: int = 200, filename: str = None) -> dict:
     """扫描页面所有可见交互控件(button/a/input/role=*/canvas)，递归穿透同源 iframe，
     按 frame 分组返回，含中心坐标和稳定引用 ref ID（e1/e2/...），后续可用 ref 定位。
     进入模块后第一件事。
-    max_items 限制返回元素数（超出截断并标 _truncated），避免吃尽上下文。"""
+    max_items 限制返回元素数（超出截断并标 _truncated），避免吃尽上下文。
+    filename 提供时保存到文件，不返回大 JSON。"""
     tab = browser_session.get_tab()
     script = browser_session.load_js("element-scan.js") + "\nreturn JSON.stringify(scanInteractiveControls());"
     res = tab.run_js(script)
@@ -399,6 +417,19 @@ def scan_page_elements(include_iframe: bool = True, max_items: int = 200) -> dic
             data["elements"] = els[:max_items]
             data["_truncated"] = True
             data["returned"] = max_items
+
+    # filename 参数优先
+    if filename:
+        full_path = os.path.join(config.SHOT_DIR, filename)
+        os.makedirs(os.path.dirname(full_path) or ".", exist_ok=True)
+        with open(full_path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        return {
+            "ok": True,
+            "saved_to": os.path.abspath(full_path),
+            "element_count": len(data.get("elements", []) if isinstance(data, dict) else []),
+        }
+
     return data
 
 
@@ -714,68 +745,119 @@ def _scan_table_html(table_index: int = 0) -> dict:
 
 @mcp.tool()
 @read_synchronized
-def scan_table(kind: str = "auto", max_col: int = 50, table_index: int = 0) -> dict:
-    """统一扫描表格。kind=auto 优先 VTable，失败后回退 HTML Table；返回实际 kind。"""
+def scan_table(kind: str = "auto", max_col: int = 50, table_index: int = 0, filename: str = None) -> dict:
+    """统一扫描表格。kind=auto 优先 VTable，失败后回退 HTML Table；返回实际 kind。
+    filename 提供时保存到文件，不返回大 JSON。"""
     kind = _normalize_table_kind(kind)
     if kind == "vtable":
-        return _scan_table_vtable(max_col)
-    if kind == "html":
-        return _scan_table_html(table_index)
+        result = _scan_table_vtable(max_col)
+    elif kind == "html":
+        result = _scan_table_html(table_index)
+    else:
+        vt = _scan_table_vtable(max_col)
+        if vt.get("ok"):
+            result = vt
+        else:
+            ht = _scan_table_html(table_index)
+            if ht.get("ok") and (ht.get("tables") or []):
+                ht["fallback_from"] = "vtable"
+                ht["vtable_reason"] = vt.get("reason", "")
+                result = ht
+            else:
+                result = {"ok": False, "kind": "auto", "reason": "未识别到 VTable 或 HTML 表格",
+                        "vtable_reason": vt.get("reason", ""), "html_reason": ht.get("reason", "")}
 
-    vt = _scan_table_vtable(max_col)
-    if vt.get("ok"):
-        return vt
-    ht = _scan_table_html(table_index)
-    if ht.get("ok") and (ht.get("tables") or []):
-        ht["fallback_from"] = "vtable"
-        ht["vtable_reason"] = vt.get("reason", "")
-        return ht
-    return {"ok": False, "kind": "auto", "reason": "未识别到 VTable 或 HTML 表格",
-            "vtable_reason": vt.get("reason", ""), "html_reason": ht.get("reason", "")}
+    # filename 参数优先
+    if filename and result.get("ok"):
+        full_path = os.path.join(config.SHOT_DIR, filename)
+        os.makedirs(os.path.dirname(full_path) or ".", exist_ok=True)
+        with open(full_path, "w", encoding="utf-8") as f:
+            json.dump(result, f, ensure_ascii=False, indent=2)
+        return {
+            "ok": True,
+            "saved_to": os.path.abspath(full_path),
+            "kind": result.get("kind"),
+        }
+
+    return result
 
 
 @mcp.tool()
 @read_synchronized
-def get_table_values(column_title: str, kind: str = "auto", raw: bool = False, table_index: int = 0) -> dict:
-    """统一按列标题读取表格列值。kind=auto 优先 VTable，失败后回退 HTML Table。"""
+def get_table_values(column_title: str, kind: str = "auto", raw: bool = False, table_index: int = 0, filename: str = None) -> dict:
+    """统一按列标题读取表格列值。kind=auto 优先 VTable，失败后回退 HTML Table。
+    filename 提供时保存到文件，不返回大 JSON。"""
     kind = _normalize_table_kind(kind)
     if kind == "vtable":
-        return _tag_table_result("vtable", vtable.get_column_values(column_title, raw))
-    if kind == "html":
-        return _tag_table_result("html", html_table.get_html_table_values(column_title, table_index))
+        result = _tag_table_result("vtable", vtable.get_column_values(column_title, raw))
+    elif kind == "html":
+        result = _tag_table_result("html", html_table.get_html_table_values(column_title, table_index))
+    else:
+        vt = _tag_table_result("vtable", vtable.get_column_values(column_title, raw))
+        if vt.get("ok"):
+            result = vt
+        else:
+            ht = _tag_table_result("html", html_table.get_html_table_values(column_title, table_index))
+            if ht.get("ok"):
+                ht["fallback_from"] = "vtable"
+                ht["vtable_reason"] = vt.get("reason", "")
+                result = ht
+            else:
+                result = {"ok": False, "kind": "auto", "reason": "列值读取失败",
+                        "vtable_reason": vt.get("reason", ""), "html_reason": ht.get("reason", "")}
 
-    vt = _tag_table_result("vtable", vtable.get_column_values(column_title, raw))
-    if vt.get("ok"):
-        return vt
-    ht = _tag_table_result("html", html_table.get_html_table_values(column_title, table_index))
-    if ht.get("ok"):
-        ht["fallback_from"] = "vtable"
-        ht["vtable_reason"] = vt.get("reason", "")
-        return ht
-    return {"ok": False, "kind": "auto", "reason": "列值读取失败",
-            "vtable_reason": vt.get("reason", ""), "html_reason": ht.get("reason", "")}
+    # filename 参数优先
+    if filename and result.get("ok"):
+        full_path = os.path.join(config.SHOT_DIR, filename)
+        os.makedirs(os.path.dirname(full_path) or ".", exist_ok=True)
+        with open(full_path, "w", encoding="utf-8") as f:
+            json.dump(result, f, ensure_ascii=False, indent=2)
+        return {
+            "ok": True,
+            "saved_to": os.path.abspath(full_path),
+            "kind": result.get("kind"),
+        }
+
+    return result
 
 
 @mcp.tool()
 @read_synchronized
-def get_table_data(kind: str = "auto", table_index: int = 0) -> dict:
-    """统一读取表格完整数据。HTML Table 支持完整数据；VTable 请优先用 get_table_values。"""
+def get_table_data(kind: str = "auto", table_index: int = 0, filename: str = None) -> dict:
+    """统一读取表格完整数据。HTML Table 支持完整数据；VTable 请优先用 get_table_values。
+    filename 提供时保存到文件，不返回大 JSON。"""
     kind = _normalize_table_kind(kind)
     if kind == "vtable":
-        return {"ok": False, "kind": "vtable",
+        result = {"ok": False, "kind": "vtable",
                 "reason": "VTable 暂不支持完整数据读取，请使用 get_table_values(column_title=...)"}
-    if kind == "html":
-        return _tag_table_result("html", html_table.get_html_table_data(table_index))
+    elif kind == "html":
+        result = _tag_table_result("html", html_table.get_html_table_data(table_index))
+    else:
+        ht = _tag_table_result("html", html_table.get_html_table_data(table_index))
+        if ht.get("ok"):
+            result = ht
+        else:
+            vt = _scan_table_vtable(max_col=20)
+            if vt.get("ok"):
+                result = {"ok": False, "kind": "vtable",
+                        "reason": "检测到 VTable，但暂不支持完整数据读取，请使用 get_table_values(column_title=...)"}
+            else:
+                result = {"ok": False, "kind": "auto", "reason": "未能读取表格完整数据",
+                        "html_reason": ht.get("reason", ""), "vtable_reason": vt.get("reason", "")}
 
-    ht = _tag_table_result("html", html_table.get_html_table_data(table_index))
-    if ht.get("ok"):
-        return ht
-    vt = _scan_table_vtable(max_col=20)
-    if vt.get("ok"):
-        return {"ok": False, "kind": "vtable",
-                "reason": "检测到 VTable，但暂不支持完整数据读取，请使用 get_table_values(column_title=...)"}
-    return {"ok": False, "kind": "auto", "reason": "未能读取表格完整数据",
-            "html_reason": ht.get("reason", ""), "vtable_reason": vt.get("reason", "")}
+    # filename 参数优先
+    if filename and result.get("ok"):
+        full_path = os.path.join(config.SHOT_DIR, filename)
+        os.makedirs(os.path.dirname(full_path) or ".", exist_ok=True)
+        with open(full_path, "w", encoding="utf-8") as f:
+            json.dump(result, f, ensure_ascii=False, indent=2)
+        return {
+            "ok": True,
+            "saved_to": os.path.abspath(full_path),
+            "kind": result.get("kind"),
+        }
+
+    return result
 
 
 @mcp.tool()
@@ -1328,12 +1410,297 @@ def hover_html_table_cell(column_title: str, row: int, table_index: int = 0) -> 
 @read_synchronized
 def get_html_table_data(table_index: int = 0) -> dict:
     """从 DOM 读取 HTML 表格的完整数据（表头 + 所有行）。
-    
+
     列名直接从 <thead> <th> 读取，数据从 <tbody> <tr> 读取，
     列名和数据按 DOM 顺序一一对应，不存在人工对齐错误。
     table_index 指定第几个表格（从 0 开始），默认 0。
     """
     return html_table.get_html_table_data(table_index)
 
+
+# ==================== 能力分组工具 ====================
+
+@mcp.tool()
+@read_synchronized
+def browser_list_caps() -> dict:
+    """列出当前启用的能力分组和可用的工具分组。
+
+    借鉴 Playwright MCP 的 caps 设计，用于减少 LLM 上下文 token 消耗。
+
+    使用方式：
+        export DRISSION_UI_CAPS=core,vtable,filter  # 启用指定分组
+        export DRISSION_UI_CAPS=all                 # 启用所有分组
+    """
+    return {
+        "ok": True,
+        "enabled_caps": sorted(caps.ENABLED_CAPS),
+        "available_caps": {
+            cap: tools for cap, tools in caps.CAP_GROUPS.items()
+        },
+        "env_hint": "Set DRISSION_UI_CAPS environment variable to control enabled tools",
+    }
+
+
+# ==================== 新增：滚动操作工具（借鉴 Playwright MCP） ====================
+
+@mcp.tool()
+@write_synchronized
+def browser_scroll(direction: str = 'down', pixel: int = 300, locator: str = None, x: int = None, y: int = None) -> dict:
+    """滚动操作工具（借鉴 Playwright MCP）
+
+    Args:
+        direction: 'top'|'bottom'|'half'|'up'|'down'|'left'|'right'|'see'|'location'
+        pixel: 滚动像素数（用于 up/down/left/right，默认 300）
+        locator: 目标元素（用于 see 方向，滚动到看见该元素）
+        x/y: 滚动位置（用于 location 方向）
+
+    Returns:
+        滚动操作结果
+    """
+    tab = browser_session.get_tab()
+
+    try:
+        if direction == 'top':
+            tab.scroll.to_top()
+        elif direction == 'bottom':
+            tab.scroll.to_bottom()
+        elif direction == 'half':
+            tab.scroll.to_half()
+        elif direction == 'up':
+            tab.scroll.up(pixel)
+        elif direction == 'down':
+            tab.scroll.down(pixel)
+        elif direction == 'left':
+            tab.scroll.left(pixel)
+        elif direction == 'right':
+            tab.scroll.right(pixel)
+        elif direction == 'see' and locator:
+            ele = browser_session.find(locator)
+            if ele:
+                tab.scroll.to_see(ele)
+            else:
+                return {'ok': False, 'reason': f'Element not found: {locator}'}
+        elif direction == 'location' and x is not None and y is not None:
+            tab.scroll.to_location(x, y)
+        else:
+            return {'ok': False, 'reason': 'Invalid direction or missing parameters'}
+
+        return {'ok': True, 'direction': direction, 'pixel': pixel if direction in ('up', 'down', 'left', 'right') else None}
+    except Exception as e:
+        logger.error(f"Scroll error: {e}")
+        return {'ok': False, 'reason': str(e)}
+
+
+# ==================== 新增：标签页管理工具（借鉴 Playwright MCP） ====================
+
+@mcp.tool()
+@write_synchronized
+def browser_tabs(action: str = 'list', index: int = None, url: str = None) -> dict:
+    """标签页管理工具（借鉴 Playwright MCP）
+
+    Args:
+        action: 'list'|'new'|'close'|'select'
+        index: 标签页索引（用于 close/select）
+        url: 要导航的 URL（用于 new）
+
+    Returns:
+        标签页操作结果
+    """
+    browser = browser_session.get_browser()
+
+    try:
+        if action == 'list':
+            tabs = []
+            current_tab = browser_session.get_tab()
+            for i, tid in enumerate(browser.tab_ids):
+                t = browser.get_tab(tid)
+                tabs.append({
+                    'index': i,
+                    'tab_id': tid,
+                    'url': t.url,
+                    'title': t.title,
+                    'is_current': t.tab_id == current_tab.tab_id
+                })
+            return {'ok': True, 'tabs': tabs}
+
+        elif action == 'new':
+            new_tab = browser.new_tab(url)
+            # 更新当前活动 tab
+            browser_session._tab = new_tab
+            return {'ok': True, 'url': new_tab.url, 'tab_id': new_tab.tab_id}
+
+        elif action == 'close' and index is not None:
+            tabs = browser.tab_ids
+            if 0 <= index < len(tabs):
+                browser.close_tabs(tabs[index])
+                # 如果关闭了当前 tab，切换到第一个
+                current_tab = browser_session.get_tab()
+                if current_tab and current_tab.tab_id == tabs[index]:
+                    if browser.tab_ids:
+                        browser_session._tab = browser.get_tab(browser.tab_ids[0])
+                return {'ok': True}
+            else:
+                return {'ok': False, 'reason': f'Invalid index: {index}, total: {len(tabs)}'}
+
+        elif action == 'select' and index is not None:
+            tabs = browser.tab_ids
+            if 0 <= index < len(tabs):
+                selected_tab = browser.get_tab(tabs[index])
+                selected_tab.activate()
+                browser_session._tab = selected_tab
+                return {'ok': True, 'url': selected_tab.url, 'title': selected_tab.title}
+            else:
+                return {'ok': False, 'reason': f'Invalid index: {index}, total: {len(tabs)}'}
+
+        else:
+            return {'ok': False, 'reason': f'Invalid action: {action}'}
+    except Exception as e:
+        logger.error(f"Browser tabs error: {e}")
+        return {'ok': False, 'reason': str(e)}
+
+
+# ==================== 新增：PDF 导出工具（借鉴 Playwright MCP） ====================
+
+@mcp.tool()
+@write_synchronized
+def browser_save_pdf(path: str = None, filename: str = None) -> dict:
+    """将当前页面保存为 PDF（借鉴 Playwright MCP）
+
+    Args:
+        path: 保存目录路径（可选，默认使用截图目录）
+        filename: PDF 文件名（可选，默认使用时间戳）
+
+    Returns:
+        保存的文件路径
+    """
+    import time
+    from pathlib import Path
+
+    try:
+        tab = browser_session.get_tab()
+
+        # 确定保存路径
+        save_dir = path or config.SHOT_DIR
+        os.makedirs(save_dir, exist_ok=True)
+
+        # 确定文件名
+        pdf_filename = filename or f'page_{int(time.time())}.pdf'
+        if not pdf_filename.endswith('.pdf'):
+            pdf_filename += '.pdf'
+
+        save_path = os.path.join(save_dir, pdf_filename)
+
+        # 使用 DrissionPage 保存 PDF
+        result_path = tab.save(path=save_dir, name=pdf_filename, as_pdf=True)
+
+        return {
+            'ok': True,
+            'path': result_path,
+            'dir': save_dir,
+            'filename': pdf_filename
+        }
+    except Exception as e:
+        logger.error(f"Save PDF error: {e}")
+        return {'ok': False, 'reason': str(e)}
+
+
+# ==================== 新增：按键操作工具（借鉴 Playwright MCP） ====================
+
+@mcp.tool()
+@write_synchronized
+def browser_press_key(key: str, modifiers: list = None, interval: float = 0.01) -> dict:
+    """按键操作工具（借鉴 Playwright MCP）
+
+    Args:
+        key: 按键名称或字符，如 'Enter'|'Escape'|'Tab'|'a'|'1'
+            支持的特殊键：'Ctrl'|'Alt'|'Shift'|'Meta'|'Enter'|'Escape'|'Tab'|
+            'Backspace'|'Delete'|'Home'|'End'|'PageUp'|'PageDown'|
+            'ArrowUp'|'ArrowDown'|'ArrowLeft'|'ArrowRight'
+        modifiers: 修饰键列表，如 ['Ctrl', 'Shift'] 表示同时按住这些键
+        interval: 按键间隔（秒），仅在输入多字符时有效
+
+    Returns:
+        按键操作结果
+    """
+    tab = browser_session.get_tab()
+
+    try:
+        # 如果是单字符且没有修饰键，用 actions.type()
+        if len(key) == 1 and not modifiers:
+            tab.actions.type(key, interval=interval)
+            return {'ok': True, 'key': key}
+
+        # 如果有修饰键，先按下修饰键
+        if modifiers:
+            for mod in modifiers:
+                tab.actions.key_down(mod)
+
+        # 按下并释放主键
+        tab.actions.key_down(key)
+        tab.actions.key_up(key)
+
+        # 释放修饰键
+        if modifiers:
+            for mod in modifiers:
+                tab.actions.key_up(mod)
+
+        return {
+            'ok': True,
+            'key': key,
+            'modifiers': modifiers
+        }
+    except Exception as e:
+        logger.error(f"Press key error: {e}")
+        return {'ok': False, 'reason': str(e)}
+
+
+# ==================== 新增：元素状态查询工具（借鉴 Playwright MCP） ====================
+
+@mcp.tool()
+@read_synchronized
+def browser_get_element_state(locator: str, state: str = None) -> dict:
+    """获取元素状态（借鉴 Playwright MCP）
+
+    Args:
+        locator: 元素定位符
+        state: 要查询的状态（可选），如 'displayed'|'hidden'|'enabled'|'disabled'|
+            'selected'|'checked'|'clickable'|'covered'
+            如果不指定，返回所有可用状态
+
+    Returns:
+        元素状态字典
+    """
+    ele = browser_session.find(locator)
+    if not ele:
+        return {'ok': False, 'reason': f'Element not found: {locator}'}
+
+    try:
+        states = {
+            'displayed': ele.states.is_displayed,
+            'hidden': ele.states.is_hidden,
+            'enabled': ele.states.is_enabled,
+            'disabled': ele.states.is_disabled,
+            'selected': ele.states.is_selected,
+            'checked': ele.states.is_checked,
+            'clickable': ele.states.is_clickable,
+            'covered': ele.states.is_covered,
+        }
+
+        if state:
+            if state not in states:
+                return {
+                    'ok': False,
+                    'reason': f'Invalid state: {state}',
+                    'available_states': list(states.keys())
+                }
+            return {'ok': True, 'locator': locator, 'state': state, 'value': states[state]}
+
+        return {'ok': True, 'locator': locator, 'states': states}
+    except Exception as e:
+        logger.error(f"Get element state error: {e}")
+        return {'ok': False, 'reason': str(e)}
+
+
 if __name__ == "__main__":
+    logger.info(f"Starting drission-ui MCP server, enabled caps: {sorted(caps.ENABLED_CAPS)}")
     mcp.run()

@@ -1,0 +1,23 @@
+{
+  "_comment": "drission-ui MCP 服务器配置文件示例（P1 功能，尚未完全实现）",
+  "browser": {
+    "port": 9222,
+    "target_hint": "诺贝科技",
+    "headless": false,
+    "user_data_dir": "~/.drission-ui/workspace-default"
+  },
+  "scm": {
+    "url": "https://demo19-scm.hoolinks.com/scm-static/scm-admin/scm-admin/",
+    "base_url": "https://demo19-scm.hoolinks.com",
+    "login_page": "https://demo19-scm.hoolinks.com/meLogin.do?",
+    "username": "Hooplus1ce",
+    "password": "Ac123456",
+    "cookie_domain": ".demo19-scm.hoolinks.com",
+    "access_domain": ".hoolinks.com"
+  },
+  "paths": {
+    "shot_dir": "~/.drission-ui-shots",
+    "chrome_path": ""
+  },
+  "caps": ["core", "vtable", "filter"]
+}
