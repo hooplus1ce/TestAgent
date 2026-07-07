@@ -41,13 +41,13 @@ PRIORITY_STYLES = {
 }
 # 企业标准测试用例Excel列定义（19列）
 HEADERS_19 = [
-    "用例编号", "用例标题", "级别", "验证点", "一级模块", "二级模块",
-    "测试类型", "功能", "前置条件", "测试步骤", "测试数据", "预期结果",
+    "用例编号", "用例标题", "级别", "一级模块", "二级模块", "测试类型",
+    "功能", "验证点", "前置条件", "测试步骤", "测试数据", "预期结果",
     "测试结果", "执行人", "执行时间", "编写人", "编写时间", "备注", "自动化建议"
 ]
 
 # 列宽设置（优化可读性，测试数据和预期结果加宽）
-COL_WIDTHS = [18, 42, 12, 42, 18, 18, 18, 12, 50, 44, 44, 60, 10, 10, 12, 12, 12, 0, 58]
+COL_WIDTHS = [18, 42, 12, 18, 18, 18, 12, 42, 50, 44, 44, 60, 10, 10, 12, 12, 12, 0, 58]
 
 CASE_ID_RE = re.compile(r"^([A-Za-z]+)(\d+)$")
 
@@ -161,7 +161,7 @@ def build_excel(module_info, test_cases, output_dir=".", custom_filename=None):
     author = module_info.get("author", "")
     write_date = date.today().isoformat()
     
-    # 写入用例数据（列顺序与test.xlsx完全一致）
+    # 写入用例数据（列顺序与 HEADERS_19 完全一致）
     for case in test_cases:
         case_id = f"{prefix}_{pinyin}_{case['case_id']}"
         
@@ -186,11 +186,11 @@ def build_excel(module_info, test_cases, output_dir=".", custom_filename=None):
             case_id,                    # 1. 用例编号
             case["case_title"],         # 2. 用例标题
             case["priority"],           # 3. 级别
-            case["verify_point"],       # 4. 验证点
-            level1,                     # 5. 一级模块
-            level2,                     # 6. 二级模块
-            case["test_type"],          # 7. 测试类型
-            case["function"],           # 8. 功能
+            level1,                     # 4. 一级模块
+            level2,                     # 5. 二级模块
+            case["test_type"],          # 6. 测试类型
+            case["function"],           # 7. 功能
+            case["verify_point"],       # 8. 验证点
             preconditions,              # 9. 前置条件
             test_steps,                 # 10. 测试步骤
             test_data,                  # 11. 测试数据（表单数据格式）
@@ -209,7 +209,7 @@ def build_excel(module_info, test_cases, output_dir=".", custom_filename=None):
             cell = ws1.cell(row=row_idx, column=col_idx)
             cell.border = thin_border
             # 居中对齐的列（第3列是级别）
-            if col_idx in (1, 3, 5, 6, 7, 8, 13, 14, 15, 16, 17):
+            if col_idx in (1, 3, 4, 5, 6, 7, 13, 14, 15, 16, 17):
                 cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
             else:
                 cell.alignment = Alignment(horizontal="left", vertical="center", wrap_text=True)
