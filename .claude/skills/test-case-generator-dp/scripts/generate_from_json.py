@@ -8,6 +8,7 @@
 import os
 import json
 import glob
+import re
 from datetime import date
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
@@ -48,6 +49,35 @@ HEADERS_19 = [
 # 列宽设置（优化可读性，测试数据和预期结果加宽）
 COL_WIDTHS = [18, 42, 12, 42, 18, 18, 18, 12, 50, 44, 44, 60, 10, 10, 12, 12, 12, 0, 58]
 
+CASE_ID_RE = re.compile(r"^([A-Za-z]+)(\d+)$")
+
+
+def natural_case_id_key(case_id):
+    """用例编号自然排序：F2 在 F10 前。"""
+    text = str(case_id or "")
+    match = CASE_ID_RE.match(text)
+    if match:
+        return (match.group(1), int(match.group(2)), text)
+    return (text, 10**9, text)
+
+
+def sort_test_cases(test_cases):
+    """按功能维度稳定排序，保证相同功能连续写入 Excel。"""
+    function_order = {}
+    for case in sorted(test_cases, key=lambda item: item.get("_source_order", 0)):
+        function_name = case.get("function", "")
+        if function_name not in function_order:
+            function_order[function_name] = len(function_order)
+
+    return sorted(
+        test_cases,
+        key=lambda case: (
+            function_order.get(case.get("function", ""), len(function_order)),
+            natural_case_id_key(case.get("case_id", "")),
+            case.get("_source_order", 0),
+        ),
+    )
+
 def apply_priority_style(cell):
     """应用优先级颜色样式"""
     style = PRIORITY_STYLES.get(cell.value)
@@ -84,24 +114,31 @@ def load_testcases_from_json(json_files):
     """从多个JSON文件加载测试用例"""
     all_cases = []
     module_info = None
-    
-    for fpath in json_files:
+
+    for fpath in sorted(json_files):
         with open(fpath, 'r', encoding='utf-8') as f:
             data = json.load(f)
-        
+
         # 取第一个文件的module_info作为基准
         if module_info is None and "module_info" in data:
             module_info = data["module_info"]
-        
-        if "test_cases" in data:
-            all_cases.extend(data["test_cases"])
-            print(f"✅ 加载: {os.path.basename(fpath)} → {len(data['test_cases'])} 条用例")
-    
+
+        cases = data.get("test_cases", [])
+        for case in cases:
+            loaded_case = dict(case)
+            loaded_case["_source_order"] = len(all_cases)
+            all_cases.append(loaded_case)
+
+        if cases:
+            print(f"✅ 加载: {os.path.basename(fpath)} → {len(cases)} 条用例")
+
     return module_info, all_cases
 
 
 def build_excel(module_info, test_cases, output_dir=".", custom_filename=None):
     """构建Excel文件"""
+    test_cases = sort_test_cases(test_cases)
+
     wb = Workbook()
     
     # ===================== Sheet 1: 测试用例 =====================

@@ -31,6 +31,12 @@
 
 `generate_from_json.py` 中 `HEADERS_19` 数组顺序 = 上表 A→S 顺序，**一一对应，无错位**。AI 在 Phase 4 写入项目级 `test_cases/<MODULE_PINYIN>/*.json` 后，由 `generate_from_json.py` 将 JSON 字段映射到 Excel：
 
+## 排序约定（Excel 写入前强制执行）
+
+`function` 是复验人员从上到下执行用例的功能维度分组键。导出器必须在写入 Excel 前执行稳定排序：先按排序后的 JSON 文件中 `function` 首次出现顺序分组，保证相同 `function` 的用例连续；组内再按 `case_id` 自然序和原始 JSON 顺序排序。生成 JSON 时必须保持同一功能名称完全一致，不得把同一功能写成多个近义名称。
+
+JSON 示例：
+
 ```json
 {
   "case_id": "F001",

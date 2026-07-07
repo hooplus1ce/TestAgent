@@ -111,10 +111,12 @@ observe_wait(timeout=8)
 
 ### Phase 4 — Excel 导出
 
-1. 将探索产物按分类追加到项目级 `test_cases/<MODULE_PINYIN>/*.json`
-2. MUST 按视觉布局排序：筛选区(F) → 页签/按钮(I) → 表格交互(I) → 页面级(P)
-3. 用 `uv run python .claude/skills/test-case-generator-dp/scripts/generate_from_json.py test_cases/<MODULE_PINYIN>/*.json` 导出 Excel
-4. 告知用户文件路径
+1. 将探索产物按分类追加到项目级 `test_cases/<MODULE_PINYIN>/*.json`，文件名必须带两位序号（如 `01_筛选查询类.json`），作为功能首次出现顺序的稳定来源。
+2. 每条 JSON 用例的 `function` 字段必须填写稳定中文功能名；同一功能必须完全同名，禁止混用「查询」/「筛选查询」/「搜索」这类近义别名。
+3. 导出 Excel 前必须按功能维度稳定排序：以排序后 JSON 文件中的首次出现顺序确定功能组顺序，相同 `function` 的用例连续写入；同一功能组内按 `case_id` 自然序 + 原始顺序排序。
+4. MUST 按视觉布局安排 JSON 文件序号：筛选区(F) → 页签/按钮(I/B) → 表格交互(T/I) → 页面级(P/D/W)。导出器只负责稳定分组，不依赖人工手动拖动 Excel 行。
+5. 用 `uv run python .claude/skills/test-case-generator-dp/scripts/generate_from_json.py test_cases/<MODULE_PINYIN>/*.json` 导出 Excel
+6. 告知用户文件路径
 
 新流程禁止把用例硬编码进 Python。用例数据必须先沉淀为 JSON，再由通用导出器生成 Excel。
 
