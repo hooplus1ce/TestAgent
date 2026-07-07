@@ -13,6 +13,55 @@ import browser_session
 logger = logging.getLogger("drission-ui")
 
 
+_VISIBLE_ELEMENT_JS = r"""
+function isVisible(el){
+  if (!el || !el.isConnected) return false;
+  var cur = el;
+  while (cur && cur.nodeType === 1) {
+    var s = window.getComputedStyle(cur);
+    if (s.display === 'none' || s.visibility === 'hidden' || s.visibility === 'collapse') {
+      return false;
+    }
+    cur = cur.parentElement;
+  }
+  var r = el.getBoundingClientRect();
+  return r.width > 0 && r.height > 0;
+}
+"""
+
+
+_VISIBLE_MODAL_STATE_JS = _VISIBLE_ELEMENT_JS + r"""
+var m = document.querySelector('.ant-modal-content');
+var w = m ? (m.closest('.ant-modal-wrap') || document.querySelector('.ant-modal-wrap')) : null;
+return JSON.stringify({visible: !!(m && isVisible(m) && (!w || isVisible(w)))});
+"""
+
+
+def _parse_json(res):
+    if res is None:
+        return None
+    if isinstance(res, str):
+        try:
+            return json.loads(res)
+        except Exception:
+            return None
+    return res
+
+
+def _modal_visibility(target, modal_ele):
+    """Return False for hidden/closed modal residue, True for visible, None if unknown."""
+    try:
+        info = _parse_json(target.run_js(_VISIBLE_MODAL_STATE_JS))
+        if isinstance(info, dict) and "visible" in info:
+            return bool(info["visible"])
+    except Exception:
+        pass
+    try:
+        return bool(modal_ele.states.is_displayed)
+    except Exception:
+        return None
+
+
 def _detect_in_target(target):
     """用 JS 检测 target 自身文档内的弹窗（document.querySelector 不递归 iframe，scope 精确）。
 
@@ -24,11 +73,23 @@ def _detect_in_target(target):
     """
     try:
         res = target.run_js(r"""
-        function isVis(el){ var r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; }
+        function isVis(el){
+            if (!el || !el.isConnected) return false;
+            var cur = el;
+            while (cur && cur.nodeType === 1) {
+                var s = window.getComputedStyle(cur);
+                if (s.display === 'none' || s.visibility === 'hidden' || s.visibility === 'collapse') {
+                    return false;
+                }
+                cur = cur.parentElement;
+            }
+            var r = el.getBoundingClientRect();
+            return r.width > 0 && r.height > 0;
+        }
         var m = document.querySelector('.ant-modal-content');
         if (m) {
-            var w = document.querySelector('.ant-modal-wrap');
-            var wrapHidden = !w || window.getComputedStyle(w).display === 'none';
+            var w = m.closest('.ant-modal-wrap') || document.querySelector('.ant-modal-wrap');
+            var wrapHidden = w && !isVis(w);
             if (!wrapHidden && isVis(m)) {
                 var isConfirm = !!m.querySelector('.ant-confirm-body');
                 var title = m.querySelector('.ant-modal-title');
@@ -55,7 +116,7 @@ def _detect_in_target(target):
         }
         return JSON.stringify({type:'none'});
         """)
-        d = json.loads(res) if isinstance(res, str) else res
+        d = _parse_json(res)
         return d if isinstance(d, dict) else {"type": "none"}
     except Exception:
         return {"type": "none"}
@@ -103,10 +164,9 @@ def mouse_trail(on: bool = True):
     return {"ok": True, "on": on}
 
 
-_CLEAR_TRANSIENT_JS = r"""
+_CLEAR_TRANSIENT_JS = _VISIBLE_ELEMENT_JS + r"""
 function isVis(el){
-  var r = el.getBoundingClientRect();
-  return r.width > 0 && r.height > 0;
+  return isVisible(el);
 }
 var closed = [];
 document.querySelectorAll('.ant-notification-notice').forEach(function(n){
@@ -176,6 +236,7 @@ def clear_transient_overlays(tab=None):
 def close_modal(tab=None):
     """关闭当前残留的弹窗/通知/消息，避免积累在 DOM 中干扰后续操作。
     通知→点×关闭；业务弹窗→点取消或×。
+    已隐藏的残留弹窗（如 display:none 的浮层 DOM）视为已关闭，不再尝试点击。
     使用 DrissionPage 原生方法 + wait.ele_deleted 等待关闭完成。
     返回 {ok, closed:[...], errors:[...]}，调用方可判断清理是否真正成功。
     """
@@ -192,6 +253,9 @@ def close_modal(tab=None):
             # 关闭业务弹窗（点取消优先，其次×）
             modal = target.ele('c:.ant-modal-content', timeout=0.5)
             if modal:
+                visible = _modal_visibility(target, modal)
+                if visible is False:
+                    continue
                 cancel = modal.ele('c:.ant-btn:not(.ant-btn-primary)', timeout=0.3)
                 if cancel:
                     cancel.click()

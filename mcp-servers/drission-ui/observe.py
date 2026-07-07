@@ -67,7 +67,32 @@ function classify(el){
   }
   return null;
 }
-function isVis(el){ var r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; }
+function isVis(el){
+  if (!el || !el.isConnected) return false;
+  var cur = el;
+  while (cur && cur.nodeType === 1) {
+    var s = window.getComputedStyle(cur);
+    if (s.display === 'none' || s.visibility === 'hidden' || s.visibility === 'collapse') {
+      return false;
+    }
+    cur = cur.parentElement;
+  }
+  var r = el.getBoundingClientRect();
+  return r.width > 0 && r.height > 0;
+}
+function signalFromNode(n){
+  if (!n || n.nodeType !== 1) return null;
+  for (var k=0;k<SELS.length;k++){
+    if (n.matches && n.matches(SELS[k]) && isVis(n)) return classify(n);
+  }
+  if (n.querySelector) {
+    for (var k=0;k<SELS.length;k++){
+      var e = n.querySelector(SELS[k]);
+      if (e && isVis(e)) return classify(e);
+    }
+  }
+  return null;
+}
 // 初始扫描：捕获 observer 安装前已存在的信号（如点击与观察之间已渲染完的 toast）
 for (var i=0;i<SELS.length;i++){
   var els = document.querySelectorAll(SELS[i]);
@@ -79,20 +104,25 @@ for (var i=0;i<SELS.length;i++){
 }
 var obs = new MutationObserver(function(muts){
   for (var i=0;i<muts.length;i++){
+    var sig = null;
+    if (muts[i].type === 'attributes') {
+      sig = signalFromNode(muts[i].target);
+      if (sig) { sig.elapsedMs = Date.now() - window.__du_t0; window.__du_signals.push(sig); continue; }
+    }
     var added = muts[i].addedNodes;
     for (var j=0;j<added.length;j++){
       var n = added[j];
-      if (n.nodeType !== 1) continue;
-      var sig = null;
-      for (var k=0;k<SELS.length;k++){ if (n.matches && n.matches(SELS[k])) { sig = classify(n); break; } }
-      if (!sig && n.querySelector) {
-        for (var k=0;k<SELS.length;k++){ var e = n.querySelector(SELS[k]); if (e) { sig = classify(e); break; } }
-      }
+      sig = signalFromNode(n);
       if (sig) { sig.elapsedMs = Date.now() - window.__du_t0; window.__du_signals.push(sig); }
     }
   }
 });
-obs.observe(document.body, {childList:true, subtree:true});
+obs.observe(document.body, {
+  childList:true,
+  subtree:true,
+  attributes:true,
+  attributeFilter:['style','class','hidden','aria-hidden']
+});
 window.__du_obs = obs;
 return JSON.stringify({installed:true, scope:scope, initialCount: window.__du_signals.length});
 """

@@ -54,6 +54,10 @@ class _FakeTarget:
     def run_js(self, script):
         if self._run_js_raises:
             raise RuntimeError("js error")
+        if callable(self._run_js_return):
+            return self._run_js_return(script)
+        if isinstance(self._run_js_return, list):
+            return self._run_js_return.pop(0) if self._run_js_return else None
         return self._run_js_return
 
 
@@ -73,7 +77,7 @@ def test_modal_wrap_hidden_returns_none():
     import modal
     t = _FakeTarget(
         elements={"c:.ant-modal-content": _FakeEle(text="某弹窗")},
-        run_js_return=True,  # wrap display:none
+        run_js_return='{"type":"none"}',  # wrap display:none
     )
     assert modal._detect_in_target(t) == {"type": "none"}
 
@@ -83,7 +87,7 @@ def test_modal_ghost_not_displayed_returns_none():
     import modal
     t = _FakeTarget(
         elements={"c:.ant-modal-content": _FakeEle(is_displayed=False)},
-        run_js_return=False,  # wrap 可见，进入 is_displayed 检查
+        run_js_return='{"type":"none"}',
     )
     assert modal._detect_in_target(t) == {"type": "none"}
 
@@ -91,17 +95,10 @@ def test_modal_ghost_not_displayed_returns_none():
 def test_confirm_modal_classified():
     """含 ant-confirm-body → type=confirm，携带 title/content/buttons/hasClose。"""
     import modal
-    modal_el = _FakeEle(
-        is_displayed=True,
-        children={
-            "c:.ant-modal-title": _FakeEle(text="确认删除"),
-            "c:.ant-modal-body": _FakeEle(text="确定要删除吗？"),
-            "c:.ant-modal-close": _FakeEle(),
-            "c:.ant-confirm-body": _FakeEle(),
-        },
-        eles_list={"c:.ant-btn": [_FakeEle(text="取消"), _FakeEle(text="确定")]},
-    )
-    t = _FakeTarget(elements={"c:.ant-modal-content": modal_el}, run_js_return=False)
+    t = _FakeTarget(run_js_return=(
+        '{"type":"confirm","title":"确认删除","content":"确定要删除吗？",'
+        '"buttons":["取消","确定"],"hasClose":true}'
+    ))
     info = modal._detect_in_target(t)
     assert info["type"] == "confirm"
     assert info["title"] == "确认删除"
@@ -113,14 +110,10 @@ def test_confirm_modal_classified():
 def test_interactive_modal_when_no_confirm_body():
     """modal 无 ant-confirm-body → type=interactive。"""
     import modal
-    modal_el = _FakeEle(
-        is_displayed=True,
-        children={
-            "c:.ant-modal-title": _FakeEle(text="编辑"),
-            "c:.ant-modal-body": _FakeEle(text="表单"),
-        },
-    )
-    t = _FakeTarget(elements={"c:.ant-modal-content": modal_el}, run_js_return=False)
+    t = _FakeTarget(run_js_return=(
+        '{"type":"interactive","title":"编辑","content":"表单",'
+        '"buttons":[],"hasClose":false}'
+    ))
     info = modal._detect_in_target(t)
     assert info["type"] == "interactive"
     assert info["title"] == "编辑"
@@ -129,11 +122,7 @@ def test_interactive_modal_when_no_confirm_body():
 def test_notification_detected():
     """ant-notification-notice → type=notification，message 取 message 字段。"""
     import modal
-    notif = _FakeEle(children={
-        "c:.ant-notification-notice-message": _FakeEle(text="保存成功"),
-        "c:.ant-notification-notice-description": _FakeEle(text="详情"),
-    })
-    t = _FakeTarget(elements={"c:.ant-notification-notice": notif})
+    t = _FakeTarget(run_js_return='{"type":"notification","message":"保存成功"}')
     info = modal._detect_in_target(t)
     assert info["type"] == "notification"
     assert info["message"] == "保存成功"
@@ -142,10 +131,7 @@ def test_notification_detected():
 def test_notification_falls_back_to_description():
     """message 元素缺失时，notification 的 message 取 description。"""
     import modal
-    notif = _FakeEle(children={
-        "c:.ant-notification-notice-description": _FakeEle(text="仅描述"),
-    })
-    t = _FakeTarget(elements={"c:.ant-notification-notice": notif})
+    t = _FakeTarget(run_js_return='{"type":"notification","message":"仅描述"}')
     info = modal._detect_in_target(t)
     assert info["type"] == "notification"
     assert info["message"] == "仅描述"
@@ -154,8 +140,7 @@ def test_notification_falls_back_to_description():
 def test_message_notice_detected():
     """ant-message-notice → type=message。"""
     import modal
-    msg = _FakeEle(children={"c:.ant-message-notice-content": _FakeEle(text="操作成功")})
-    t = _FakeTarget(elements={"c:.ant-message-notice": msg})
+    t = _FakeTarget(run_js_return='{"type":"message","message":"操作成功"}')
     info = modal._detect_in_target(t)
     assert info["type"] == "message"
     assert info["message"] == "操作成功"
@@ -166,11 +151,7 @@ def test_message_notice_detected():
 def test_detect_modal_iframe_scoped():
     """iframe 内有业务弹窗 → scope=iframe，不查 top。"""
     import modal
-    iframe_t = _FakeTarget(elements={
-        "c:.ant-message-notice": _FakeEle(children={
-            "c:.ant-message-notice-content": _FakeEle(text="iframe内消息"),
-        }),
-    })
+    iframe_t = _FakeTarget(run_js_return='{"type":"message","message":"iframe内消息"}')
     with patch.object(modal.browser_session, "get_tab_ro", return_value=_FakeTarget()), \
          patch.object(modal.browser_session, "get_active_frame_ro", return_value=iframe_t):
         info = modal.detect_modal()
@@ -181,8 +162,9 @@ def test_detect_modal_iframe_scoped():
 def test_detect_modal_top_confirm_renamed():
     """iframe 无弹窗、top 有 confirm → 重命名为 system_confirm，scope=top。"""
     import modal
-    top_modal = _FakeEle(is_displayed=True, children={"c:.ant-confirm-body": _FakeEle()})
-    top_t = _FakeTarget(elements={"c:.ant-modal-content": top_modal}, run_js_return=False)
+    top_t = _FakeTarget(run_js_return=(
+        '{"type":"confirm","title":"","content":"","buttons":[],"hasClose":false}'
+    ))
     with patch.object(modal.browser_session, "get_tab_ro", return_value=top_t), \
          patch.object(modal.browser_session, "get_active_frame_ro", return_value=None):
         info = modal.detect_modal()
@@ -200,18 +182,15 @@ def test_detect_modal_none_when_clean():
     assert "waited" in info
 
 
-def test_detect_modal_top_notification_ignored():
-    """top 层的 notification/message 不算系统确认弹窗，不作为 top 返回（只有 confirm 才拦截）。"""
+def test_detect_modal_top_notification_scoped():
+    """top 层 notification/message 也作为可观察反馈返回。"""
     import modal
-    top_t = _FakeTarget(elements={
-        "c:.ant-notification-notice": _FakeEle(children={
-            "c:.ant-notification-notice-message": _FakeEle(text="顶部通知"),
-        }),
-    })
+    top_t = _FakeTarget(run_js_return='{"type":"notification","message":"顶部通知"}')
     with patch.object(modal.browser_session, "get_tab_ro", return_value=top_t), \
          patch.object(modal.browser_session, "get_active_frame_ro", return_value=None):
         info = modal.detect_modal()
-    assert info["type"] == "none"
+    assert info["type"] == "notification"
+    assert info["scope"] == "top"
 
 
 # ==================== close_modal ====================
@@ -222,6 +201,24 @@ def test_close_modal_nothing_to_close():
     with patch.object(modal.browser_session, "get_tab", return_value=_FakeTarget()), \
          patch.object(modal.browser_session, "get_active_frame", return_value=None):
         result = modal.close_modal()
+    assert result["ok"] is True
+    assert result["closed"] == []
+    assert result["errors"] == []
+
+
+def test_close_modal_hidden_modal_treated_as_closed():
+    """隐藏残留 modal（如 display:none）不应尝试点击关闭，也不应报错。"""
+    import modal
+    hidden_modal = _FakeEle(children={})
+    top_t = _FakeTarget(
+        elements={"c:.ant-modal-content": hidden_modal},
+        run_js_return=['[]', '{"visible":false}'],
+    )
+
+    with patch.object(modal.browser_session, "get_tab", return_value=top_t), \
+         patch.object(modal.browser_session, "get_active_frame", return_value=None):
+        result = modal.close_modal()
+
     assert result["ok"] is True
     assert result["closed"] == []
     assert result["errors"] == []
