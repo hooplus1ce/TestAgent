@@ -16,8 +16,7 @@
     "access_domain": ".hoolinks.com"
   },
   "paths": {
-    "shot_dir": "~/.drission-ui-shots",
-    "chrome_path": ""
+    "shot_dir": "./resources"
   },
   "caps": ["core", "vtable", "filter"]
 }

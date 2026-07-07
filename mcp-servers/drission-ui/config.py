@@ -40,7 +40,7 @@ ACTIVE_FRAME_LOC = 'c:[role="tabpanel"][aria-hidden="false"] iframe'
 
 SHOT_DIR = os.environ.get(
     "HL_SHOT_DIR",
-    os.path.join(os.path.expanduser("~"), ".drission-ui-shots"),
+    os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "resources"),
 )
 
 # ChromiumOptions 配置（4.2 新增）

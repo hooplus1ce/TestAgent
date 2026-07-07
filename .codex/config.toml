@@ -36,5 +36,5 @@ env_vars = [
   "HL_REFRESH_HTTP_TIMEOUT",
 ]
 
-[mcp_servers.drission-ui.env]
-DRISSION_UI_CAPS = "core,vtable,filter,observe,network"
+# [mcp_servers.drission-ui.env]
+# DRISSION_UI_CAPS = "core,vtable,filter,observe,network"
