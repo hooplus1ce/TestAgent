@@ -9,6 +9,7 @@
 - **脆弱 JS 被封装**：VTable 扫描/列值/坐标计算等依赖 React fiber 与 canvas scenegraph 的逻辑，作为工具的**内部实现**（`frame.run_js(bundled JS)`），AI 调用即得结构化 JSON，不再每轮手写 `eval`。
 - **坐标自动换算**：DOM 控件使用 DrissionPage `ele.rect.viewport_click_point` 获取顶层视口坐标；VTable canvas 坐标由内置 JS 一次换算到顶层视口 → 输出可直接点击的落点（调用侧不再叠加 iframe 偏移）。
 - **Token 效率优先**：借鉴 Playwright MCP，工具支持 `filename` 参数将大输出保存到文件，避免占用 LLM 上下文；支持 `DRISSION_UI_CAPS` 环境变量按需启用工具分组。
+- **MCP 元数据完整**：工具注册时自动补充 `readOnlyHint` / `destructiveHint` / `idempotentHint` / `openWorldHint` annotations；同时暴露 caps、运行上下文和证据文件索引 resources。
 
 ## 注册
 
@@ -30,7 +31,7 @@
 ## 依赖
 
 ```bash
-uv add DrissionPage mcp ddddocr httpx openpyxl
+uv add DrissionPage "mcp[cli]>=1.28.1,<2" ddddocr httpx openpyxl
 ```
 
 前置：Chrome 以 `--remote-debugging-port=9222` 启动。
@@ -131,6 +132,27 @@ export DRISSION_UI_CAPS=all
 | `devtools` | 调试/高级功能（默认启用） |
 
 使用 `browser_list_caps` 工具查看当前启用状态。
+
+## MCP Resources 与 Tool Annotations
+
+除工具外，服务还提供只读 resources，便于客户端在不调用浏览器动作的情况下获取上下文：
+
+| URI | 用途 |
+|-----|------|
+| `drission-ui://caps` | 当前启用的 capability 分组和完整分组清单 |
+| `drission-ui://context` | 资源目录、当前模块、端口、目标标题提示和关键依赖版本 |
+| `drission-ui://resources` | `HL_SHOT_DIR` 下已保存证据文件索引 |
+| `drission-ui://resources/{resource_path}` | 读取 `HL_SHOT_DIR` 下 UTF-8 文本证据文件 |
+
+`drission-ui://resources` 索引会为每个文件返回可直接读取的 `uri`；手写子目录路径时需先 URL 编码，例如 `生产动态表/dom.yml` 对应 `drission-ui://resources/%E7%94%9F...%2Fdom.yml`。
+
+工具会自动带 MCP `ToolAnnotations`：
+
+- 扫描/查询类工具标为 `readOnlyHint=true`。
+- `connect`、`screenshot`、`scan_table(filename=...)` 等会连接会话或写证据文件，但不直接修改业务数据，标为 `destructiveHint=false`。
+- `click`、`input`、`select_option`、`click_table_cell` 等真实 UI 操作按保守策略标为 `destructiveHint=true`。
+
+`mcp[cli]` 依赖固定为 `>=1.28.1,<2`：当前项目使用官方 Python SDK v1 的 `FastMCP` 接口；v2 仍处于预发布/迁移阶段，暂不让普通安装自动跨大版本升级。
 
 ## 新功能：输出重定向（Filename 参数）
 

@@ -6,6 +6,7 @@ VTable 工具(内部 frame.run_js 注入 bundled JS)、会话维持、弹窗检�
 启动：uv run python mcp-servers/drission-ui/server.py  (stdio 传输)
 """
 import functools
+import importlib.metadata
 import threading
 import json
 import logging
@@ -17,6 +18,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from mcp.server.fastmcp import FastMCP
+from mcp.types import ToolAnnotations
 
 import browser_session
 import filter_area
@@ -43,16 +45,92 @@ mcp = FastMCP("drission-ui")
 _fastmcp_tool = mcp.tool
 
 
+_READ_ONLY_TOOLS = {
+    "browser_get_element_state",
+    "browser_list_caps",
+    "check_session",
+    "find_batch",
+    "find_elements",
+    "get_active_frame",
+    "get_element_coords",
+    "list_contexts",
+    "listen_wait",
+    "listen_ws_wait",
+    "scan_drawer",
+    "scan_floats",
+    "scan_form_fields",
+    "scan_modal",
+    "scan_pagination",
+    "scan_toolbar_actions",
+}
+
+_ADDITIVE_TOOLS = {
+    "browser_console_messages",
+    "browser_save_pdf",
+    "capture_page_model",
+    "connect",
+    "dom_tree",
+    "network_record_export",
+    "scan_page_elements",
+    "scan_table",
+    "screenshot",
+}
+
+_IDEMPOTENT_WRITE_TOOLS = {
+    "check_session",
+    "connect",
+    "get_active_frame",
+    "browser_list_caps",
+}
+
+
+def _tool_annotations_for(tool_name: str, fn) -> ToolAnnotations:
+    """Infer MCP tool annotations from the local synchronization contract."""
+    if tool_name in _READ_ONLY_TOOLS:
+        return ToolAnnotations(
+            readOnlyHint=True,
+            destructiveHint=False,
+            idempotentHint=True,
+            openWorldHint=True,
+        )
+
+    if tool_name in _ADDITIVE_TOOLS:
+        return ToolAnnotations(
+            readOnlyHint=False,
+            destructiveHint=False,
+            idempotentHint=tool_name in _IDEMPOTENT_WRITE_TOOLS,
+            openWorldHint=True,
+        )
+
+    access = getattr(fn, "_du_access", "")
+    if access == "read":
+        return ToolAnnotations(
+            readOnlyHint=True,
+            destructiveHint=False,
+            idempotentHint=True,
+            openWorldHint=True,
+        )
+
+    return ToolAnnotations(
+        readOnlyHint=False,
+        destructiveHint=True,
+        idempotentHint=tool_name in _IDEMPOTENT_WRITE_TOOLS,
+        openWorldHint=True,
+    )
+
+
 def _cap_aware_tool(*args, **kwargs):
     """Register MCP tools only when enabled by DRISSION_UI_CAPS."""
-    decorator = _fastmcp_tool(*args, **kwargs)
-
     def register(fn):
         explicit_name = kwargs.get("name")
         if args and isinstance(args[0], str):
             explicit_name = args[0]
         tool_name = explicit_name or getattr(fn, "__name__", "")
         if caps.is_tool_enabled(tool_name):
+            tool_kwargs = dict(kwargs)
+            if tool_kwargs.get("annotations") is None:
+                tool_kwargs["annotations"] = _tool_annotations_for(tool_name, fn)
+            decorator = _fastmcp_tool(*args, **tool_kwargs)
             return decorator(fn)
         logger.debug("Skipping MCP tool %s; disabled by DRISSION_UI_CAPS", tool_name)
         return fn
@@ -112,6 +190,7 @@ def read_synchronized(fn):
             return fn(*args, **kwargs)
         finally:
             _rwlock.release_read()
+    wrapper._du_access = "read"
     return wrapper
 
 
@@ -124,7 +203,65 @@ def write_synchronized(fn):
             return fn(*args, **kwargs)
         finally:
             _rwlock.release_write()
+    wrapper._du_access = "write"
     return wrapper
+
+
+@mcp.resource(
+    "drission-ui://caps",
+    name="drission-ui caps",
+    title="drission-ui capability groups",
+    description="Current enabled capability groups and the tools in each group.",
+    mime_type="application/json",
+)
+def caps_resource() -> str:
+    return json.dumps(caps.list_caps(), ensure_ascii=False, indent=2)
+
+
+@mcp.resource(
+    "drission-ui://context",
+    name="drission-ui context",
+    title="drission-ui runtime context",
+    description="Runtime context that can be read without connecting to the browser.",
+    mime_type="application/json",
+)
+def context_resource() -> str:
+    packages = {}
+    for package_name in ("mcp", "DrissionPage"):
+        try:
+            packages[package_name] = importlib.metadata.version(package_name)
+        except importlib.metadata.PackageNotFoundError:
+            packages[package_name] = None
+    return json.dumps({
+        "ok": True,
+        "resource_context": resource_store.get_context(),
+        "enabled_caps": sorted(caps.ENABLED_CAPS),
+        "remote_port": config.DEFAULT_PORT,
+        "target_hint": config.DEFAULT_TARGET_HINT,
+        "packages": packages,
+    }, ensure_ascii=False, indent=2)
+
+
+@mcp.resource(
+    "drission-ui://resources",
+    name="drission-ui evidence index",
+    title="Saved evidence resource index",
+    description="Index of saved files under HL_SHOT_DIR.",
+    mime_type="application/json",
+)
+def resources_index() -> str:
+    return json.dumps(resource_store.list_resources(), ensure_ascii=False, indent=2)
+
+
+@mcp.resource(
+    "drission-ui://resources/{resource_path}",
+    name="drission-ui evidence file",
+    title="Saved text evidence file",
+    description="Read a UTF-8 text evidence file under HL_SHOT_DIR.",
+    mime_type="text/plain",
+)
+def evidence_resource(resource_path: str) -> str:
+    return resource_store.read_text_resource(resource_path)
 
 
 # ==================== 连接与会话 ====================

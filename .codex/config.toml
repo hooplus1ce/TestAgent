@@ -75,5 +75,8 @@ approval_mode = "approve"
 [mcp_servers.drission-ui.tools.screenshot]
 approval_mode = "approve"
 
+[mcp_servers.drission-ui.tools.scan_floats]
+approval_mode = "approve"
+
 # [mcp_servers.drission-ui.env]
 # DRISSION_UI_CAPS = "core,vtable,filter,observe,network"

@@ -156,7 +156,7 @@ def test_ensure_display_skipped_when_headless():
     import browser_session, config
     with patch.object(config, "HEADLESS", True), \
          patch.dict("os.environ", {}, clear=False), \
-         patch.object(browser_session.os, "getuid", side_effect=AssertionError("不应调用 getuid")):
+         patch.object(browser_session.os, "getuid", side_effect=AssertionError("不应调用 getuid"), create=True):
         browser_session.os.environ.pop("DISPLAY", None)
         browser_session._ensure_display_env()
         assert "DISPLAY" not in browser_session.os.environ
@@ -167,7 +167,7 @@ def test_ensure_display_skipped_on_windows():
     import browser_session, config
     with patch.object(config, "HEADLESS", False), \
          patch.object(browser_session.sys, "platform", "win32"), \
-         patch.object(browser_session.os, "getuid", side_effect=AssertionError("Windows 不应调用 getuid")):
+         patch.object(browser_session.os, "getuid", side_effect=AssertionError("Windows 不应调用 getuid"), create=True):
         browser_session.os.environ.pop("DISPLAY", None)
         browser_session._ensure_display_env()  # 不应抛异常
         assert "DISPLAY" not in browser_session.os.environ
@@ -199,7 +199,7 @@ def test_ensure_display_finds_xauthority():
     import browser_session, config
     with patch.object(config, "HEADLESS", False), \
          patch.object(browser_session.sys, "platform", "linux"), \
-         patch.object(browser_session.os, "getuid", return_value=1000), \
+         patch.object(browser_session.os, "getuid", return_value=1000, create=True), \
          patch.object(browser_session.os, "listdir", return_value=[".mutter-Xwaylandauth.ABC123"]):
         browser_session.os.environ.pop("DISPLAY", None)
         browser_session.os.environ.pop("XAUTHORITY", None)

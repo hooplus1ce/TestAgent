@@ -2,6 +2,7 @@
 import os
 import re
 import threading
+import urllib.parse
 
 import config
 
@@ -74,3 +75,59 @@ def resolve_path(filename: str = None, default_name: str = None, category: str =
     full_path = os.path.join(config.SHOT_DIR, *(prefix + parts))
     os.makedirs(os.path.dirname(full_path) or ".", exist_ok=True)
     return full_path
+
+
+def _resolve_existing_path(filename: str) -> str:
+    decoded = urllib.parse.unquote(str(filename or ""))
+    parts = _sanitize_relative(decoded)
+    full_path = os.path.abspath(os.path.join(config.SHOT_DIR, *parts))
+    base_dir = os.path.abspath(config.SHOT_DIR)
+    if os.path.commonpath([base_dir, full_path]) != base_dir:
+        raise ValueError("resource path escapes base directory")
+    return full_path
+
+
+def list_resources(max_files: int = 200) -> dict:
+    """List saved evidence files under config.SHOT_DIR without reading contents."""
+    base_dir = os.path.abspath(config.SHOT_DIR)
+    files = []
+    if not os.path.isdir(base_dir):
+        return {"ok": True, "base_dir": base_dir, "files": files}
+
+    for root, _, names in os.walk(base_dir):
+        for name in names:
+            path = os.path.join(root, name)
+            try:
+                stat = os.stat(path)
+            except OSError:
+                continue
+            rel = os.path.relpath(path, base_dir).replace(os.sep, "/")
+            files.append({
+                "path": rel,
+                "uri": "drission-ui://resources/" + urllib.parse.quote(rel, safe=""),
+                "size": stat.st_size,
+                "modified": stat.st_mtime,
+            })
+            if len(files) >= max_files:
+                return {
+                    "ok": True,
+                    "base_dir": base_dir,
+                    "files": files,
+                    "_truncated": True,
+                    "max_files": max_files,
+                }
+
+    files.sort(key=lambda item: item["modified"], reverse=True)
+    return {"ok": True, "base_dir": base_dir, "files": files}
+
+
+def read_text_resource(filename: str, max_chars: int = 500_000) -> str:
+    """Read a saved text evidence file from config.SHOT_DIR."""
+    path = _resolve_existing_path(filename)
+    if not os.path.isfile(path):
+        raise FileNotFoundError(filename)
+    with open(path, "r", encoding="utf-8", errors="replace") as f:
+        content = f.read(max_chars + 1)
+    if len(content) > max_chars:
+        return content[:max_chars] + f"\n...(_truncated at {max_chars} chars)"
+    return content

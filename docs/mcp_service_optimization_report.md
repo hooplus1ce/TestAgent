@@ -6,6 +6,21 @@
 
 当前 `drission-ui` MCP 服务已经具备标准 MCP stdio 服务的基本形态：使用官方 Python MCP SDK 的 `FastMCP` 注册工具，通过 `mcp.run()` 启动，日志输出到 `stderr`，不会污染 stdio 协议帧。
 
+2026-07-09 复核最新公开资料后，本项目继续按 MCP Python SDK v1 生产接口优化：
+
+- MCP 当前规范已进入 `2025-11-25` 版本，服务端工具支持 `annotations` 作为客户端行为提示。
+- 官方 Python SDK 文档显示 v2 仍处于预发布/迁移阶段，生产项目应继续使用 v1 并避免无意跨大版本升级。
+- DrissionPage 官网稳定主文档仍以 4.1 为主，4.2 测试版已发布；本项目实际安装 `DrissionPage 4.2.0b20`，继续按 4.2 Listener/BrowserContext 等 API 约束实现。
+
+参考资料：
+
+- MCP Tools 规范：https://modelcontextprotocol.io/specification/2025-11-25/server/tools
+- MCP Resources 规范：https://modelcontextprotocol.io/specification/2025-11-25/server/resources
+- MCP Transports 规范：https://modelcontextprotocol.io/specification/2025-11-25/basic/transports
+- Python SDK 文档：https://py.sdk.modelcontextprotocol.io/
+- DrissionPage 官网：https://www.drissionpage.cn/
+- DrissionPage 4.2 测试版说明：https://www.drissionpage.cn/features/4.2/
+
 本次优化前的主要问题不在协议接入层，而在工具治理层：
 
 - 实际暴露工具数为 60，但测试契约仍按 58 个工具校验。
@@ -19,9 +34,27 @@
 - `DRISSION_UI_CAPS=core` 会实际收窄到 29 个工具。
 - 公开工具清单、capability 分组、测试契约保持一致。
 - 常用 list 入参 schema 已精确到 `items.type = string`。
-- 自动化测试已全部通过：`63 passed`。
+- 自动化测试已全部通过：`74 passed`。
 
 ## 变更内容
+
+### 0. 2026-07-09 增量优化：MCP 元数据与 resources
+
+文件：`mcp-servers/drission-ui/server.py`、`mcp-servers/drission-ui/resource_store.py`、`pyproject.toml`
+
+- `mcp[cli]` 依赖改为 `>=1.28.1,<2`，避免 v2 正式发布后自动升级破坏 FastMCP v1 接口。
+- 自动为公开工具补充 MCP `ToolAnnotations`：
+  - 只读扫描/查询工具标为 `readOnlyHint=true`。
+  - 文件证据写入、连接类工具标为 `destructiveHint=false`。
+  - 点击、输入、选择、表格单元格点击等真实 UI 操作按保守策略标为 `destructiveHint=true`。
+- 新增只读 MCP resources：
+  - `drission-ui://caps`
+  - `drission-ui://context`
+  - `drission-ui://resources`
+  - `drission-ui://resources/{resource_path}`
+- `resource_store` 新增证据目录索引和安全文本读取函数，所有读取都限制在 `HL_SHOT_DIR` 下。
+- `browser_session._ensure_display_env()` 不再硬依赖 `os.getuid()`，Windows 环境中模拟 Linux 场景的测试可稳定运行。
+- 测试新增覆盖：tool annotations、resources/templates、caps resource JSON、证据文件索引和路径穿越防护。
 
 ### 1. MCP 工具注册增加 capability 过滤
 
@@ -92,7 +125,7 @@ uv run pytest tests/ -q
 结果：
 
 ```text
-63 passed in 1.77s
+74 passed in 2.36s
 ```
 
 默认/all 工具面：

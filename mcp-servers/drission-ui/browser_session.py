@@ -65,7 +65,9 @@ def _ensure_display_env():
         return
     os.environ.setdefault("DISPLAY", ":0")
     if "XAUTHORITY" not in os.environ:
-        xauth_dir = "/run/user/%d" % os.getuid()
+        getuid = getattr(os, "getuid", None)
+        uid = getuid() if callable(getuid) else 0
+        xauth_dir = "/run/user/%d" % uid
         try:
             for f in os.listdir(xauth_dir):
                 if f.startswith(".mutter-Xwaylandauth."):
@@ -450,4 +452,3 @@ def switch_context(cid):
         except Exception as e:
             logger.warning("switch_context 取 tab 失败: %s", e)
             return None
-

@@ -4,6 +4,7 @@ import json
 import os
 import subprocess
 import sys
+import urllib.parse
 from types import SimpleNamespace
 import threading
 import time
@@ -123,6 +124,65 @@ def test_public_tools_are_grouped_in_caps():
         for tool in tools
     }
     assert EXPECTED_PUBLIC_TOOLS <= grouped_tools
+
+
+def test_public_tools_include_mcp_annotations():
+    """关键工具应暴露 MCP tool annotations，帮助客户端区分只读/写入风险。"""
+    import server
+
+    tools = {t.name: t for t in asyncio.run(server.mcp.list_tools())}
+
+    assert tools["find_elements"].annotations.readOnlyHint is True
+    assert tools["find_elements"].annotations.destructiveHint is False
+    assert tools["click"].annotations.readOnlyHint is False
+    assert tools["click"].annotations.destructiveHint is True
+    assert tools["connect"].annotations.readOnlyHint is False
+    assert tools["connect"].annotations.destructiveHint is False
+    assert tools["connect"].annotations.idempotentHint is True
+    assert tools["screenshot"].annotations.destructiveHint is False
+
+
+def test_resources_and_templates_are_exposed():
+    """MCP resources 应暴露 caps/context 和证据文件读取模板。"""
+    import server
+
+    resources = asyncio.run(server.mcp.list_resources())
+    resource_uris = {str(r.uri) for r in resources}
+
+    assert {
+        "drission-ui://caps",
+        "drission-ui://context",
+        "drission-ui://resources",
+    } <= resource_uris
+
+    templates = asyncio.run(server.mcp.list_resource_templates())
+    template_uris = {t.uriTemplate for t in templates}
+    assert "drission-ui://resources/{resource_path}" in template_uris
+
+
+def test_caps_resource_returns_json():
+    import server
+
+    contents = asyncio.run(server.mcp.read_resource("drission-ui://caps"))
+    data = json.loads(contents[0].content)
+
+    assert data["enabled"]
+    assert "core" in data["available"]
+
+
+def test_evidence_resource_template_reads_encoded_nested_file(monkeypatch, tmp_path):
+    import resource_store
+    import server
+
+    monkeypatch.setattr(resource_store.config, "SHOT_DIR", str(tmp_path))
+    nested = tmp_path / "生产动态表"
+    nested.mkdir()
+    (nested / "dom.yml").write_text("tag: body", encoding="utf-8")
+    encoded = urllib.parse.quote("生产动态表/dom.yml", safe="")
+
+    contents = asyncio.run(server.mcp.read_resource(f"drission-ui://resources/{encoded}"))
+
+    assert contents[0].content == "tag: body"
 
 
 def test_drission_ui_caps_filters_public_tools():
