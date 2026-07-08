@@ -587,6 +587,26 @@ return JSON.stringify({ok:true, floats:out});
                 all_floats.append(item)
         else:
             errors.append({"scope": scope, "reason": data.get("reason", "")})
+
+    # --- 短寿命 toast 检测（message/notification，点击后延迟 ~100ms 才渲染）---
+    import observe
+    for detector, ttype in [(observe.detect_message, "message"),
+                             (observe.detect_notification, "notification")]:
+        toast = detector(timeout=0.5)
+        if toast.get("type") == ttype:
+            all_floats.append({
+                "title": toast.get("message", "")[:80],
+                "type": ttype,
+                "text": toast.get("message", ""),
+                "scope": toast.get("scope", ""),
+                "buttons": [],
+                "fields": [],
+                "tables": [],
+                "closeButton": None,
+                "hasClose": False,
+                "center": {"cx": 0, "cy": 0},
+                "rect": {"x": 0, "y": 0, "width": 0, "height": 0},
+            })
     result = {"ok": True, "count": len(all_floats), "floats": all_floats,
               "has_active_frame": fr is not None, "frame_url": frame_url,
               "active_tab": browser_session.get_active_tab_name()}
