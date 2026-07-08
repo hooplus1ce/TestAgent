@@ -321,8 +321,10 @@ def scan_filter_fields(tab=None):
                 return {"ok": False, "reason": "结构扫描返回非列表"}
 
             for entry in fields:
-                if entry.get("hasOpCb"):
-                    entry["operatorOptions"] = _collect_dropdown_options(fr, entry["col"], 1)
+                # 总是尝试读取操作符下拉选项（不管 hasOpCb）
+                op_opts = _collect_dropdown_options(fr, entry["col"], 1)
+                if op_opts:
+                    entry["operatorOptions"] = op_opts
                 if entry.get("hasValueCb"):
                     entry["options"] = _collect_dropdown_options(fr, entry["col"], 2)
                 for k in ("col", "hasValueCb", "hasOpCb"):
@@ -365,11 +367,15 @@ def _close_visible_dropdowns(fr, timeout=0.5):
 def _collect_dropdown_options(fr, col_idx, sel_idx):
     """读取某字段列内某个 select 的下拉选项：打开 → 智能等待 → 读取。
 
-    不主动关闭前一个下拉（Ant Design 打开新下拉时会自动关闭旧的下拉），
-    避免 close→open→close→open 冗余循环。
+    先轻量关闭残留下拉（只发 Escape 不等动画），避免上一个字段的
+    下拉浮层干扰位置评分导致读到错误的选项。
 
     col_idx 是字段列索引；sel_idx: 0=字段名、1=操作符、2=值选择器。
     """
+    # 轻量关闭残留下拉：只发 Escape 不等动画
+    fr.run_js("document.activeElement&&document.activeElement.blur&&document.activeElement.blur();"
+              "document.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',code:'Escape',keyCode:27,which:27,bubbles:true}));")
+    time.sleep(0.1)
     open_js = (
         "var cols=document.querySelectorAll('.legions-pro-quick-filter-row > div[class*=\"ant-col-\"]');"
         "var sel=cols[%d]?cols[%d].querySelectorAll('.ant-select')[%d]:null;"
