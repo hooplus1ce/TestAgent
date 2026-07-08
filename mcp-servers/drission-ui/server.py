@@ -620,6 +620,22 @@ def scan_form_fields(scope: str = "page", include_hidden: bool = False,
                                        in_frame=in_frame, max_fields=max_fields)
 
 
+
+
+
+
+
+@mcp.tool()
+@read_synchronized
+def scan_floats(only_visible: bool = True, include_table_data: bool = True) -> dict:
+    """扫描所有可见浮窗（modal/drawer/popover/tooltip/dropdown/message/notification）。
+    单次 JS 注入完成。返回浮窗内所有操作按钮的位置（可点击关闭）、
+    关闭按钮的 CSS 定位符（可用于 click 工具）、内部表格结构和可选的全量行数据。
+    """
+    return page_model.scan_floats(only_visible=only_visible,
+                                  include_table_data=include_table_data)
+
+
 @mcp.tool()
 @read_synchronized
 def scan_modal(max_items: int = 20) -> dict:
@@ -1047,13 +1063,23 @@ def click(locator: str, in_frame: bool = True, by_js: bool = False, timeout: flo
 @mcp.tool()
 @write_synchronized
 def click_xy(x: float, y: float, hover_first: bool = True, duration: float = 0.3,
-             clean_overlays: bool = True) -> dict:
-    """按顶层视口坐标点击(用于 canvas)。hover_first 先移动到目标(hover)再点击——VTable 排序图标需要。
-    clean_overlays=True 时先清理上一操作残留的 Ant notification/message。"""
+             clean_overlays: bool = True, times: int = 1) -> dict:
+    """按顶层视口坐标点击(用于 canvas)。
+
+    Args:
+        x, y: top-viewport 坐标
+        hover_first: 是否先缓慢移动到目标再点击（VTable 排序图标需要）
+        duration: hover 移动时长（秒）
+        clean_overlays: 点击前先清理残留通知/消息
+        times: 点击次数，1=单击，2=双击，以此类推
+    """
     cleanup = _pre_click_cleanup(clean_overlays)
     tab = browser_session.get_tab()
-    tab.actions.move_to((x, y), duration=duration if hover_first else 0).click()
-    return _attach_cleanup({"ok": True, "x": x, "y": y}, cleanup)
+    if times > 1:
+        tab.actions.move_to((x, y), duration=duration if hover_first else 0).wait(0.15).click(times=times)
+    else:
+        tab.actions.move_to((x, y), duration=duration if hover_first else 0).click()
+    return _attach_cleanup({"ok": True, "x": x, "y": y, "times": times}, cleanup)
 
 @mcp.tool()
 @write_synchronized

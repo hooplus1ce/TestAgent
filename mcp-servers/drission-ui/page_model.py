@@ -53,6 +53,67 @@ def _run_json(target, js: str, default):
         return {"ok": False, "reason": str(e)}
 
 
+
+def get_element_center(el):
+    """获取元素在顶层视口的中心坐标。
+
+    注意: 不可用 rect.click_point —— 它返回的不是几何中心，
+    而是元素内第一个可交互子元素的中心（偏上偏左）。
+    始终使用 location + size/2 计算几何中心。
+
+    Args:
+        el: DrissionPage ChromiumElement 对象
+
+    Returns:
+        {"cx": float, "cy": float} | None
+    """
+    try:
+        loc = el.rect.location
+        sz = el.rect.size
+        return {"cx": round(loc[0] + sz[0] / 2, 1),
+                "cy": round(loc[1] + sz[1] / 2, 1)}
+    except Exception:
+        pass
+    # fallback: JS getBoundingClientRect
+    try:
+        js = (
+            "var r = this.getBoundingClientRect();"
+            "return JSON.stringify({x: r.left, y: r.top, w: r.width, h: r.height});"
+        )
+        res = el.run_js(js)
+        if isinstance(res, str):
+            import json
+            d = json.loads(res)
+        else:
+            d = res
+        if d and 'w' in d and d['w'] > 0:
+            cx = d['x'] + d['w'] / 2
+            cy = d['y'] + d['h'] / 2
+            # 叠加 iframe 偏移
+            try:
+                owner = el.owner
+                off_js = (
+                    "var f = window.frameElement;"
+                    "if (!f) return '{\"x\":0,\"y\":0}';"
+                    "var r = f.getBoundingClientRect();"
+                    "return JSON.stringify({x: r.left, y: r.top});"
+                )
+                off_res = owner.run_js(off_js)
+                if isinstance(off_res, str):
+                    off = json.loads(off_res)
+                else:
+                    off = off_res
+                if off:
+                    cx += off.get('x', 0)
+                    cy += off.get('y', 0)
+            except Exception:
+                pass
+            return {"cx": round(cx, 1), "cy": round(cy, 1)}
+    except Exception:
+        pass
+    return None
+
+
 def save_json_result(data: dict, filename: str) -> dict:
     full_path = resource_store.resolve_path(filename)
     with open(full_path, "w", encoding="utf-8") as f:
@@ -338,6 +399,187 @@ return JSON.stringify({ok:true, overlays:out});
 def scan_modal(max_items: int = 20) -> dict:
     return _scan_overlay("modal", max_items=max_items)
 
+
+
+
+
+
+def scan_floats(only_visible: bool = True, include_table_data: bool = True) -> dict:
+    """扫描所有可见浮窗（modal/drawer/popover/tooltip/dropdown/message/notification）。
+
+    单次 JS 注入完成。返回浮窗内所有操作按钮的位置（可点击）、
+    关闭按钮的 CSS 定位符（可供 click 工具使用）、以及内部表格结构。
+
+    Args:
+        only_visible: 过滤不可见元素
+        include_table_data: 是否自动提取 HTML 表格全量行数据
+
+    Returns:
+        {ok, count, floats: [{title, type, text, rect, scope,
+            buttons: [{text, rect, selectorHint, disabled, ...}],
+            closeButton: {selectorHint, rect} | null,
+            tableCount, tables: [{index, kind, headers, rowCount,
+                                  data: [[str]]?}]}]}
+    """
+    tab, fr, target_list = _targets(include_top=True, include_frame=True)
+    # 记录当前活跃 frame 信息，供调用方判断是否发生了 tabpanel 切换
+    frame_url = getattr(fr, "url", "") if fr is not None else ""
+    all_floats = []
+    errors = []
+    for scope, target in target_list:
+        js = _COMMON_JS + """
+var nodeList = [].slice.call(document.querySelectorAll(
+  '.ant-modal, .ant-drawer, .ant-popover, .ant-tooltip, '
+  + '.ant-dropdown, .ant-message-notice, .ant-notification-notice'
+));
+var nodes = ONLY_VISIBLE ? nodeList.filter(duVisible) : nodeList;
+var allWrappers = [].slice.call(document.querySelectorAll('.ant-table-wrapper'));
+// iframe 偏移：叠加到坐标使结果始终为 top-viewport 坐标
+var ifrOff = {left:0, top:0};
+var _ifrEl = window.frameElement;
+if (_ifrEl) { var _r = _ifrEl.getBoundingClientRect(); ifrOff = {left: _r.left, top: _r.top}; }
+function frRect(el) { var r = duRect(el); return {x: r.x + ifrOff.left, y: r.y + ifrOff.top, width: r.width, height: r.height}; }
+function frCenter(el) { var r = duRect(el); return {cx: Math.round((r.x + r.width/2 + ifrOff.left)*10)/10, cy: Math.round((r.y + r.height/2 + ifrOff.top)*10)/10}; }
+var out = [];
+for (var i = 0; i < nodes.length; i++) {
+  var n = nodes[i];
+  var cls = n.className || '';
+  var kind = 'unknown';
+  if (/\\bant-modal\\b/.test(cls)) kind = 'modal';
+  else if (/\\bant-drawer\\b/.test(cls)) kind = 'drawer';
+  else if (/\\bant-popover\\b/.test(cls)) kind = 'popover';
+  else if (/\\bant-tooltip\\b/.test(cls)) kind = 'tooltip';
+  else if (/\\bant-dropdown\\b/.test(cls)) kind = 'dropdown';
+  else if (/\\bant-message-notice\\b/.test(cls)) kind = 'message';
+  else if (/\\bant-notification-notice\\b/.test(cls)) kind = 'notification';
+
+  // 标题提取
+  var titleEl = n.querySelector('.ant-modal-title, .ant-drawer-title, .ant-modal-header');
+  var title = titleEl ? duCleanText(titleEl.textContent) : '';
+  if (!title) {
+    var raw = n.innerText || n.textContent || '';
+    var parts = raw.split(/\\n/).map(function(s){ return s.trim(); }).filter(function(s){ return s.length > 0; });
+    for (var p = 0; p < parts.length && p < 10; p++) {
+      var t = parts[p];
+      if (/[\\u4e00-\\u9fff\\w]{2,}/.test(t) && t.length < 60) { title = t; break; }
+    }
+    if (!title && parts.length > 0) title = parts[0].slice(0, 60);
+  }
+
+  var text = duCleanText(n.innerText || n.textContent || '');
+  var buttons = duScanButtons(n, 30);
+  // 对 duScanButtons 的 rect 叠加 iframe 偏移（它在 _COMMON_JS 中用的 duRect 无偏移）
+  for (var bii = 0; bii < buttons.length; bii++) {
+    var br2 = buttons[bii].rect;
+    br2.x = Math.round((br2.x + ifrOff.left) * 10) / 10;
+    br2.y = Math.round((br2.y + ifrOff.top) * 10) / 10;
+    br2.cx = Math.round((br2.x + br2.width/2) * 10) / 10;
+    br2.cy = Math.round((br2.y + br2.height/2) * 10) / 10;
+  }
+  var clickableExtras = [];
+  var extraNodes = n.querySelectorAll('a:not([href]),span:not([role])');
+  for (var ei = 0; ei < extraNodes.length && clickableExtras.length < 20; ei++) {
+    var en = extraNodes[ei];
+    if (!duVisible(en)) continue;
+    if (en.closest('button,.ant-btn,[role="button"],a[href],.ant-dropdown-trigger')) continue;
+    var isClickable = false;
+    if (en.onclick) { isClickable = true; }
+    else if (en.getAttribute('tabindex') !== null) { isClickable = true; }
+    else { var enStyle = window.getComputedStyle(en); if (enStyle.cursor === 'pointer') isClickable = true; }
+    if (!isClickable) continue;
+    var txt = duCleanText(en.innerText || en.textContent);
+    if (!txt || txt.length > 40) continue;
+    var dup = false;
+    for (var bi = 0; bi < buttons.length; bi++) { if (buttons[bi].text === txt) { dup = true; break; } }
+    if (dup) continue;
+    clickableExtras.push({
+      text: txt, tag: en.tagName.toLowerCase(),
+      selectorHint: duCssHint(en), center: frCenter(en), rect: frRect(en),
+      kind: 'clickable-link', extra: true
+    });
+  }
+  buttons = buttons.concat(clickableExtras);
+
+  // 表单字段（input/select/datepicker/checkbox/radio/switch 等）
+  var fields = duScanFields(n, false, 50);
+  // 给字段叠加 iframe 偏移
+  for (var fi = 0; fi < fields.length; fi++) {
+    var fld = fields[fi];
+    if (fld.rect) {
+      fld.rect.x = Math.round((fld.rect.x + ifrOff.left) * 10) / 10;
+      fld.rect.y = Math.round((fld.rect.y + ifrOff.top) * 10) / 10;
+      fld.rect.cx = Math.round((fld.rect.x + fld.rect.width/2) * 10) / 10;
+      fld.rect.cy = Math.round((fld.rect.y + fld.rect.height/2) * 10) / 10;
+    }
+  }
+
+  // 关闭按钮
+  var closeBtn = n.querySelector('.ant-modal-close, .ant-drawer-close');
+  var closeButton = null;
+  if (closeBtn) {
+    closeButton = {
+      center: frCenter(closeBtn), rect: frRect(closeBtn)
+    };
+  }
+
+  // 表格检测 + 数据提取
+  var tableWrappers = [].slice.call(n.querySelectorAll('.ant-table-wrapper'));
+  var tables = [];
+  tableWrappers.forEach(function(tw){
+    var globalIdx = allWrappers.indexOf(tw);
+    var headerTr = tw.querySelector('.ant-table-thead tr');
+    var headers = [];
+    if (headerTr) {
+      headers = [].slice.call(headerTr.querySelectorAll('th')).map(function(th){
+        return (th.textContent || '').trim();
+      }).filter(function(h){ return h.length > 0; });
+    }
+    var bodyRows = tw.querySelectorAll('.ant-table-tbody tr.ant-table-row').length;
+    if (bodyRows === 0) bodyRows = tw.querySelectorAll('.ant-table-tbody tr').length;
+    var hasVTable = n.querySelectorAll('canvas.vtable, [class*="vtable"]').length > 0;
+
+    var rowData = [];
+    if (INCLUDE_TABLE_DATA) {
+      var bodyTable = tw.querySelector('.ant-table-body table') || tw.querySelector('.ant-table-content table');
+      if (bodyTable) {
+        var trs = bodyTable.querySelectorAll('tbody > tr.ant-table-row');
+        if (trs.length === 0) trs = bodyTable.querySelectorAll('tbody > tr');
+        trs.forEach(function(tr){
+          var cells = tr.querySelectorAll('td');
+          var row = [];
+          cells.forEach(function(td){ row.push((td.textContent || '').trim()); });
+          rowData.push(row);
+        });
+      }
+    }
+
+    tables.push({
+      index: globalIdx, kind: hasVTable ? 'vtable' : 'html',
+      headers: headers, rowCount: bodyRows, data: rowData
+    });
+  });
+
+  out.push({
+    title: title, type: kind, text: text.slice(0, 800),
+    buttons: buttons, fields: fields, closeButton: closeButton,
+    center: frCenter(n), rect: frRect(n)
+  });
+}
+return JSON.stringify({ok:true, floats:out});
+""".replace("ONLY_VISIBLE", "true" if only_visible else "false").replace(
+    "INCLUDE_TABLE_DATA", "true" if include_table_data else "false")
+        data = _run_json(target, js, {"ok": False, "reason": "scan_floats JS failed"})
+        if data.get("ok"):
+            for item in data.get("floats", []):
+                item["scope"] = scope
+                all_floats.append(item)
+        else:
+            errors.append({"scope": scope, "reason": data.get("reason", "")})
+    result = {"ok": True, "count": len(all_floats), "floats": all_floats,
+              "has_active_frame": fr is not None, "frame_url": frame_url}
+    if errors:
+        result["errors"] = errors
+    return result
 
 def scan_drawer(max_items: int = 20) -> dict:
     return _scan_overlay("drawer", max_items=max_items)
