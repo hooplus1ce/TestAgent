@@ -55,11 +55,10 @@ def _run_json(target, js: str, default):
 
 
 def get_element_center(el):
-    """获取元素在顶层视口的中心坐标。
+    """获取元素在顶层视口的几何中心坐标。
 
-    注意: 不可用 rect.click_point —— 它返回的不是几何中心，
-    而是元素内第一个可交互子元素的中心（偏上偏左）。
-    始终使用 location + size/2 计算几何中心。
+    统一使用 DrissionPage 原生 rect.viewport_midpoint，
+    已自动叠加 iframe 偏移，可直接用于 click_xy。
 
     Args:
         el: DrissionPage ChromiumElement 对象
@@ -68,50 +67,11 @@ def get_element_center(el):
         {"cx": float, "cy": float} | None
     """
     try:
-        loc = el.rect.location
-        sz = el.rect.size
-        return {"cx": round(loc[0] + sz[0] / 2, 1),
-                "cy": round(loc[1] + sz[1] / 2, 1)}
+        mp = el.rect.viewport_midpoint
+        return {"cx": round(float(mp[0]), 1),
+                "cy": round(float(mp[1]), 1)}
     except Exception:
-        pass
-    # fallback: JS getBoundingClientRect
-    try:
-        js = (
-            "var r = this.getBoundingClientRect();"
-            "return JSON.stringify({x: r.left, y: r.top, w: r.width, h: r.height});"
-        )
-        res = el.run_js(js)
-        if isinstance(res, str):
-            import json
-            d = json.loads(res)
-        else:
-            d = res
-        if d and 'w' in d and d['w'] > 0:
-            cx = d['x'] + d['w'] / 2
-            cy = d['y'] + d['h'] / 2
-            # 叠加 iframe 偏移
-            try:
-                owner = el.owner
-                off_js = (
-                    "var f = window.frameElement;"
-                    "if (!f) return '{\"x\":0,\"y\":0}';"
-                    "var r = f.getBoundingClientRect();"
-                    "return JSON.stringify({x: r.left, y: r.top});"
-                )
-                off_res = owner.run_js(off_js)
-                if isinstance(off_res, str):
-                    off = json.loads(off_res)
-                else:
-                    off = off_res
-                if off:
-                    cx += off.get('x', 0)
-                    cy += off.get('y', 0)
-            except Exception:
-                pass
-            return {"cx": round(cx, 1), "cy": round(cy, 1)}
-    except Exception:
-        pass
-    return None
+        return None
 
 
 def get_element_coords(xpath: str, index: int = 1, timeout: float = 5):
