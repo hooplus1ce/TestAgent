@@ -1,398 +1,409 @@
 {
   "module_info": {
     "enterprise_prefix": "NB",
-    "module_name": "生产管理_领退料明细表",
+    "module_pinyin": "LTLMXB",
     "module_level1": "生产管理",
     "module_level2": "领退料明细表",
-    "module_pinyin": "LTLMXB",
-    "author": "Hooplus1ce"
+    "author": "Hooplus1ce",
+    "module_name": "领退料明细表",
+    "domain": "MOM"
   },
-  "category": "W - 工作流程类",
-  "test_cases": [
-    {
-      "case_id": "W001",
-      "case_title": "从领退料明细表点击添加领退料单跳转生产备料新增",
-      "priority": "高级",
-      "verify_point": "添加领退料单按钮能成功跳转到生产备料新增页面",
-      "test_type": "功能测试",
-      "function": "新增入口",
-      "preconditions": [
-        "已登录系统",
-        "进入生产管理-领退料明细表页面",
-        "页面处于生产备料（按领退单）页签"
-      ],
-      "test_steps": [
-        "清空当前页所有通知和弹窗",
-        "启动页面变化观察",
-        "点击添加领退料单按钮",
-        "等待观察tab或url变化",
-        "确认到达生产备料新增页面"
-      ],
-      "test_data": {
-        "源页面": "生产管理-领退料明细表",
-        "目标页面": "生产备料新增",
-        "预期新增按钮": "返回、列表、生成领退料单"
-      },
-      "expected_result": "1. 点击添加领退料单按钮后，页面成功跳转到生产备料新增页\n2. 新页面顶部出现返回、列表、生成领退料单按钮\n3. 新页面有完整的表单和表格区域",
-      "automation_suggestion": "close_modal清理残留，observe_start(signals=['tab','url'])监听变化，click_xy点击添加领退料单，observe_wait验证跳转，scan_page_elements验证目标页面按钮存在"
+  "test_cases": {
+    "module_info": {
+      "enterprise_prefix": "NB",
+      "module_name": "生产管理_领退料明细表",
+      "module_level1": "生产管理",
+      "module_level2": "领退料明细表",
+      "module_pinyin": "LTLMXB",
+      "author": "Hooplus1ce"
     },
-    {
-      "case_id": "W002",
-      "case_title": "在生产备料新增页面点击列表返回领退料明细表",
-      "priority": "高级",
-      "verify_point": "从新增页面能通过列表按钮正常返回列表页",
-      "test_type": "功能测试",
-      "function": "返回列表",
-      "preconditions": [
-        "已登录系统",
-        "已通过添加领退料单进入生产备料新增页面"
-      ],
-      "test_steps": [
-        "清空当前页所有通知和弹窗",
-        "启动页面变化观察",
-        "点击列表按钮",
-        "等待观察tab或url变化",
-        "确认返回到领退料明细表"
-      ],
-      "test_data": {
-        "源页面": "生产备料新增",
-        "目标页面": "生产管理-领退料明细表",
-        "操作": "点击列表按钮"
+    "category": "W - 工作流程类",
+    "test_cases": [
+      {
+        "case_id": "W001",
+        "case_title": "从领退料明细表点击添加领退料单跳转生产备料新增",
+        "priority": "高级",
+        "verify_point": "添加领退料单按钮能成功跳转到生产备料新增页面",
+        "test_type": "功能测试",
+        "function": "新增入口",
+        "preconditions": [
+          "已登录系统",
+          "进入生产管理-领退料明细表页面",
+          "页面处于生产备料（按领退单）页签"
+        ],
+        "test_steps": [
+          "清空当前页所有通知和弹窗",
+          "启动页面变化观察",
+          "点击添加领退料单按钮",
+          "等待观察tab或url变化",
+          "确认到达生产备料新增页面"
+        ],
+        "test_data": {
+          "源页面": "生产管理-领退料明细表",
+          "目标页面": "生产备料新增",
+          "预期新增按钮": "返回、列表、生成领退料单"
+        },
+        "expected_result": "1. 点击添加领退料单按钮后，页面成功跳转到生产备料新增页\n2. 新页面顶部出现返回、列表、生成领退料单按钮\n3. 新页面有完整的表单和表格区域",
+        "automation_suggestion": "close_modal清理残留，observe_start(signals=['tab','url'])监听变化，click_xy点击添加领退料单，observe_wait验证跳转，scan_page_elements验证目标页面按钮存在"
       },
-      "expected_result": "1. 点击列表按钮后，页面成功返回到领退料明细表\n2. 列表页数据恢复展示\n3. 顶部按钮区恢复显示添加领退料单、流程设置等按钮",
-      "automation_suggestion": "close_modal清理残留，observe_start(signals=['tab','url'])监听变化，click_xy点击列表按钮，observe_wait验证返回列表页，scan_page_elements验证列表页按钮存在"
-    },
-    {
-      "case_id": "W003",
-      "case_title": "在生产备料新增页面点击返回返回领退料明细表",
-      "priority": "高级",
-      "verify_point": "从新增页面能通过返回按钮正常返回列表页",
-      "test_type": "功能测试",
-      "function": "返回列表",
-      "preconditions": [
-        "已登录系统",
-        "已通过添加领退料单进入生产备料新增页面"
-      ],
-      "test_steps": [
-        "清空当前页所有通知和弹窗",
-        "启动页面变化观察",
-        "点击返回按钮",
-        "等待观察tab或url变化",
-        "确认返回到领退料明细表"
-      ],
-      "test_data": {
-        "源页面": "生产备料新增",
-        "目标页面": "生产管理-领退料明细表",
-        "操作": "点击返回按钮"
+      {
+        "case_id": "W002",
+        "case_title": "在生产备料新增页面点击列表返回领退料明细表",
+        "priority": "高级",
+        "verify_point": "从新增页面能通过列表按钮正常返回列表页",
+        "test_type": "功能测试",
+        "function": "返回列表",
+        "preconditions": [
+          "已登录系统",
+          "已通过添加领退料单进入生产备料新增页面"
+        ],
+        "test_steps": [
+          "清空当前页所有通知和弹窗",
+          "启动页面变化观察",
+          "点击列表按钮",
+          "等待观察tab或url变化",
+          "确认返回到领退料明细表"
+        ],
+        "test_data": {
+          "源页面": "生产备料新增",
+          "目标页面": "生产管理-领退料明细表",
+          "操作": "点击列表按钮"
+        },
+        "expected_result": "1. 点击列表按钮后，页面成功返回到领退料明细表\n2. 列表页数据恢复展示\n3. 顶部按钮区恢复显示添加领退料单、流程设置等按钮",
+        "automation_suggestion": "close_modal清理残留，observe_start(signals=['tab','url'])监听变化，click_xy点击列表按钮，observe_wait验证返回列表页，scan_page_elements验证列表页按钮存在"
       },
-      "expected_result": "1. 点击返回按钮后，页面成功返回到领退料明细表\n2. 列表页数据恢复展示\n3. 顶部按钮区恢复显示添加领退料单、流程设置等按钮",
-      "automation_suggestion": "close_modal清理残留，observe_start(signals=['tab','url'])监听变化，click_xy点击返回按钮，observe_wait验证返回列表页，scan_page_elements验证列表页按钮存在"
-    },
-    {
-      "case_id": "W004",
-      "case_title": "勾选一条记录后点击批量编辑优先级验证交互",
-      "priority": "高级",
-      "verify_point": "勾选记录后批量编辑优先级能正常弹出交互",
-      "test_type": "功能测试",
-      "function": "批量编辑优先级",
-      "preconditions": [
-        "已登录系统",
-        "进入生产管理-领退料明细表页面",
-        "空条件查询已加载全量列表",
-        "表格至少存在一条记录"
-      ],
-      "test_steps": [
-        "清空当前页所有通知和弹窗",
-        "勾选表格第一条记录",
-        "启动页面变化观察",
-        "点击批量编辑优先级按钮",
-        "观察是否出现弹窗或其他交互"
-      ],
-      "test_data": {
-        "勾选记录数": "1",
-        "预期交互": "弹窗输入新优先级或其他交互方式"
+      {
+        "case_id": "W003",
+        "case_title": "在生产备料新增页面点击返回返回领退料明细表",
+        "priority": "高级",
+        "verify_point": "从新增页面能通过返回按钮正常返回列表页",
+        "test_type": "功能测试",
+        "function": "返回列表",
+        "preconditions": [
+          "已登录系统",
+          "已通过添加领退料单进入生产备料新增页面"
+        ],
+        "test_steps": [
+          "清空当前页所有通知和弹窗",
+          "启动页面变化观察",
+          "点击返回按钮",
+          "等待观察tab或url变化",
+          "确认返回到领退料明细表"
+        ],
+        "test_data": {
+          "源页面": "生产备料新增",
+          "目标页面": "生产管理-领退料明细表",
+          "操作": "点击返回按钮"
+        },
+        "expected_result": "1. 点击返回按钮后，页面成功返回到领退料明细表\n2. 列表页数据恢复展示\n3. 顶部按钮区恢复显示添加领退料单、流程设置等按钮",
+        "automation_suggestion": "close_modal清理残留，observe_start(signals=['tab','url'])监听变化，click_xy点击返回按钮，observe_wait验证返回列表页，scan_page_elements验证列表页按钮存在"
       },
-      "expected_result": "1. 点击批量编辑优先级按钮后，系统出现交互界面\n2. 可以输入新的优先级值\n3. 有确定或保存按钮",
-      "automation_suggestion": "close_modal清理残留，click_table_cell勾选第一条记录，observe_start(signals=['modal'])，click_xy点击批量编辑优先级，observe_wait验证弹窗出现，dom_tree分析弹窗结构"
-    },
-    {
-      "case_id": "W005",
-      "case_title": "勾选一条记录后点击加急验证状态变化",
-      "priority": "高级",
-      "verify_point": "加急操作成功后是否推送仓库列变为是",
-      "test_type": "功能测试",
-      "function": "加急",
-      "preconditions": [
-        "已登录系统",
-        "进入生产管理-领退料明细表页面",
-        "空条件查询已加载全量列表",
-        "表格至少存在一条记录",
-        "该记录是否推送仓库当前为否"
-      ],
-      "test_steps": [
-        "清空当前页所有通知和弹窗",
-        "记录操作前是否推送仓库列的值",
-        "勾选表格第一条记录",
-        "启动消息和网络监听",
-        "点击加急按钮",
-        "观察是否有操作成功提示",
-        "重新查询或刷新列表",
-        "核对是否推送仓库列是否变为是"
-      ],
-      "test_data": {
-        "勾选记录数": "1",
-        "操作前状态": "否",
-        "预期操作后状态": "是",
-        "预期提示": "加急成功或类似提示"
+      {
+        "case_id": "W004",
+        "case_title": "勾选一条记录后点击批量编辑优先级验证交互",
+        "priority": "高级",
+        "verify_point": "勾选记录后批量编辑优先级能正常弹出交互",
+        "test_type": "功能测试",
+        "function": "批量编辑优先级",
+        "preconditions": [
+          "已登录系统",
+          "进入生产管理-领退料明细表页面",
+          "空条件查询已加载全量列表",
+          "表格至少存在一条记录"
+        ],
+        "test_steps": [
+          "清空当前页所有通知和弹窗",
+          "勾选表格第一条记录",
+          "启动页面变化观察",
+          "点击批量编辑优先级按钮",
+          "观察是否出现弹窗或其他交互"
+        ],
+        "test_data": {
+          "勾选记录数": "1",
+          "预期交互": "弹窗输入新优先级或其他交互方式"
+        },
+        "expected_result": "1. 点击批量编辑优先级按钮后，系统出现交互界面\n2. 可以输入新的优先级值\n3. 有确定或保存按钮",
+        "automation_suggestion": "close_modal清理残留，click_table_cell勾选第一条记录，observe_start(signals=['modal'])，click_xy点击批量编辑优先级，observe_wait验证弹窗出现，dom_tree分析弹窗结构"
       },
-      "expected_result": "1. 点击加急按钮后，系统给出操作成功提示\n2. 重新查询后，该记录是否推送仓库列变为是\n3. 优先级可能变为加急级别",
-      "automation_suggestion": "close_modal清理残留，get_table_values记录操作前状态，click_table_cell勾选，observe_start(signals=['notification','message','network'])，click_xy点击加急，observe_wait验证提示，再次get_table_values验证状态变为是"
-    },
-    {
-      "case_id": "W006",
-      "case_title": "勾选一条加急记录后点击取消加急验证状态回退",
-      "priority": "高级",
-      "verify_point": "取消加急操作成功后是否推送仓库列恢复为否",
-      "test_type": "功能测试",
-      "function": "取消加急",
-      "preconditions": [
-        "已登录系统",
-        "进入生产管理-领退料明细表页面",
-        "空条件查询已加载全量列表",
-        "表格至少存在一条加急记录（是否推送仓库为是）"
-      ],
-      "test_steps": [
-        "清空当前页所有通知和弹窗",
-        "记录操作前是否推送仓库列的值",
-        "勾选表格一条加急记录",
-        "启动消息和网络监听",
-        "点击取消加急按钮",
-        "观察是否有操作成功提示",
-        "重新查询或刷新列表",
-        "核对是否推送仓库列是否恢复为否"
-      ],
-      "test_data": {
-        "勾选记录数": "1",
-        "操作前状态": "是",
-        "预期操作后状态": "否",
-        "预期提示": "取消加急成功或类似提示"
+      {
+        "case_id": "W005",
+        "case_title": "勾选一条记录后点击加急验证状态变化",
+        "priority": "高级",
+        "verify_point": "加急操作成功后是否推送仓库列变为是",
+        "test_type": "功能测试",
+        "function": "加急",
+        "preconditions": [
+          "已登录系统",
+          "进入生产管理-领退料明细表页面",
+          "空条件查询已加载全量列表",
+          "表格至少存在一条记录",
+          "该记录是否推送仓库当前为否"
+        ],
+        "test_steps": [
+          "清空当前页所有通知和弹窗",
+          "记录操作前是否推送仓库列的值",
+          "勾选表格第一条记录",
+          "启动消息和网络监听",
+          "点击加急按钮",
+          "观察是否有操作成功提示",
+          "重新查询或刷新列表",
+          "核对是否推送仓库列是否变为是"
+        ],
+        "test_data": {
+          "勾选记录数": "1",
+          "操作前状态": "否",
+          "预期操作后状态": "是",
+          "预期提示": "加急成功或类似提示"
+        },
+        "expected_result": "1. 点击加急按钮后，系统给出操作成功提示\n2. 重新查询后，该记录是否推送仓库列变为是\n3. 优先级可能变为加急级别",
+        "automation_suggestion": "close_modal清理残留，get_table_values记录操作前状态，click_table_cell勾选，observe_start(signals=['notification','message','network'])，click_xy点击加急，observe_wait验证提示，再次get_table_values验证状态变为是"
       },
-      "expected_result": "1. 点击取消加急按钮后，系统给出操作成功提示\n2. 重新查询后，该记录是否推送仓库列恢复为否\n3. 优先级恢复为普通级别",
-      "automation_suggestion": "close_modal清理残留，get_table_values记录操作前状态，click_table_cell勾选，observe_start(signals=['notification','message','network'])，click_xy点击取消加急，observe_wait验证提示，再次get_table_values验证状态变为否"
-    },
-    {
-      "case_id": "W007",
-      "case_title": "勾选一条记录后点击推送仓库验证状态变化",
-      "priority": "高级",
-      "verify_point": "推送仓库操作成功后是否推送仓库列变为是",
-      "test_type": "功能测试",
-      "function": "推送仓库",
-      "preconditions": [
-        "已登录系统",
-        "进入生产管理-领退料明细表页面",
-        "空条件查询已加载全量列表",
-        "表格至少存在一条记录",
-        "该记录是否推送仓库当前为否"
-      ],
-      "test_steps": [
-        "清空当前页所有通知和弹窗",
-        "记录操作前是否推送仓库列的值",
-        "勾选表格第一条记录",
-        "启动消息和网络监听",
-        "点击推送仓库按钮",
-        "观察是否有操作成功提示",
-        "重新查询或刷新列表",
-        "核对是否推送仓库列是否变为是"
-      ],
-      "test_data": {
-        "勾选记录数": "1",
-        "操作前状态": "否",
-        "预期操作后状态": "是",
-        "预期提示": "推送成功或类似提示"
+      {
+        "case_id": "W006",
+        "case_title": "勾选一条加急记录后点击取消加急验证状态回退",
+        "priority": "高级",
+        "verify_point": "取消加急操作成功后是否推送仓库列恢复为否",
+        "test_type": "功能测试",
+        "function": "取消加急",
+        "preconditions": [
+          "已登录系统",
+          "进入生产管理-领退料明细表页面",
+          "空条件查询已加载全量列表",
+          "表格至少存在一条加急记录（是否推送仓库为是）"
+        ],
+        "test_steps": [
+          "清空当前页所有通知和弹窗",
+          "记录操作前是否推送仓库列的值",
+          "勾选表格一条加急记录",
+          "启动消息和网络监听",
+          "点击取消加急按钮",
+          "观察是否有操作成功提示",
+          "重新查询或刷新列表",
+          "核对是否推送仓库列是否恢复为否"
+        ],
+        "test_data": {
+          "勾选记录数": "1",
+          "操作前状态": "是",
+          "预期操作后状态": "否",
+          "预期提示": "取消加急成功或类似提示"
+        },
+        "expected_result": "1. 点击取消加急按钮后，系统给出操作成功提示\n2. 重新查询后，该记录是否推送仓库列恢复为否\n3. 优先级恢复为普通级别",
+        "automation_suggestion": "close_modal清理残留，get_table_values记录操作前状态，click_table_cell勾选，observe_start(signals=['notification','message','network'])，click_xy点击取消加急，observe_wait验证提示，再次get_table_values验证状态变为否"
       },
-      "expected_result": "1. 点击推送仓库按钮后，系统给出操作成功提示\n2. 重新查询后，该记录是否推送仓库列变为是\n3. 领退料状态可能变为推送中或已推送",
-      "automation_suggestion": "close_modal清理残留，get_table_values记录操作前状态，click_table_cell勾选，observe_start(signals=['notification','message','network'])，click_xy点击推送仓库，observe_wait验证提示，再次get_table_values验证状态变为是"
-    },
-    {
-      "case_id": "W008",
-      "case_title": "点击领退单号查看明细页面探索",
-      "priority": "高级",
-      "verify_point": "领退单号列点击后能查看领退料单明细",
-      "test_type": "功能测试",
-      "function": "查看明细",
-      "preconditions": [
-        "已登录系统",
-        "进入生产管理-领退料明细表页面",
-        "空条件查询已加载全量列表",
-        "表格至少存在一条记录"
-      ],
-      "test_steps": [
-        "清空当前页所有通知和弹窗",
-        "记录操作前领退单号值",
-        "启动页面变化观察",
-        "点击表格第一条记录的领退单号单元格",
-        "观察是出现弹窗还是新tab打开",
-        "扫描明细页面结构",
-        "关闭或返回列表页"
-      ],
-      "test_data": {
-        "源单号": "从表格中读取的领退单号",
-        "明细查看方式": "弹窗或新tab或iframe"
+      {
+        "case_id": "W007",
+        "case_title": "勾选一条记录后点击推送仓库验证状态变化",
+        "priority": "高级",
+        "verify_point": "推送仓库操作成功后是否推送仓库列变为是",
+        "test_type": "功能测试",
+        "function": "推送仓库",
+        "preconditions": [
+          "已登录系统",
+          "进入生产管理-领退料明细表页面",
+          "空条件查询已加载全量列表",
+          "表格至少存在一条记录",
+          "该记录是否推送仓库当前为否"
+        ],
+        "test_steps": [
+          "清空当前页所有通知和弹窗",
+          "记录操作前是否推送仓库列的值",
+          "勾选表格第一条记录",
+          "启动消息和网络监听",
+          "点击推送仓库按钮",
+          "观察是否有操作成功提示",
+          "重新查询或刷新列表",
+          "核对是否推送仓库列是否变为是"
+        ],
+        "test_data": {
+          "勾选记录数": "1",
+          "操作前状态": "否",
+          "预期操作后状态": "是",
+          "预期提示": "推送成功或类似提示"
+        },
+        "expected_result": "1. 点击推送仓库按钮后，系统给出操作成功提示\n2. 重新查询后，该记录是否推送仓库列变为是\n3. 领退料状态可能变为推送中或已推送",
+        "automation_suggestion": "close_modal清理残留，get_table_values记录操作前状态，click_table_cell勾选，observe_start(signals=['notification','message','network'])，click_xy点击推送仓库，observe_wait验证提示，再次get_table_values验证状态变为是"
       },
-      "expected_result": "1. 点击领退单号后，成功打开明细页面或弹窗\n2. 明细页面展示该领退料单的完整信息\n3. 有返回或关闭按钮能返回列表",
-      "automation_suggestion": "close_modal清理残留，get_table_values记录单号，observe_start(signals=['modal','tab','url'])，click_table_cell点击领退单号，observe_wait观察变化，scan_page_elements或dom_tree分析明细页面"
-    },
-    {
-      "case_id": "W009",
-      "case_title": "生产备料新增页面按制令单添加功能探索",
-      "priority": "高级",
-      "verify_point": "按制令单添加按钮能正常工作",
-      "test_type": "功能测试",
-      "function": "按制令单添加",
-      "preconditions": [
-        "已登录系统",
-        "已通过添加领退料单进入生产备料新增页面"
-      ],
-      "test_steps": [
-        "清空当前页所有通知和弹窗",
-        "启动页面变化观察",
-        "点击按制令单添加按钮",
-        "观察是否出现制令单选择弹窗或其他交互",
-        "扫描弹窗结构"
-      ],
-      "test_data": {
-        "操作": "点击按制令单添加",
-        "预期交互": "制令单选择弹窗"
+      {
+        "case_id": "W008",
+        "case_title": "点击领退单号查看明细页面探索",
+        "priority": "高级",
+        "verify_point": "领退单号列点击后能查看领退料单明细",
+        "test_type": "功能测试",
+        "function": "查看明细",
+        "preconditions": [
+          "已登录系统",
+          "进入生产管理-领退料明细表页面",
+          "空条件查询已加载全量列表",
+          "表格至少存在一条记录"
+        ],
+        "test_steps": [
+          "清空当前页所有通知和弹窗",
+          "记录操作前领退单号值",
+          "启动页面变化观察",
+          "点击表格第一条记录的领退单号单元格",
+          "观察是出现弹窗还是新tab打开",
+          "扫描明细页面结构",
+          "关闭或返回列表页"
+        ],
+        "test_data": {
+          "源单号": "从表格中读取的领退单号",
+          "明细查看方式": "弹窗或新tab或iframe"
+        },
+        "expected_result": "1. 点击领退单号后，成功打开明细页面或弹窗\n2. 明细页面展示该领退料单的完整信息\n3. 有返回或关闭按钮能返回列表",
+        "automation_suggestion": "close_modal清理残留，get_table_values记录单号，observe_start(signals=['modal','tab','url'])，click_table_cell点击领退单号，observe_wait观察变化，scan_page_elements或dom_tree分析明细页面"
       },
-      "expected_result": "1. 点击按制令单添加按钮后，出现制令单选择交互\n2. 可以选择制令单\n3. 有确认或取消按钮",
-      "automation_suggestion": "close_modal清理残留，observe_start(signals=['modal'])，click_xy点击按制令单添加，observe_wait验证弹窗出现，dom_tree分析弹窗结构"
-    },
-    {
-      "case_id": "W010",
-      "case_title": "生产备料新增页面按物料添加功能探索",
-      "priority": "高级",
-      "verify_point": "按物料添加按钮能正常工作",
-      "test_type": "功能测试",
-      "function": "按物料添加",
-      "preconditions": [
-        "已登录系统",
-        "已通过添加领退料单进入生产备料新增页面"
-      ],
-      "test_steps": [
-        "清空当前页所有通知和弹窗",
-        "启动页面变化观察",
-        "点击按物料添加按钮",
-        "观察是否出现物料选择弹窗或其他交互",
-        "扫描弹窗结构"
-      ],
-      "test_data": {
-        "操作": "点击按物料添加",
-        "预期交互": "物料选择弹窗"
+      {
+        "case_id": "W009",
+        "case_title": "生产备料新增页面按制令单添加功能探索",
+        "priority": "高级",
+        "verify_point": "按制令单添加按钮能正常工作",
+        "test_type": "功能测试",
+        "function": "按制令单添加",
+        "preconditions": [
+          "已登录系统",
+          "已通过添加领退料单进入生产备料新增页面"
+        ],
+        "test_steps": [
+          "清空当前页所有通知和弹窗",
+          "启动页面变化观察",
+          "点击按制令单添加按钮",
+          "观察是否出现制令单选择弹窗或其他交互",
+          "扫描弹窗结构"
+        ],
+        "test_data": {
+          "操作": "点击按制令单添加",
+          "预期交互": "制令单选择弹窗"
+        },
+        "expected_result": "1. 点击按制令单添加按钮后，出现制令单选择交互\n2. 可以选择制令单\n3. 有确认或取消按钮",
+        "automation_suggestion": "close_modal清理残留，observe_start(signals=['modal'])，click_xy点击按制令单添加，observe_wait验证弹窗出现，dom_tree分析弹窗结构"
       },
-      "expected_result": "1. 点击按物料添加按钮后，出现物料选择交互\n2. 可以选择物料\n3. 有确认或取消按钮",
-      "automation_suggestion": "close_modal清理残留，observe_start(signals=['modal'])，click_xy点击按物料添加，observe_wait验证弹窗出现，dom_tree分析弹窗结构"
-    },
-    {
-      "case_id": "W011",
-      "case_title": "点击流程设置按钮探索功能",
-      "priority": "中级",
-      "verify_point": "流程设置按钮能正常打开配置界面",
-      "test_type": "功能测试",
-      "function": "流程设置",
-      "preconditions": [
-        "已登录系统",
-        "进入生产管理-领退料明细表页面"
-      ],
-      "test_steps": [
-        "清空当前页所有通知和弹窗",
-        "启动页面变化观察",
-        "点击流程设置按钮",
-        "观察是否出现弹窗或新页面",
-        "扫描配置界面结构"
-      ],
-      "test_data": {
-        "操作": "点击流程设置",
-        "预期交互": "流程配置弹窗或新页面"
+      {
+        "case_id": "W010",
+        "case_title": "生产备料新增页面按物料添加功能探索",
+        "priority": "高级",
+        "verify_point": "按物料添加按钮能正常工作",
+        "test_type": "功能测试",
+        "function": "按物料添加",
+        "preconditions": [
+          "已登录系统",
+          "已通过添加领退料单进入生产备料新增页面"
+        ],
+        "test_steps": [
+          "清空当前页所有通知和弹窗",
+          "启动页面变化观察",
+          "点击按物料添加按钮",
+          "观察是否出现物料选择弹窗或其他交互",
+          "扫描弹窗结构"
+        ],
+        "test_data": {
+          "操作": "点击按物料添加",
+          "预期交互": "物料选择弹窗"
+        },
+        "expected_result": "1. 点击按物料添加按钮后，出现物料选择交互\n2. 可以选择物料\n3. 有确认或取消按钮",
+        "automation_suggestion": "close_modal清理残留，observe_start(signals=['modal'])，click_xy点击按物料添加，observe_wait验证弹窗出现，dom_tree分析弹窗结构"
       },
-      "expected_result": "1. 点击流程设置按钮后，打开流程配置界面\n2. 可以查看或编辑审批流程\n3. 有保存或关闭按钮",
-      "automation_suggestion": "close_modal清理残留，observe_start(signals=['modal','tab','url'])，click_xy点击流程设置，observe_wait验证交互出现，dom_tree分析界面结构"
-    },
-    {
-      "case_id": "W012",
-      "case_title": "点击仓库推送配置按钮探索功能",
-      "priority": "中级",
-      "verify_point": "仓库推送配置按钮能正常打开配置界面",
-      "test_type": "功能测试",
-      "function": "仓库推送配置",
-      "preconditions": [
-        "已登录系统",
-        "进入生产管理-领退料明细表页面"
-      ],
-      "test_steps": [
-        "清空当前页所有通知和弹窗",
-        "启动页面变化观察",
-        "点击仓库推送配置按钮",
-        "观察是否出现弹窗或新页面",
-        "扫描配置界面结构"
-      ],
-      "test_data": {
-        "操作": "点击仓库推送配置",
-        "预期交互": "仓库配置弹窗或新页面"
+      {
+        "case_id": "W011",
+        "case_title": "点击流程设置按钮探索功能",
+        "priority": "中级",
+        "verify_point": "流程设置按钮能正常打开配置界面",
+        "test_type": "功能测试",
+        "function": "流程设置",
+        "preconditions": [
+          "已登录系统",
+          "进入生产管理-领退料明细表页面"
+        ],
+        "test_steps": [
+          "清空当前页所有通知和弹窗",
+          "启动页面变化观察",
+          "点击流程设置按钮",
+          "观察是否出现弹窗或新页面",
+          "扫描配置界面结构"
+        ],
+        "test_data": {
+          "操作": "点击流程设置",
+          "预期交互": "流程配置弹窗或新页面"
+        },
+        "expected_result": "1. 点击流程设置按钮后，打开流程配置界面\n2. 可以查看或编辑审批流程\n3. 有保存或关闭按钮",
+        "automation_suggestion": "close_modal清理残留，observe_start(signals=['modal','tab','url'])，click_xy点击流程设置，observe_wait验证交互出现，dom_tree分析界面结构"
       },
-      "expected_result": "1. 点击仓库推送配置按钮后，打开仓库推送配置界面\n2. 可以查看或编辑仓库配置\n3. 有保存或关闭按钮",
-      "automation_suggestion": "close_modal清理残留，observe_start(signals=['modal','tab','url'])，click_xy点击仓库推送配置，observe_wait验证交互出现，dom_tree分析界面结构"
-    },
-    {
-      "case_id": "W013",
-      "case_title": "点击导出按钮探索导出功能",
-      "priority": "中级",
-      "verify_point": "导出按钮能正常触发导出下载",
-      "test_type": "功能测试",
-      "function": "导出",
-      "preconditions": [
-        "已登录系统",
-        "进入生产管理-领退料明细表页面",
-        "空条件查询已加载全量列表"
-      ],
-      "test_steps": [
-        "清空当前页所有通知和弹窗",
-        "启动网络监听",
-        "点击导出按钮",
-        "观察是否出现导出选项或直接开始下载",
-        "观察网络请求和文件下载"
-      ],
-      "test_data": {
-        "操作": "点击导出",
-        "预期文件格式": "Excel或其他格式"
+      {
+        "case_id": "W012",
+        "case_title": "点击仓库推送配置按钮探索功能",
+        "priority": "中级",
+        "verify_point": "仓库推送配置按钮能正常打开配置界面",
+        "test_type": "功能测试",
+        "function": "仓库推送配置",
+        "preconditions": [
+          "已登录系统",
+          "进入生产管理-领退料明细表页面"
+        ],
+        "test_steps": [
+          "清空当前页所有通知和弹窗",
+          "启动页面变化观察",
+          "点击仓库推送配置按钮",
+          "观察是否出现弹窗或新页面",
+          "扫描配置界面结构"
+        ],
+        "test_data": {
+          "操作": "点击仓库推送配置",
+          "预期交互": "仓库配置弹窗或新页面"
+        },
+        "expected_result": "1. 点击仓库推送配置按钮后，打开仓库推送配置界面\n2. 可以查看或编辑仓库配置\n3. 有保存或关闭按钮",
+        "automation_suggestion": "close_modal清理残留，observe_start(signals=['modal','tab','url'])，click_xy点击仓库推送配置，observe_wait验证交互出现，dom_tree分析界面结构"
       },
-      "expected_result": "1. 点击导出按钮后，触发导出操作\n2. 可能出现导出条件选择弹窗\n3. 成功下载导出文件",
-      "automation_suggestion": "close_modal清理残留，listen_start(targets=['gateway'],method='ALL')，click_xy点击导出，observe_start(signals=['modal','notification','message'])，listen_wait验证导出接口"
-    },
-    {
-      "case_id": "W014",
-      "case_title": "点击打印按钮探索打印功能",
-      "priority": "中级",
-      "verify_point": "打印按钮能正常触发打印预览",
-      "test_type": "功能测试",
-      "function": "打印",
-      "preconditions": [
-        "已登录系统",
-        "进入生产管理-领退料明细表页面",
-        "空条件查询已加载全量列表"
-      ],
-      "test_steps": [
-        "清空当前页所有通知和弹窗",
-        "启动页面变化观察",
-        "点击打印按钮",
-        "观察是否出现打印预览弹窗或新tab",
-        "观察浏览器打印对话框是否触发"
-      ],
-      "test_data": {
-        "操作": "点击打印",
-        "预期交互": "打印预览或浏览器打印对话框"
+      {
+        "case_id": "W013",
+        "case_title": "点击导出按钮探索导出功能",
+        "priority": "中级",
+        "verify_point": "导出按钮能正常触发导出下载",
+        "test_type": "功能测试",
+        "function": "导出",
+        "preconditions": [
+          "已登录系统",
+          "进入生产管理-领退料明细表页面",
+          "空条件查询已加载全量列表"
+        ],
+        "test_steps": [
+          "清空当前页所有通知和弹窗",
+          "启动网络监听",
+          "点击导出按钮",
+          "观察是否出现导出选项或直接开始下载",
+          "观察网络请求和文件下载"
+        ],
+        "test_data": {
+          "操作": "点击导出",
+          "预期文件格式": "Excel或其他格式"
+        },
+        "expected_result": "1. 点击导出按钮后，触发导出操作\n2. 可能出现导出条件选择弹窗\n3. 成功下载导出文件",
+        "automation_suggestion": "close_modal清理残留，listen_start(targets=['gateway'],method='ALL')，click_xy点击导出，observe_start(signals=['modal','notification','message'])，listen_wait验证导出接口"
       },
-      "expected_result": "1. 点击打印按钮后，触发打印操作\n2. 可能出现打印条件选择弹窗\n3. 打开浏览器打印预览",
-      "automation_suggestion": "close_modal清理残留，observe_start(signals=['modal','tab','url'])，click_xy点击打印，observe_wait观察打印触发"
-    }
-  ]
+      {
+        "case_id": "W014",
+        "case_title": "点击打印按钮探索打印功能",
+        "priority": "中级",
+        "verify_point": "打印按钮能正常触发打印预览",
+        "test_type": "功能测试",
+        "function": "打印",
+        "preconditions": [
+          "已登录系统",
+          "进入生产管理-领退料明细表页面",
+          "空条件查询已加载全量列表"
+        ],
+        "test_steps": [
+          "清空当前页所有通知和弹窗",
+          "启动页面变化观察",
+          "点击打印按钮",
+          "观察是否出现打印预览弹窗或新tab",
+          "观察浏览器打印对话框是否触发"
+        ],
+        "test_data": {
+          "操作": "点击打印",
+          "预期交互": "打印预览或浏览器打印对话框"
+        },
+        "expected_result": "1. 点击打印按钮后，触发打印操作\n2. 可能出现打印条件选择弹窗\n3. 打开浏览器打印预览",
+        "automation_suggestion": "close_modal清理残留，observe_start(signals=['modal','tab','url'])，click_xy点击打印，observe_wait观察打印触发"
+      }
+    ]
+  }
 }

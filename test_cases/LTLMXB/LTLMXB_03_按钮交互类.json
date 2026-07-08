@@ -1,105 +1,116 @@
 {
   "module_info": {
     "enterprise_prefix": "NB",
-    "module_name": "生产管理_领退料明细表",
+    "module_pinyin": "LTLMXB",
     "module_level1": "生产管理",
     "module_level2": "领退料明细表",
-    "module_pinyin": "LTLMXB",
-    "author": "Hooplus1ce"
+    "author": "Hooplus1ce",
+    "module_name": "领退料明细表",
+    "domain": "MOM"
   },
-  "category": "B - 按钮交互类",
-  "test_cases": [
-    {
-      "case_id": "B001",
-      "case_title": "未勾选记录时批量编辑优先级提示",
-      "priority": "中级",
-      "verify_point": "批量编辑优先级必须先勾选记录",
-      "test_type": "功能测试",
-      "function": "批量编辑优先级",
-      "preconditions": [
-        "已登录系统",
-        "进入生产管理-领退料明细表页面",
-        "表格未勾选任何记录",
-        "上一操作产生的通知已关闭"
-      ],
-      "test_steps": [
-        "点击批量编辑优先级按钮",
-        "观察系统提示"
-      ],
-      "test_data": {
-        "勾选记录数": "0"
-      },
-      "expected_result": "1. 系统不进入批量编辑流程\n2. 页面出现提示请勾选记录\n3. 表格数据不发生变化",
-      "automation_suggestion": "close_modal清理残留通知，observe_start监听notification，click_xy点击批量编辑优先级，observe_wait验证提示请勾选记录"
+  "test_cases": {
+    "module_info": {
+      "enterprise_prefix": "NB",
+      "module_name": "生产管理_领退料明细表",
+      "module_level1": "生产管理",
+      "module_level2": "领退料明细表",
+      "module_pinyin": "LTLMXB",
+      "author": "Hooplus1ce"
     },
-    {
-      "case_id": "B002",
-      "case_title": "未勾选记录时加急按钮提示",
-      "priority": "中级",
-      "verify_point": "加急操作必须先勾选记录",
-      "test_type": "功能测试",
-      "function": "加急",
-      "preconditions": [
-        "已登录系统",
-        "进入生产管理-领退料明细表页面",
-        "表格未勾选任何记录",
-        "上一操作产生的通知已关闭"
-      ],
-      "test_steps": [
-        "点击加急按钮",
-        "观察系统提示"
-      ],
-      "test_data": {
-        "勾选记录数": "0"
+    "category": "B - 按钮交互类",
+    "test_cases": [
+      {
+        "case_id": "B001",
+        "case_title": "未勾选记录时批量编辑优先级提示",
+        "priority": "中级",
+        "verify_point": "批量编辑优先级必须先勾选记录",
+        "test_type": "功能测试",
+        "function": "批量编辑优先级",
+        "preconditions": [
+          "已登录系统",
+          "进入生产管理-领退料明细表页面",
+          "表格未勾选任何记录",
+          "上一操作产生的通知已关闭"
+        ],
+        "test_steps": [
+          "点击批量编辑优先级按钮",
+          "观察系统提示"
+        ],
+        "test_data": {
+          "勾选记录数": "0"
+        },
+        "expected_result": "1. 系统不进入批量编辑流程\n2. 页面出现提示请勾选记录\n3. 表格数据不发生变化",
+        "automation_suggestion": "close_modal清理残留通知，observe_start监听notification，click_xy点击批量编辑优先级，observe_wait验证提示请勾选记录"
       },
-      "expected_result": "1. 系统不执行加急操作\n2. 页面出现提示请勾选记录\n3. 当前记录优先级和加急状态不被修改",
-      "automation_suggestion": "close_modal清理残留通知，observe_start监听notification，click_xy点击加急，observe_wait验证提示请勾选记录"
-    },
-    {
-      "case_id": "B003",
-      "case_title": "未勾选记录时取消加急按钮提示",
-      "priority": "中级",
-      "verify_point": "取消加急操作必须先勾选记录",
-      "test_type": "功能测试",
-      "function": "取消加急",
-      "preconditions": [
-        "已登录系统",
-        "进入生产管理-领退料明细表页面",
-        "表格未勾选任何记录",
-        "上一操作产生的通知已关闭"
-      ],
-      "test_steps": [
-        "点击取消加急按钮",
-        "观察系统提示"
-      ],
-      "test_data": {
-        "勾选记录数": "0"
+      {
+        "case_id": "B002",
+        "case_title": "未勾选记录时加急按钮提示",
+        "priority": "中级",
+        "verify_point": "加急操作必须先勾选记录",
+        "test_type": "功能测试",
+        "function": "加急",
+        "preconditions": [
+          "已登录系统",
+          "进入生产管理-领退料明细表页面",
+          "表格未勾选任何记录",
+          "上一操作产生的通知已关闭"
+        ],
+        "test_steps": [
+          "点击加急按钮",
+          "观察系统提示"
+        ],
+        "test_data": {
+          "勾选记录数": "0"
+        },
+        "expected_result": "1. 系统不执行加急操作\n2. 页面出现提示请勾选记录\n3. 当前记录优先级和加急状态不被修改",
+        "automation_suggestion": "close_modal清理残留通知，observe_start监听notification，click_xy点击加急，observe_wait验证提示请勾选记录"
       },
-      "expected_result": "1. 系统不执行取消加急操作\n2. 页面出现提示请勾选记录\n3. 当前记录优先级和加急状态不被修改",
-      "automation_suggestion": "close_modal清理残留通知，observe_start监听notification，click_xy点击取消加急，observe_wait验证提示请勾选记录"
-    },
-    {
-      "case_id": "B004",
-      "case_title": "未勾选记录时推送仓库按钮提示",
-      "priority": "中级",
-      "verify_point": "推送仓库操作必须先勾选记录",
-      "test_type": "功能测试",
-      "function": "推送仓库",
-      "preconditions": [
-        "已登录系统",
-        "进入生产管理-领退料明细表页面",
-        "表格未勾选任何记录",
-        "上一操作产生的通知已关闭"
-      ],
-      "test_steps": [
-        "点击推送仓库按钮",
-        "观察系统提示"
-      ],
-      "test_data": {
-        "勾选记录数": "0"
+      {
+        "case_id": "B003",
+        "case_title": "未勾选记录时取消加急按钮提示",
+        "priority": "中级",
+        "verify_point": "取消加急操作必须先勾选记录",
+        "test_type": "功能测试",
+        "function": "取消加急",
+        "preconditions": [
+          "已登录系统",
+          "进入生产管理-领退料明细表页面",
+          "表格未勾选任何记录",
+          "上一操作产生的通知已关闭"
+        ],
+        "test_steps": [
+          "点击取消加急按钮",
+          "观察系统提示"
+        ],
+        "test_data": {
+          "勾选记录数": "0"
+        },
+        "expected_result": "1. 系统不执行取消加急操作\n2. 页面出现提示请勾选记录\n3. 当前记录优先级和加急状态不被修改",
+        "automation_suggestion": "close_modal清理残留通知，observe_start监听notification，click_xy点击取消加急，observe_wait验证提示请勾选记录"
       },
-      "expected_result": "1. 系统不执行推送仓库操作\n2. 页面出现提示请勾选记录\n3. 是否推送仓库列值不发生变化",
-      "automation_suggestion": "close_modal清理残留通知，observe_start监听notification，click_xy点击推送仓库，observe_wait验证提示请勾选记录"
-    }
-  ]
+      {
+        "case_id": "B004",
+        "case_title": "未勾选记录时推送仓库按钮提示",
+        "priority": "中级",
+        "verify_point": "推送仓库操作必须先勾选记录",
+        "test_type": "功能测试",
+        "function": "推送仓库",
+        "preconditions": [
+          "已登录系统",
+          "进入生产管理-领退料明细表页面",
+          "表格未勾选任何记录",
+          "上一操作产生的通知已关闭"
+        ],
+        "test_steps": [
+          "点击推送仓库按钮",
+          "观察系统提示"
+        ],
+        "test_data": {
+          "勾选记录数": "0"
+        },
+        "expected_result": "1. 系统不执行推送仓库操作\n2. 页面出现提示请勾选记录\n3. 是否推送仓库列值不发生变化",
+        "automation_suggestion": "close_modal清理残留通知，observe_start监听notification，click_xy点击推送仓库，observe_wait验证提示请勾选记录"
+      }
+    ]
+  }
 }

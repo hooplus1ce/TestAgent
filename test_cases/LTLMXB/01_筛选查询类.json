@@ -1,0 +1,151 @@
+{
+  "module_info": {
+    "enterprise_prefix": "NB",
+    "module_pinyin": "LTLMXB",
+    "module_level1": "生产管理",
+    "module_level2": "领退料明细表",
+    "author": "Hooplus1ce",
+    "module_name": "领退料明细表",
+    "domain": "MOM"
+  },
+  "test_cases": [
+    {
+      "case_id": "F001",
+      "case_title": "按领退单号筛选记录",
+      "priority": "低级",
+      "verify_point": "筛选结果正确性",
+      "test_type": "功能测试",
+      "function": "查询",
+      "preconditions": [
+        "已登录 SCM 系统",
+        "在领退料明细表页面",
+        "筛选区已展开为内联模式",
+        "表格已加载数据"
+      ],
+      "test_steps": [
+        "在领退单号字段的操作符下拉中选择「包含」",
+        "在领退单号字段输入框中输入页面中已存在的领退单号",
+        "点击查询按钮"
+      ],
+      "test_data": {
+        "领退单号": "页面真实存在的单号"
+      },
+      "expected_result": "表格仅显示该领退单号的记录，其余行被过滤",
+      "automation_suggestion": "使用 input 设置筛选值，click 查询，get_column_values('领退单号') 断言每行均包含输入值"
+    },
+    {
+      "case_id": "F002",
+      "case_title": "按审批状态筛选记录",
+      "priority": "低级",
+      "verify_point": "下拉筛选字段筛选正确性",
+      "test_type": "功能测试",
+      "function": "查询",
+      "preconditions": [
+        "已登录 SCM 系统",
+        "在领退料明细表页面",
+        "筛选区已展开为内联模式",
+        "表格已加载数据"
+      ],
+      "test_steps": [
+        "在审批状态字段的操作符下拉中选择「等于」",
+        "在审批状态值下拉中选择「审批通过」",
+        "点击查询按钮"
+      ],
+      "test_data": {
+        "审批状态": "审批通过"
+      },
+      "expected_result": "表格仅显示审批状态为「审批通过」的记录",
+      "automation_suggestion": "使用 select_option 设置审批状态值，click 查询，get_column_values('审批状态') 断言每行均为「审批通过」"
+    },
+    {
+      "case_id": "F003",
+      "case_title": "按制单时间范围筛选记录",
+      "priority": "低级",
+      "verify_point": "日期范围筛选正确性",
+      "test_type": "功能测试",
+      "function": "查询",
+      "preconditions": [
+        "已登录 SCM 系统",
+        "在领退料明细表页面",
+        "筛选区已展开为内联模式",
+        "表格已加载数据"
+      ],
+      "test_steps": [
+        "在制单时间字段选择开始日期和结束日期",
+        "点击查询按钮"
+      ],
+      "test_data": {
+        "制单时间": "已存在的记录日期范围"
+      },
+      "expected_result": "表格仅显示制单时间在所选范围内的记录",
+      "automation_suggestion": "使用 select_date_range 设置日期范围，click 查询，get_column_values('制单时间') 断言每行均在范围内"
+    },
+    {
+      "case_id": "F004",
+      "case_title": "按领退类型筛选记录",
+      "priority": "低级",
+      "verify_point": "下拉筛选项正确性",
+      "test_type": "功能测试",
+      "function": "查询",
+      "preconditions": [
+        "已登录 SCM 系统",
+        "在领退料明细表页面",
+        "筛选区已展开为内联模式",
+        "表格已加载数据"
+      ],
+      "test_steps": [
+        "在领退类型字段的操作符下拉中选择「等于」",
+        "在领退类型值下拉中选择「生产领料」",
+        "点击查询按钮"
+      ],
+      "test_data": {
+        "领退类型": "生产领料"
+      },
+      "expected_result": "表格仅显示领退类型为「生产领料」的记录",
+      "automation_suggestion": "使用 select_option 设置领退类型值，click 查询，get_column_values('领退类型') 断言每行均为「生产领料」"
+    },
+    {
+      "case_id": "F005",
+      "case_title": "筛选结果为空的处理",
+      "priority": "低级",
+      "verify_point": "空结果页面展示",
+      "test_type": "功能测试",
+      "function": "查询",
+      "preconditions": [
+        "已登录 SCM 系统",
+        "在领退料明细表页面",
+        "筛选区已展开为内联模式",
+        "表格已加载数据"
+      ],
+      "test_steps": [
+        "在领退单号字段输入不存在的单号",
+        "点击查询按钮"
+      ],
+      "test_data": {
+        "领退单号": "不存在的单号"
+      },
+      "expected_result": "表格显示无数据，页面提示「暂无数据」",
+      "automation_suggestion": "使用 input 输入不存在值，click 查询，观察表格显示空状态"
+    },
+    {
+      "case_id": "F006",
+      "case_title": "重置筛选条件",
+      "priority": "低级",
+      "verify_point": "筛选重置后数据恢复",
+      "test_type": "功能测试",
+      "function": "查询",
+      "preconditions": [
+        "已登录 SCM 系统",
+        "在领退料明细表页面",
+        "筛选区已展开为内联模式",
+        "表格处于已筛选状态"
+      ],
+      "test_steps": [
+        "点击重置按钮"
+      ],
+      "test_data": {},
+      "expected_result": "筛选条件恢复默认值，表格重新加载全部数据",
+      "automation_suggestion": "click 重置按钮，scan_filter_fields 验证操作符恢复默认，get_column_values 验证数据量恢复"
+    }
+  ]
+}

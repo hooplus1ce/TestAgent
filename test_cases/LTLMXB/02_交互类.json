@@ -1,0 +1,250 @@
+{
+  "module_info": {
+    "enterprise_prefix": "NB",
+    "module_pinyin": "LTLMXB",
+    "module_level1": "生产管理",
+    "module_level2": "领退料明细表",
+    "author": "Hooplus1ce",
+    "module_name": "领退料明细表",
+    "domain": "MOM"
+  },
+  "test_cases": [
+    {
+      "case_id": "I001",
+      "case_title": "选中表格行后点击加急操作",
+      "priority": "中级",
+      "verify_point": "加急操作成功反馈",
+      "test_type": "功能测试",
+      "function": "加急",
+      "preconditions": [
+        "已登录 SCM 系统",
+        "在领退料明细表页面",
+        "表格已加载数据"
+      ],
+      "test_steps": [
+        "在表格中勾选一行的复选框",
+        "点击工具栏的「加 急」按钮",
+        "观察页面变化"
+      ],
+      "test_data": {},
+      "expected_result": "操作成功，页面出现「操作成功」提示消息并自动消失",
+      "automation_suggestion": "使用 get_column_values('序号') 定位一行，click_cell(col=0, row=idx) 勾选，get_element_coords 定位加急按钮并 click，scan_floats 捕获 '操作成功' 消息"
+    },
+    {
+      "case_id": "I002",
+      "case_title": "未选中行时点击加急操作",
+      "priority": "中级",
+      "verify_point": "未选择记录时的拦截反馈",
+      "test_type": "异常测试",
+      "function": "加急",
+      "preconditions": [
+        "已登录 SCM 系统",
+        "在领退料明细表页面",
+        "表格已加载数据",
+        "未勾选任何行"
+      ],
+      "test_steps": [
+        "点击工具栏的「加 急」按钮",
+        "观察页面变化"
+      ],
+      "test_data": {},
+      "expected_result": "页面弹出通知提示「请先勾选数据」",
+      "automation_suggestion": "确保无行选中，click 加急按钮，scan_floats 或 detect_notification 捕获通知内容"
+    },
+    {
+      "case_id": "I003",
+      "case_title": "选中行后点击取消加急操作",
+      "priority": "中级",
+      "verify_point": "取消加急操作成功反馈",
+      "test_type": "功能测试",
+      "function": "加急",
+      "preconditions": [
+        "已登录 SCM 系统",
+        "在领退料明细表页面",
+        "表格已加载数据"
+      ],
+      "test_steps": [
+        "在表格中勾选一行的复选框",
+        "点击工具栏的「取消加急」按钮",
+        "观察页面变化"
+      ],
+      "test_data": {},
+      "expected_result": "操作成功，页面出现「操作成功」提示消息并自动消失",
+      "automation_suggestion": "勾选行后，get_element_coords 定位取消加急按钮并 click，scan_floats 捕获消息"
+    },
+    {
+      "case_id": "I004",
+      "case_title": "批量编辑优先级 — 通过增减按钮调整",
+      "priority": "中级",
+      "verify_point": "优先级数值增减",
+      "test_type": "功能测试",
+      "function": "批量编辑优先级",
+      "preconditions": [
+        "已登录 SCM 系统",
+        "在领退料明细表页面",
+        "表格已加载数据"
+      ],
+      "test_steps": [
+        "在表格中勾选一行的复选框",
+        "点击工具栏的「批量编辑优先级」按钮",
+        "在弹出的对话框中点击「增加」按钮",
+        "观察优先级字段值变化"
+      ],
+      "test_data": {
+        "优先级": "初始值 0，点击增加后为 1"
+      },
+      "expected_result": "弹窗打开，显示批量编辑优先级对话框，优先级数字输入框的初始值为 0，点击增加按钮后值变为 1",
+      "automation_suggestion": "click_cell 勾选行，click 批量编辑优先级按钮，scan_floats 检测模态框，click Increase Value 按钮，scan_floats 读取字段值变化"
+    },
+    {
+      "case_id": "I005",
+      "case_title": "批量编辑优先级 — 直接输入数值",
+      "priority": "中级",
+      "verify_point": "优先级数值直接输入",
+      "test_type": "功能测试",
+      "function": "批量编辑优先级",
+      "preconditions": [
+        "已登录 SCM 系统",
+        "在领退料明细表页面",
+        "表格已加载数据"
+      ],
+      "test_steps": [
+        "在表格中勾选一行的复选框",
+        "点击工具栏的「批量编辑优先级」按钮",
+        "在弹出的对话框中点击优先级输入框使其聚焦",
+        "直接输入数值 5",
+        "观察字段值变化"
+      ],
+      "test_data": {
+        "优先级": "5"
+      },
+      "expected_result": "优先级输入框显示输入的值 5",
+      "automation_suggestion": "勾选行，click 批量编辑优先级，click 输入框聚焦，input 输入 5，scan_floats 读取字段值验证"
+    },
+    {
+      "case_id": "I006",
+      "case_title": "批量编辑优先级 — 确定保存",
+      "priority": "中级",
+      "verify_point": "优先级修改保存成功",
+      "test_type": "功能测试",
+      "function": "批量编辑优先级",
+      "preconditions": [
+        "已登录 SCM 系统",
+        "在领退料明细表页面",
+        "表格已加载数据",
+        "批量编辑优先级弹窗已打开且值已修改"
+      ],
+      "test_steps": [
+        "在弹窗中点击「确定」按钮",
+        "观察页面变化"
+      ],
+      "test_data": {},
+      "expected_result": "弹窗关闭，页面出现「操作成功」提示消息，优先级修改已保存",
+      "automation_suggestion": "click 确定按钮，scan_floats 检测弹窗关闭和消息提示"
+    },
+    {
+      "case_id": "I007",
+      "case_title": "批量编辑优先级 — 取消不保存",
+      "priority": "中级",
+      "verify_point": "取消操作不保存修改",
+      "test_type": "功能测试",
+      "function": "批量编辑优先级",
+      "preconditions": [
+        "已登录 SCM 系统",
+        "在领退料明细表页面",
+        "表格已加载数据",
+        "批量编辑优先级弹窗已打开"
+      ],
+      "test_steps": [
+        "在弹窗中点击「取消」按钮",
+        "观察页面变化"
+      ],
+      "test_data": {},
+      "expected_result": "弹窗关闭，不出现操作成功提示，优先级未修改",
+      "automation_suggestion": "click 取消按钮，scan_floats 确认弹窗关闭且无消息提示"
+    },
+    {
+      "case_id": "I008",
+      "case_title": "表格展开行查看明细",
+      "priority": "低级",
+      "verify_point": "展开行显示关联子表数据",
+      "test_type": "功能测试",
+      "function": "表格行展开",
+      "preconditions": [
+        "已登录 SCM 系统",
+        "在领退料明细表页面",
+        "表格已加载数据"
+      ],
+      "test_steps": [
+        "在表格中找到带有展开图标的行",
+        "点击该行最左侧的展开图标",
+        "观察该行下方出现的展开区域"
+      ],
+      "test_data": {},
+      "expected_result": "该行下方展开子表区域，显示关联的制令单明细（含制令单号、成品编码、数量、标准用量等信息）",
+      "automation_suggestion": "scan_floats 检测展开图标坐标，click 展开，scan_floats 检测新展开的行（ant-table-expanded-row），get_html_table_data 读取子表数据"
+    },
+    {
+      "case_id": "I009",
+      "case_title": "表格展开行收起",
+      "priority": "低级",
+      "verify_point": "展开后再次点击收起",
+      "test_type": "功能测试",
+      "function": "表格行展开",
+      "preconditions": [
+        "已登录 SCM 系统",
+        "在领退料明细表页面",
+        "表格已展开某行的子表"
+      ],
+      "test_steps": [
+        "点击已展开行的收起图标",
+        "观察该行下方的展开区域是否消失"
+      ],
+      "test_data": {},
+      "expected_result": "子表区域消失，表格恢复至未展开状态",
+      "automation_suggestion": "click 收起图标，scan_floats 确认无展开行（ant-table-expanded-row 消失）"
+    },
+    {
+      "case_id": "I010",
+      "case_title": "双击表格内制令单号链接跳转",
+      "priority": "中级",
+      "verify_point": "双击制令单号切换页签",
+      "test_type": "功能测试",
+      "function": "表格链接跳转",
+      "preconditions": [
+        "已登录 SCM 系统",
+        "在领退料明细表页面",
+        "表格已加载数据"
+      ],
+      "test_steps": [
+        "在表格中找到制令单号列下的制令单号链接",
+        "双击该制令单号链接",
+        "观察页面变化"
+      ],
+      "test_data": {},
+      "expected_result": "页签切换至制令单新增页面，子页面地址变为 prodctionOrderCreate，活跃页签名称变为「制令单新增」",
+      "automation_suggestion": "scan_floats 检测可点击链接坐标，click_xy(x, y, times=2) 双击，scan_floats 检测 frame_url 和 active_tab 变化"
+    },
+    {
+      "case_id": "I011",
+      "case_title": "表格内物料编码链接点击查看详情",
+      "priority": "低级",
+      "verify_point": "可点击物料编码的交互反馈",
+      "test_type": "功能测试",
+      "function": "表格链接跳转",
+      "preconditions": [
+        "已登录 SCM 系统",
+        "在领退料明细表页面",
+        "表格已加载数据"
+      ],
+      "test_steps": [
+        "在表格中找到物料编码列下带蓝色样式的编码值",
+        "点击该物料编码",
+        "观察页面变化"
+      ],
+      "test_data": {},
+      "expected_result": "弹出物料详情弹窗，显示该物料的库存信息、价格信息和供应商信息",
+      "automation_suggestion": "scan_floats 检测可点击元素坐标，click，scan_floats 捕获弹窗内容"
+    }
+  ]
+}
