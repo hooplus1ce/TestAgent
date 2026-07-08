@@ -21,3 +21,6 @@ configs/dp_configs.ini
 
 # 截图和测试资源文件夹
 resources/
+
+# 测试用例（JSON/截图/Markdown 等），跟踪在远程仓库中但应忽略
+test_cases/
