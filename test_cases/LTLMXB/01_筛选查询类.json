@@ -30,7 +30,7 @@
       "test_data": {
         "领退单号": "页面真实存在的单号"
       },
-      "expected_result": "表格仅显示该领退单号的记录，其余行被过滤",
+      "expected_result": "1. 表格仅显示该领退单号的记录\n2. 其余行被过滤，无不符合记录",
       "automation_suggestion": "使用 input 设置筛选值，click 查询，get_column_values('领退单号') 断言每行均包含输入值"
     },
     {
@@ -54,7 +54,7 @@
       "test_data": {
         "审批状态": "审批通过"
       },
-      "expected_result": "表格仅显示审批状态为「审批通过」的记录",
+      "expected_result": "1. 表格仅显示审批状态为「审批通过」的记录\n2. 其余状态的记录均被过滤",
       "automation_suggestion": "使用 select_option 设置审批状态值，click 查询，get_column_values('审批状态') 断言每行均为「审批通过」"
     },
     {
@@ -77,7 +77,7 @@
       "test_data": {
         "制单时间": "已存在的记录日期范围"
       },
-      "expected_result": "表格仅显示制单时间在所选范围内的记录",
+      "expected_result": "1. 表格仅显示制单时间在所选范围内的记录\n2. 制单时间列各行的值均在起止日期之间",
       "automation_suggestion": "使用 select_date_range 设置日期范围，click 查询，get_column_values('制单时间') 断言每行均在范围内"
     },
     {
@@ -101,7 +101,7 @@
       "test_data": {
         "领退类型": "生产领料"
       },
-      "expected_result": "表格仅显示领退类型为「生产领料」的记录",
+      "expected_result": "1. 表格仅显示领退类型为「生产领料」的记录\n2. 其余领退类型的记录均被过滤",
       "automation_suggestion": "使用 select_option 设置领退类型值，click 查询，get_column_values('领退类型') 断言每行均为「生产领料」"
     },
     {
@@ -124,7 +124,7 @@
       "test_data": {
         "领退单号": "不存在的单号"
       },
-      "expected_result": "表格显示无数据，页面提示「暂无数据」",
+      "expected_result": "1. 表格显示无数据\n2. 页面提示「暂无数据」",
       "automation_suggestion": "使用 input 输入不存在值，click 查询，观察表格显示空状态"
     },
     {
@@ -144,7 +144,7 @@
         "点击重置按钮"
       ],
       "test_data": {},
-      "expected_result": "筛选条件恢复默认值，表格重新加载全部数据",
+      "expected_result": "1. 筛选条件恢复为默认值\n2. 表格重新加载全部数据，行数恢复为未筛选状态",
       "automation_suggestion": "click 重置按钮，scan_filter_fields 验证操作符恢复默认，get_column_values 验证数据量恢复"
     }
   ]

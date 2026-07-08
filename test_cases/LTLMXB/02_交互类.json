@@ -27,7 +27,7 @@
         "观察页面变化"
       ],
       "test_data": {},
-      "expected_result": "操作成功，页面出现「操作成功」提示消息并自动消失",
+      "expected_result": "1. 加急按钮触发操作\n2. 页面出现「操作成功」提示消息\n3. 消息约 2-3 秒后自动消失",
       "automation_suggestion": "使用 get_column_values('序号') 定位一行，click_cell(col=0, row=idx) 勾选，get_element_coords 定位加急按钮并 click，scan_floats 捕获 '操作成功' 消息"
     },
     {
@@ -48,7 +48,7 @@
         "观察页面变化"
       ],
       "test_data": {},
-      "expected_result": "页面弹出通知提示「请先勾选数据」",
+      "expected_result": "1. 页面弹出通知提示「请先勾选数据」\n2. 操作未执行，表格数据不变",
       "automation_suggestion": "确保无行选中，click 加急按钮，scan_floats 或 detect_notification 捕获通知内容"
     },
     {
@@ -69,7 +69,7 @@
         "观察页面变化"
       ],
       "test_data": {},
-      "expected_result": "操作成功，页面出现「操作成功」提示消息并自动消失",
+      "expected_result": "1. 取消加急按钮触发操作\n2. 页面出现「操作成功」提示消息\n3. 消息约 2-3 秒后自动消失",
       "automation_suggestion": "勾选行后，get_element_coords 定位取消加急按钮并 click，scan_floats 捕获消息"
     },
     {
@@ -93,7 +93,7 @@
       "test_data": {
         "优先级": "初始值 0，点击增加后为 1"
       },
-      "expected_result": "弹窗打开，显示批量编辑优先级对话框，优先级数字输入框的初始值为 0，点击增加按钮后值变为 1",
+      "expected_result": "1. 弹窗打开，显示标题「批量编辑优先级」\n2. 优先级数字输入框初始值为 0\n3. 点击增加按钮后，输入框值变为 1",
       "automation_suggestion": "click_cell 勾选行，click 批量编辑优先级按钮，scan_floats 检测模态框，click Increase Value 按钮，scan_floats 读取字段值变化"
     },
     {
@@ -118,7 +118,7 @@
       "test_data": {
         "优先级": "5"
       },
-      "expected_result": "优先级输入框显示输入的值 5",
+      "expected_result": "1. 优先级输入框聚焦后可输入\n2. 输入数值 5 后，输入框显示值 5",
       "automation_suggestion": "勾选行，click 批量编辑优先级，click 输入框聚焦，input 输入 5，scan_floats 读取字段值验证"
     },
     {
@@ -139,7 +139,7 @@
         "观察页面变化"
       ],
       "test_data": {},
-      "expected_result": "弹窗关闭，页面出现「操作成功」提示消息，优先级修改已保存",
+      "expected_result": "1. 弹窗关闭\n2. 页面出现「操作成功」提示消息\n3. 优先级修改已保存",
       "automation_suggestion": "click 确定按钮，scan_floats 检测弹窗关闭和消息提示"
     },
     {
@@ -160,7 +160,7 @@
         "观察页面变化"
       ],
       "test_data": {},
-      "expected_result": "弹窗关闭，不出现操作成功提示，优先级未修改",
+      "expected_result": "1. 弹窗关闭，返回列表页面\n2. 不出现操作成功提示\n3. 优先级未被修改",
       "automation_suggestion": "click 取消按钮，scan_floats 确认弹窗关闭且无消息提示"
     },
     {
@@ -181,7 +181,7 @@
         "观察该行下方出现的展开区域"
       ],
       "test_data": {},
-      "expected_result": "该行下方展开子表区域，显示关联的制令单明细（含制令单号、成品编码、数量、标准用量等信息）",
+      "expected_result": "1. 该行下方展开子表区域\n2. 子表显示关联的制令单明细（含制令单号、成品编码、数量、标准用量等信息）",
       "automation_suggestion": "scan_floats 检测展开图标坐标，click 展开，scan_floats 检测新展开的行（ant-table-expanded-row），get_html_table_data 读取子表数据"
     },
     {
@@ -201,7 +201,7 @@
         "观察该行下方的展开区域是否消失"
       ],
       "test_data": {},
-      "expected_result": "子表区域消失，表格恢复至未展开状态",
+      "expected_result": "1. 子表区域消失\n2. 表格恢复至未展开状态，行数减少",
       "automation_suggestion": "click 收起图标，scan_floats 确认无展开行（ant-table-expanded-row 消失）"
     },
     {
@@ -222,7 +222,7 @@
         "观察页面变化"
       ],
       "test_data": {},
-      "expected_result": "页签切换至制令单新增页面，子页面地址变为 prodctionOrderCreate，活跃页签名称变为「制令单新增」",
+      "expected_result": "1. 页签切换至制令单新增页面\n2. 子页面地址变为 prodctionOrderCreate\n3. 活跃页签名称变为「制令单新增」\n4. 新页面显示对应的制令单详情",
       "automation_suggestion": "scan_floats 检测可点击链接坐标，click_xy(x, y, times=2) 双击，scan_floats 检测 frame_url 和 active_tab 变化"
     },
     {
@@ -243,7 +243,7 @@
         "观察页面变化"
       ],
       "test_data": {},
-      "expected_result": "弹出物料详情弹窗，显示该物料的库存信息、价格信息和供应商信息",
+      "expected_result": "1. 弹出物料详情弹窗\n2. 弹窗显示该物料的库存信息、价格信息和供应商信息",
       "automation_suggestion": "scan_floats 检测可点击元素坐标，click，scan_floats 捕获弹窗内容"
     }
   ]
