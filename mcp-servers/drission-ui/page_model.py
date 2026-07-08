@@ -114,6 +114,42 @@ def get_element_center(el):
     return None
 
 
+def get_element_coords(xpath: str, index: int = 1, timeout: float = 5):
+    """通过 XPath 定位元素并返回顶层视口绝对中心坐标。
+
+    使用 DrissionPage 原生 rect.viewport_midpoint，已自动叠加 iframe 偏移，
+    返回的坐标可直接用于 click_xy 或 tab.actions.move_to()。
+
+    Args:
+        xpath: XPath 定位表达式
+        index: 第几个匹配元素（默认 1）
+        timeout: 查找超时秒数
+
+    Returns:
+        {"ok": True, "cx": float, "cy": float,
+         "tag": str, "text": str, "xpath": str} | {"ok": False, "reason": str}
+    """
+    from browser_session import get_tab, get_active_frame
+    try:
+        tab = get_tab()
+        fr = get_active_frame(tab)
+        target = fr or tab
+        el = target.ele(f"xpath:{xpath}", index=index, timeout=timeout)
+        if el is None:
+            return {"ok": False, "reason": f"未找到元素: xpath={xpath}, index={index}"}
+        mp = el.rect.viewport_midpoint
+        return {
+            "ok": True,
+            "cx": round(float(mp[0]), 1),
+            "cy": round(float(mp[1]), 1),
+            "tag": el.tag,
+            "text": (el.text or "").strip()[:80],
+            "xpath": xpath,
+        }
+    except Exception as e:
+        return {"ok": False, "reason": str(e)}
+
+
 def save_json_result(data: dict, filename: str) -> dict:
     full_path = resource_store.resolve_path(filename)
     with open(full_path, "w", encoding="utf-8") as f:

@@ -936,6 +936,25 @@ def find_elements(locator: str, in_frame: bool = True, timeout: float = 5) -> di
     return {"ok": True, "count": len(els), "elements": previews, "_truncated": len(els) > 50}
 
 
+@mcp.tool()
+@read_synchronized
+def get_element_coords(xpath: str, index: int = 1, timeout: float = 5) -> dict:
+    """通过 XPath 定位元素并返回顶层视口绝对中心坐标。
+
+    使用 DrissionPage 原生 rect.viewport_midpoint，已自动叠加 iframe 偏移，
+    返回的 cx/cy 可直接用于 click_xy。
+
+    Args:
+        xpath: XPath 定位表达式（如 "//button[contains(@class, 'ant-btn-danger')]"）
+        index: 第几个匹配元素（默认 1）
+        timeout: 查找超时秒数
+
+    Returns:
+        {ok, cx, cy, tag, text, xpath}
+    """
+    return page_model.get_element_coords(xpath=xpath, index=index, timeout=timeout)
+
+
 @read_synchronized
 def find_static(locator: str = None, in_frame: bool = True, timeout: float = 5, index: int = 1) -> dict:
     """查找元素的静态版本（s_ele 封装）。速度极快，适合批量数据采集。
