@@ -7,19 +7,34 @@ from unittest.mock import patch
 
 
 EXPECTED_PUBLIC_TOOLS = {
+    "browser_console_messages",
+    "browser_get_element_state",
+    "browser_list_caps",
+    "browser_press_key",
+    "browser_save_pdf",
+    "browser_scroll",
+    "browser_tabs",
+    "capture_page_model",
     "connect",
     "refresh_session",
     "check_session",
     "enter_module",
+    "explore_action",
     "scan_filter_fields",
     "get_active_frame",
     "dom_tree",
     "scan_page_elements",
+    "scan_toolbar_actions",
+    "scan_form_fields",
+    "scan_modal",
+    "scan_drawer",
+    "scan_pagination",
     "find_elements",
     "find_batch",
     "click",
     "click_xy",
     "select_date_range",
+    "select_option",
     "input",
     "insert_text",
     "hover",
@@ -28,15 +43,20 @@ EXPECTED_PUBLIC_TOOLS = {
     "scan_table",
     "get_table_values",
     "get_table_data",
+    "get_all_table_data",
     "click_table_cell",
     "hover_table_cell",
     "resize_table_column",
+    "scan_action_availability_by_selection",
     "close_modal",
     "observe_start",
     "observe_wait",
     "listen_start",
     "listen_wait",
     "listen_stop",
+    "network_record_start",
+    "network_record_stop",
+    "network_record_export",
     "mouse_trail",
     "download_by_browser",
     "listen_ws_start",
@@ -138,6 +158,24 @@ def test_get_table_values_routes_to_html_backend():
         get_values.assert_called_once_with("订单号", 0)
 
 
+def test_get_all_table_data_auto_prefers_vtable_backend():
+    import server
+
+    with patch.object(server.page_model.vtable, "scan_vtable_columns", return_value={
+        "ok": True,
+        "columns": [{"title": "订单号", "col": 1, "bodyBehavior": "none"}],
+    }), patch.object(server.page_model.vtable, "get_column_values", return_value={
+        "ok": True,
+        "values": ["SO001"],
+    }) as get_values:
+        result = server.get_all_table_data(kind="auto")
+
+    assert result["ok"] is True
+    assert result["kind"] == "vtable"
+    assert result["rows"] == [{"订单号": "SO001"}]
+    get_values.assert_called_once_with("订单号", raw=False)
+
+
 def test_click_table_cell_routes_to_vtable_backend_by_col():
     import server
     with patch.object(server.vtable, "click_cell", return_value={"ok": True, "col": 2, "row": 1}) as click_cell:
@@ -212,6 +250,7 @@ class _FakeListen:
         self.set_method = _FakeSetter("method", self.calls, {"GET", "POST", "PUT", "DELETE"})
         self.set_res_type = _FakeSetter("res_type", self.calls, {"XHR", "Fetch", "WebSocket"})
         self.started = None
+        self.stopped = False
         self.wait_kwargs = None
         self.wait_return = wait_return
 
@@ -221,6 +260,9 @@ class _FakeListen:
     def wait(self, **kwargs):
         self.wait_kwargs = kwargs
         return self.wait_return
+
+    def stop(self):
+        self.stopped = True
 
 
 def test_scan_controls_uses_drission_viewport_click_point():
@@ -314,6 +356,93 @@ def test_listen_ws_start_sets_websocket_listener_state_for_drissionpage_42():
     assert ("method", "all") in fake_listen.calls
     assert ("res_type", "WebSocket", True) in fake_listen.calls
     assert fake_listen.started == {"urls": ["socket"]}
+
+
+def test_network_record_start_sets_http_listener_state():
+    import server
+
+    fake_listen = _FakeListen()
+    fake_tab = SimpleNamespace(listen=fake_listen)
+
+    with patch.object(server.browser_session, "get_tab", return_value=fake_tab):
+        result = server.network_record_start("gateway", method="POST")
+
+    assert result == {
+        "ok": True,
+        "session": "active",
+        "targets": ["gateway"],
+        "method": "POST",
+        "resource_type": "ALL",
+    }
+    assert ("res_type", "all") in fake_listen.calls
+    assert ("method", "POST", True) in fake_listen.calls
+    assert fake_listen.started == {"urls": ["gateway"]}
+
+
+def test_network_record_stop_returns_packet_timeline():
+    import server
+
+    packet = SimpleNamespace(
+        url="https://example.test/gateway",
+        method="POST",
+        timestamp=123,
+        request=SimpleNamespace(headers={"api-target": "scm.order.list"}, postData='{"page":1}'),
+        response=SimpleNamespace(status=200, body={"success": True}),
+    )
+    fake_listen = _FakeListen(wait_return=[packet])
+    fake_tab = SimpleNamespace(listen=fake_listen)
+
+    with patch.object(server.browser_session, "get_tab", return_value=fake_tab):
+        server.network_record_start("gateway", method="POST")
+        result = server.network_record_stop(timeout=1, max_packets=5)
+
+    assert result["ok"] is True
+    assert result["count"] == 1
+    assert result["packets"][0]["api_target"] == "scm.order.list"
+    assert result["packets"][0]["status"] == 200
+    assert fake_listen.wait_kwargs == {"count": 5, "timeout": 1, "fit_count": False}
+    assert fake_listen.stopped is True
+
+
+def test_browser_console_messages_collects_and_filters():
+    import server
+
+    class FakeConsole:
+        def __init__(self):
+            self.listening = False
+            self.started = False
+            self.cleared = False
+            self._messages = [
+                SimpleNamespace(data={"type": "log", "args": [{"value": "ignored"}]}),
+                SimpleNamespace(data={"type": "error", "args": [{"value": "boom"}], "timestamp": 1}),
+            ]
+
+        def start(self):
+            self.listening = True
+            self.started = True
+
+        def clear(self):
+            self.cleared = True
+
+        def wait(self, timeout=None):
+            return False
+
+        @property
+        def messages(self):
+            msgs = list(self._messages)
+            self._messages.clear()
+            return msgs
+
+    fake_console = FakeConsole()
+    fake_tab = SimpleNamespace(console=fake_console)
+
+    with patch.object(server.browser_session, "get_tab", return_value=fake_tab):
+        result = server.browser_console_messages(level="error")
+
+    assert result["ok"] is True
+    assert fake_console.started is True
+    assert result["count"] == 1
+    assert result["messages"][0]["text"] == "boom"
 
 
 def test_click_xy_cleans_transient_overlays_before_click():

@@ -30,6 +30,8 @@ CAP_GROUPS = {
         "click", "click_xy", "input", "insert_text", "hover",
         # 页面理解
         "scan_page_elements", "find_elements", "find_batch", "dom_tree",
+        "capture_page_model", "scan_toolbar_actions", "scan_form_fields",
+        "scan_modal", "scan_drawer", "scan_pagination",
         # 调试
         "screenshot", "close_modal",
         # 新增：浏览器管理（借鉴 Playwright MCP）
@@ -46,20 +48,22 @@ CAP_GROUPS = {
     "vtable": [
         # 统一表格 facade
         "scan_table", "get_table_values", "get_table_data",
+        "get_all_table_data", "scan_action_availability_by_selection",
         "click_table_cell", "hover_table_cell", "resize_table_column",
     ],
     "filter": [
         # 筛选区
-        "scan_filter_fields", "select_date_range",
+        "scan_filter_fields", "select_date_range", "select_option",
     ],
     "observe": [
         # 观察器
-        "observe_start", "observe_wait",
+        "observe_start", "observe_wait", "explore_action",
     ],
     "network": [
         # 网络监听
         "listen_start", "listen_wait", "listen_stop",
         "listen_ws_start", "listen_ws_wait",
+        "network_record_start", "network_record_stop", "network_record_export",
     ],
     "storage": [
         # 存储/上下文
@@ -69,6 +73,7 @@ CAP_GROUPS = {
     "devtools": [
         # 调试/高级功能
         "run_js", "mouse_trail", "download_by_browser",
+        "browser_console_messages",
         # 新增：PDF 导出（借鉴 Playwright MCP）
         "browser_save_pdf",
     ],

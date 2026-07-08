@@ -16,5 +16,8 @@ node_modules/
 # Chrome 用户数据目录（DrissionPage --user-data-dir，几百 MB）
 dp_profile/
 
+# 本机浏览器加载配置（提交 configs/dp_configs.example.ini）
+configs/dp_configs.ini
+
 # 截图和测试资源文件夹
 resources/

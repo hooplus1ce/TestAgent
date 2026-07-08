@@ -11,7 +11,7 @@ def test_defaults():
     assert config.NEEDED_COOKIES == ["SESSION", "UCTOKEN", "cookie_token"]
     assert config.DEFAULT_PORT == 9222
     assert config.DEFAULT_TARGET_HINT == "诺贝科技"
-    assert "drission-ui-shots" in config.SHOT_DIR
+    assert os.path.basename(config.SHOT_DIR) == "resources"
     assert hasattr(config, "CHROME_PATH")
     assert hasattr(config, "EDGE_MODE")
     assert hasattr(config, "PROXY")

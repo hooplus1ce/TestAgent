@@ -27,6 +27,9 @@ import modal
 import observe
 import html_table
 import caps
+import page_model
+import network_record
+import resource_store
 
 # 日志输出到 stderr（stdout 用于 MCP 协议帧，不可污染）
 logging.basicConfig(
@@ -194,13 +197,18 @@ def enter_module(menu_text: str, timeout: float = 8, expand_filter: bool = True)
         pass
 
     if browser_session.get_active_frame(tab) is None:
-        return {"ok": True, "entered": menu_text, "iframe_ready": False, "reason": "iframe 未在 %.0fs 内出现" % timeout}
+        resource_context = resource_store.set_module(menu_text)
+        return {"ok": True, "entered": menu_text, "iframe_ready": False,
+                "resource_context": resource_context,
+                "reason": "iframe 未在 %.0fs 内出现" % timeout}
 
     expand_result = {}
     if expand_filter:
         expand_result = filter_area.expand_filter_area(tab)
         logger.info("expand_filter_area: %s", expand_result.get("reason", ""))
-    return {"ok": True, "entered": menu_text, "iframe_ready": True, "expand_filter": expand_result}
+    resource_context = resource_store.set_module(menu_text)
+    return {"ok": True, "entered": menu_text, "iframe_ready": True,
+            "expand_filter": expand_result, "resource_context": resource_context}
 
 
 @write_synchronized
@@ -368,8 +376,7 @@ def dom_tree(selector: str = "", max_depth: int = 6, max_children: int = 50,
 
         # filename 参数优先：直接保存到文件，不返回大文本
         if filename:
-            full_path = os.path.join(config.SHOT_DIR, filename)
-            os.makedirs(os.path.dirname(full_path) or ".", exist_ok=True)
+            full_path = resource_store.resolve_path(filename)
             with open(full_path, "w", encoding="utf-8") as f:
                 f.write(content_str)
             return {
@@ -562,8 +569,7 @@ def scan_page_elements(include_iframe: bool = True, max_items: int = 200, filena
 
     # filename 参数优先
     if filename:
-        full_path = os.path.join(config.SHOT_DIR, filename)
-        os.makedirs(os.path.dirname(full_path) or ".", exist_ok=True)
+        full_path = resource_store.resolve_path(filename)
         with open(full_path, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
         return {
@@ -573,6 +579,285 @@ def scan_page_elements(include_iframe: bool = True, max_items: int = 200, filena
         }
 
     return data
+
+
+@mcp.tool()
+@write_synchronized
+def capture_page_model(include_filters: bool = True, include_tables: bool = True,
+                       include_table_data: bool = True, max_table_rows: int = 80,
+                       max_elements: int = 120, filename: str = None) -> dict:
+    """聚合采集当前页面模型：URL/frame、工具栏动作、字段、弹窗/抽屉、分页、表格结构和可选表格数据。
+
+    这是测试用例设计的高信息密度入口。`include_filters=True` 会展开筛选区并读取下拉选项；
+    `filename` 提供时保存大 JSON 到截图目录而不直接返回。
+    """
+    return page_model.capture_page_model(
+        include_filters=include_filters,
+        include_tables=include_tables,
+        include_table_data=include_table_data,
+        max_table_rows=max_table_rows,
+        max_elements=max_elements,
+        filename=filename,
+    )
+
+
+@mcp.tool()
+@read_synchronized
+def scan_toolbar_actions(scope: str = "page", in_frame: bool = True, max_items: int = 120) -> dict:
+    """扫描页面可见动作按钮/链接，返回文本、禁用态、下拉提示、区域归属和矩形位置。
+
+    scope: page=页面主动作，toolbar=尽量聚焦工具栏，all=包含弹窗/筛选/分页等区域。
+    """
+    return page_model.scan_toolbar_actions(scope=scope, in_frame=in_frame, max_items=max_items)
+
+
+@mcp.tool()
+@read_synchronized
+def scan_form_fields(scope: str = "page", include_hidden: bool = False,
+                     in_frame: bool = True, max_fields: int = 200) -> dict:
+    """扫描通用表单字段，不限筛选区。scope 可为 page/filter/modal/drawer/all 或自定义 CSS 选择器。"""
+    return page_model.scan_form_fields(scope=scope, include_hidden=include_hidden,
+                                       in_frame=in_frame, max_fields=max_fields)
+
+
+@mcp.tool()
+@read_synchronized
+def scan_modal(max_items: int = 20) -> dict:
+    """扫描当前可见 Ant Design 弹窗，返回标题、正文摘要、字段、按钮和表格数量。"""
+    return page_model.scan_modal(max_items=max_items)
+
+
+@mcp.tool()
+@read_synchronized
+def scan_drawer(max_items: int = 20) -> dict:
+    """扫描当前可见 Ant Design 抽屉，返回标题、正文摘要、字段、按钮和表格数量。"""
+    return page_model.scan_drawer(max_items=max_items)
+
+
+@mcp.tool()
+@read_synchronized
+def scan_pagination(in_frame: bool = True) -> dict:
+    """扫描页面分页器，返回当前页、页大小、总数文本、上一页/下一页可用状态。"""
+    return page_model.scan_pagination(in_frame=in_frame)
+
+
+@mcp.tool()
+@write_synchronized
+def select_option(field_name: str, option_text: str, select_index: int = 0,
+                  scope: str = "auto", timeout: float = 5.0) -> dict:
+    """按字段名选择 Ant Design 下拉项。适用于筛选区和普通表单下拉。
+
+    field_name 为空时选择第一个可见下拉；select_index 用于同一字段内有多个下拉的情况。
+    """
+    return page_model.select_option(field_name=field_name, option_text=option_text,
+                                    select_index=select_index, scope=scope, timeout=timeout)
+
+
+@mcp.tool()
+@write_synchronized
+def get_all_table_data(kind: str = "auto", table_index: int = 0, max_pages: int = 1,
+                       max_rows: int = 1000, max_columns: int = 50,
+                       raw: bool = False, filename: str = None) -> dict:
+    """读取表格数据。HTML 表格可按 max_pages 翻页采集；VTable 通过列值重建当前实例可读数据。
+
+    max_pages>1 会点击分页下一页，属于会改变页面状态的采集动作。VTable 虚拟滚动/懒加载行需结合
+    分页或滚动继续采集，返回中会标注 limitation。
+    """
+    return page_model.get_all_table_data(kind=kind, table_index=table_index,
+                                         max_pages=max_pages, max_rows=max_rows,
+                                         max_columns=max_columns, raw=raw,
+                                         filename=filename)
+
+
+def _click_table_cell_raw(row: int, col: int = None, column_title: str = None,
+                          kind: str = "auto", table_index: int = 0,
+                          icon_name: str = None, hover_first: bool = True,
+                          duration: float = 0.3, double_click: bool = False) -> dict:
+    """Undecorated table click helper for aggregate tools."""
+    kind = _normalize_table_kind(kind)
+
+    def _click_vtable():
+        target_col = col
+        if target_col is None and column_title:
+            target_col, reason = _find_vtable_col(column_title)
+            if target_col is None:
+                return {"ok": False, "kind": "vtable", "reason": reason}
+        if target_col is None:
+            return {"ok": False, "kind": "vtable", "reason": "VTable 点击需要 col 或 column_title"}
+        return _tag_table_result("vtable", vtable.click_cell(target_col, row, icon_name, hover_first, duration, double_click))
+
+    if kind == "vtable":
+        return _click_vtable()
+    if kind == "html":
+        if not column_title:
+            return {"ok": False, "kind": "html", "reason": "HTML 表格点击需要 column_title"}
+        return _tag_table_result("html", html_table.click_html_table_cell(column_title, row, table_index))
+
+    vt = _click_vtable()
+    if vt.get("ok"):
+        return vt
+    if column_title:
+        ht = _tag_table_result("html", html_table.click_html_table_cell(column_title, row, table_index))
+        if ht.get("ok"):
+            ht["fallback_from"] = "vtable"
+            ht["vtable_reason"] = vt.get("reason", "")
+            return ht
+        return {"ok": False, "kind": "auto", "reason": "表格单元格点击失败",
+                "vtable_reason": vt.get("reason", ""), "html_reason": ht.get("reason", "")}
+    return vt
+
+
+def _press_key_raw(tab, key: str, modifiers: list = None, interval: float = 0.01) -> dict:
+    if len(key) == 1 and not modifiers:
+        tab.actions.type(key, interval=interval)
+        return {"ok": True, "key": key}
+    if modifiers:
+        for mod in modifiers:
+            tab.actions.key_down(mod)
+    tab.actions.key_down(key)
+    tab.actions.key_up(key)
+    if modifiers:
+        for mod in modifiers:
+            tab.actions.key_up(mod)
+    return {"ok": True, "key": key, "modifiers": modifiers}
+
+
+@mcp.tool()
+@write_synchronized
+def explore_action(action: str = "click", locator: str = None, x: float = None, y: float = None,
+                   row: int = 0, col: int = None, column_title: str = None, kind: str = "auto",
+                   table_index: int = 0, icon_name: str = None, option_text: str = None,
+                   field_name: str = None, key: str = None, modifiers: list = None,
+                   by_js: bool = False, in_frame: bool = True, timeout: float = 8,
+                   signals: list = None, listen_targets: str = None,
+                   capture_before: bool = False, capture_after: bool = True,
+                   clean_overlays: bool = True) -> dict:
+    """动作探索封装：observe_start → 执行动作 → observe_wait → 可选页面模型快照。
+
+    action 可选 click/click_xy/table_cell/select_option/press_key。用于让 Agent 可靠记录按钮、
+    弹窗、toast、URL、Tab、网络首包等状态流转证据。
+    """
+    effective_signals = signals or (
+        ["modal", "notification", "message", "tab", "url", "network"]
+        if listen_targets else ["modal", "notification", "message", "tab", "url"]
+    )
+    before = None
+    if capture_before:
+        before = page_model.capture_page_model(include_filters=False, include_table_data=False,
+                                               max_table_rows=20, max_elements=80)
+
+    observe_start_result = observe.observe_start(signals=effective_signals, listen_targets=listen_targets)
+    action_result = {"ok": False, "reason": "action not executed"}
+    cleanup = _pre_click_cleanup(clean_overlays)
+    try:
+        tab = browser_session.get_tab()
+        action_name = (action or "click").lower()
+        if action_name == "click":
+            if not locator:
+                action_result = {"ok": False, "reason": "locator is required for click"}
+            else:
+                ele = browser_session.find(locator, in_frame=in_frame, timeout=min(timeout, 5))
+                if not ele:
+                    action_result = {"ok": False, "reason": "元素未找到: %s" % locator}
+                else:
+                    ele.click(by_js=by_js)
+                    action_result = {"ok": True, "action": "click", "locator": locator}
+        elif action_name == "click_xy":
+            if x is None or y is None:
+                action_result = {"ok": False, "reason": "x/y are required for click_xy"}
+            else:
+                tab.actions.move_to((x, y), duration=0.3).click()
+                action_result = {"ok": True, "action": "click_xy", "x": x, "y": y}
+        elif action_name == "table_cell":
+            action_result = _click_table_cell_raw(
+                row=row, col=col, column_title=column_title, kind=kind,
+                table_index=table_index, icon_name=icon_name,
+            )
+            action_result["action"] = "table_cell"
+        elif action_name == "select_option":
+            action_result = page_model.select_option(field_name=field_name or "",
+                                                     option_text=option_text or "",
+                                                     timeout=min(timeout, 5))
+            action_result["action"] = "select_option"
+        elif action_name == "press_key":
+            action_result = _press_key_raw(tab, key or "", modifiers=modifiers)
+            action_result["action"] = "press_key"
+        else:
+            action_result = {"ok": False, "reason": "unsupported action: %s" % action}
+    except Exception as e:
+        action_result = {"ok": False, "reason": str(e)}
+    finally:
+        action_result = _attach_cleanup(action_result, cleanup)
+        signal = observe.observe_wait(timeout=timeout)
+
+    after = None
+    if capture_after:
+        after = page_model.capture_page_model(include_filters=False, include_table_data=False,
+                                             max_table_rows=20, max_elements=80)
+    return {
+        "ok": bool(action_result.get("ok")),
+        "observe_start": observe_start_result,
+        "action": action_result,
+        "signal": signal,
+        "before": before,
+        "after": after,
+    }
+
+
+def _action_disabled_diff(before: dict, after: dict) -> list:
+    def key(item):
+        return (item.get("text") or item.get("title") or item.get("selectorHint") or "").strip()
+
+    before_map = {key(item): item for item in before.get("actions", []) if key(item)}
+    after_map = {key(item): item for item in after.get("actions", []) if key(item)}
+    changes = []
+    for name, b in before_map.items():
+        if name not in after_map:
+            continue
+        a = after_map[name]
+        if bool(b.get("disabled")) != bool(a.get("disabled")):
+            changes.append({
+                "action": name,
+                "before_disabled": bool(b.get("disabled")),
+                "after_disabled": bool(a.get("disabled")),
+                "area": a.get("area") or b.get("area"),
+            })
+    return changes
+
+
+@mcp.tool()
+@write_synchronized
+def scan_action_availability_by_selection(row: int = 0, col: int = 0,
+                                          kind: str = "auto", table_index: int = 0,
+                                          select_row: bool = True,
+                                          wait_after_click: float = 0.3) -> dict:
+    """扫描选中表格行前后工具栏按钮禁用态变化，用于批量/行选择场景设计。
+
+    select_row=True 时会尝试点击 VTable 的 col,row 或 HTML 表格行复选框。
+    """
+    before = page_model.scan_toolbar_actions(scope="all", max_items=160)
+    select_result = {"ok": True, "skipped": True}
+    if select_row:
+        cleanup = _pre_click_cleanup(True)
+        table_kind = _normalize_table_kind(kind)
+        if table_kind in ("auto", "vtable"):
+            select_result = _tag_table_result("vtable", vtable.click_cell(col, row, hover_first=True))
+            if not select_result.get("ok") and table_kind == "auto":
+                html = page_model.click_html_row_selection(row=row, table_index=table_index)
+                select_result = _tag_table_result("html", html)
+                select_result["fallback_from"] = "vtable"
+        else:
+            select_result = _tag_table_result("html", page_model.click_html_row_selection(row=row, table_index=table_index))
+        select_result = _attach_cleanup(select_result, cleanup)
+        time.sleep(max(0, wait_after_click))
+    after = page_model.scan_toolbar_actions(scope="all", max_items=160)
+    return {
+        "ok": bool(before.get("ok") and after.get("ok")),
+        "selection": select_result,
+        "changes": _action_disabled_diff(before, after),
+        "before": before,
+        "after": after,
+    }
 
 
 @read_synchronized
@@ -835,8 +1120,8 @@ def screenshot(path: str = None, locator: str = None, in_frame: bool = True, tim
     """截图。locator 给定则截元素，否则截全页。path 为空则存 ~/.drission-ui-shots/shot_<时间戳>.png。timeout 为查找超时秒数。"""
     tab = browser_session.get_tab()
     if not path:
-        os.makedirs(config.SHOT_DIR, exist_ok=True)
-        path = os.path.join(config.SHOT_DIR, "shot_%d.png" % int(time.time()))
+        path = resource_store.resolve_path(default_name="shot_%d.png" % int(time.time()),
+                                           category="screenshots")
     if locator:
         ele = browser_session.find(locator, in_frame=in_frame, timeout=timeout, wait_clickable=False)
         if not ele:
@@ -933,8 +1218,7 @@ def scan_table(kind: str = "auto", max_col: int = 50, table_index: int = 0, file
 
     # filename 参数优先
     if filename and result.get("ok"):
-        full_path = os.path.join(config.SHOT_DIR, filename)
-        os.makedirs(os.path.dirname(full_path) or ".", exist_ok=True)
+        full_path = resource_store.resolve_path(filename)
         with open(full_path, "w", encoding="utf-8") as f:
             json.dump(result, f, ensure_ascii=False, indent=2)
         return {
@@ -972,8 +1256,7 @@ def get_table_values(column_title: str, kind: str = "auto", raw: bool = False, t
 
     # filename 参数优先
     if filename and result.get("ok"):
-        full_path = os.path.join(config.SHOT_DIR, filename)
-        os.makedirs(os.path.dirname(full_path) or ".", exist_ok=True)
+        full_path = resource_store.resolve_path(filename)
         with open(full_path, "w", encoding="utf-8") as f:
             json.dump(result, f, ensure_ascii=False, indent=2)
         return {
@@ -1011,8 +1294,7 @@ def get_table_data(kind: str = "auto", table_index: int = 0, filename: str = Non
 
     # filename 参数优先
     if filename and result.get("ok"):
-        full_path = os.path.join(config.SHOT_DIR, filename)
-        os.makedirs(os.path.dirname(full_path) or ".", exist_ok=True)
+        full_path = resource_store.resolve_path(filename)
         with open(full_path, "w", encoding="utf-8") as f:
             json.dump(result, f, ensure_ascii=False, indent=2)
         return {
@@ -1391,6 +1673,33 @@ def listen_stop() -> dict:
 
 @mcp.tool()
 @write_synchronized
+def network_record_start(targets=None, method: str = None) -> dict:
+    """启动网络时间线记录。targets 为 URL 特征；method 默认 GET,POST，支持 POST/GET/ALL 等。
+
+    与 listen_start 不同，本工具用于围绕一段业务操作收集多包时间线：
+    network_record_start -> 执行业务动作 -> network_record_stop。
+    """
+    return network_record.start(targets=targets, method=method)
+
+
+@mcp.tool()
+@write_synchronized
+def network_record_stop(timeout: float = 3.0, max_packets: int = 50,
+                        fit_count: bool = False, max_body_chars: int = 12000) -> dict:
+    """停止网络时间线记录并返回捕获到的数据包列表。fit_count=False 时超时前抓到多少返回多少。"""
+    return network_record.stop(timeout=timeout, max_packets=max_packets,
+                               fit_count=fit_count, max_body_chars=max_body_chars)
+
+
+@mcp.tool()
+@read_synchronized
+def network_record_export(filename: str = None) -> dict:
+    """导出最近一次 network_record_stop 的数据包到 JSON 文件。"""
+    return network_record.export(filename=filename)
+
+
+@mcp.tool()
+@write_synchronized
 def mouse_trail(on: bool = True) -> dict:
     """开启/关闭鼠标轨迹可视化(红色圆点跟踪 mousemove/click)。调试 canvas 点击落点用。"""
     return modal.mouse_trail(on)
@@ -1745,16 +2054,18 @@ def browser_save_pdf(path: str = None, filename: str = None) -> dict:
     try:
         tab = browser_session.get_tab()
 
-        # 确定保存路径
-        save_dir = path or config.SHOT_DIR
-        os.makedirs(save_dir, exist_ok=True)
-
         # 确定文件名
         pdf_filename = filename or f'page_{int(time.time())}.pdf'
         if not pdf_filename.endswith('.pdf'):
             pdf_filename += '.pdf'
 
-        save_path = os.path.join(save_dir, pdf_filename)
+        if path:
+            save_dir = path
+            os.makedirs(save_dir, exist_ok=True)
+        else:
+            save_path = resource_store.resolve_path(pdf_filename, category="pdf")
+            save_dir = os.path.dirname(save_path)
+            pdf_filename = os.path.basename(save_path)
 
         # 使用 DrissionPage 保存 PDF
         result_path = tab.save(path=save_dir, name=pdf_filename, as_pdf=True)
@@ -1768,6 +2079,91 @@ def browser_save_pdf(path: str = None, filename: str = None) -> dict:
     except Exception as e:
         logger.error(f"Save PDF error: {e}")
         return {'ok': False, 'reason': str(e)}
+
+
+def _console_arg_text(arg):
+    if not isinstance(arg, dict):
+        return str(arg)
+    if "value" in arg:
+        return str(arg.get("value"))
+    if arg.get("description"):
+        return str(arg.get("description"))
+    if arg.get("unserializableValue"):
+        return str(arg.get("unserializableValue"))
+    return json.dumps(arg, ensure_ascii=False)
+
+
+def _console_message_to_dict(message) -> dict:
+    data = getattr(message, "data", None) or {}
+    args = data.get("args") or []
+    text = data.get("text") or ""
+    if not text and args:
+        text = " ".join(_console_arg_text(a) for a in args)
+    stack = data.get("stackTrace") or {}
+    call_frames = stack.get("callFrames") or []
+    first_frame = call_frames[0] if call_frames else {}
+    return {
+        "level": data.get("level") or data.get("type") or "",
+        "type": data.get("type") or data.get("source") or "",
+        "text": str(text)[:2000],
+        "url": data.get("url") or first_frame.get("url", ""),
+        "line": data.get("lineNumber", first_frame.get("lineNumber")),
+        "column": first_frame.get("columnNumber"),
+        "timestamp": data.get("timestamp"),
+        "raw": data,
+    }
+
+
+@mcp.tool()
+@write_synchronized
+def browser_console_messages(level: str = "", timeout: float = 0.0, start: bool = True,
+                             clear: bool = False, stop: bool = False,
+                             max_messages: int = 50, filename: str = None) -> dict:
+    """读取浏览器控制台消息。封装 DrissionPage tab.console，支持等待新消息和按级别过滤。
+
+    level 可传 error/warning/log/info 或逗号分隔；timeout>0 时等待新消息，之后会 drain 当前队列。
+    """
+    tab = browser_session.get_tab()
+    try:
+        console = tab.console
+        if start or timeout > 0:
+            if not getattr(console, "listening", False):
+                console.start()
+        if clear:
+            console.clear()
+
+        messages = []
+        if timeout > 0:
+            deadline = time.time() + timeout
+            while len(messages) < max_messages and time.time() < deadline:
+                remain = max(0.05, min(0.5, deadline - time.time()))
+                msg = console.wait(timeout=remain)
+                if msg:
+                    messages.append(msg)
+        for msg in console.messages:
+            if len(messages) >= max_messages:
+                break
+            messages.append(msg)
+
+        items = [_console_message_to_dict(m) for m in messages[:max_messages]]
+        if level:
+            wanted = {x.strip().lower() for x in str(level).split(",") if x.strip()}
+            items = [
+                m for m in items
+                if (m.get("level") or "").lower() in wanted or (m.get("type") or "").lower() in wanted
+            ]
+        result = {"ok": True, "count": len(items), "messages": items}
+        if filename:
+            full_path = resource_store.resolve_path(filename)
+            with open(full_path, "w", encoding="utf-8") as f:
+                json.dump(result, f, ensure_ascii=False, indent=2)
+            result = {"ok": True, "saved_to": os.path.abspath(full_path), "count": len(items)}
+        if stop:
+            console.stop()
+        return result
+    except Exception as e:
+        logger.error("Console messages error: %s", e)
+        return {"ok": False, "reason": str(e)}
 
 
 # ==================== 新增：按键操作工具（借鉴 Playwright MCP） ====================

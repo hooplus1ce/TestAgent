@@ -130,6 +130,16 @@ def _ensure_on_admin_host(tab):
     return {"skipped": False, "ok": ok, "url": getattr(tab, "url", "")}
 
 
+def _clear_cache(tab):
+    """清理旧缓存/cookie 状态，再注入 OCR 登录得到的新 cookie。"""
+    try:
+        tab.clear_cache()
+        return {"ok": True}
+    except Exception as e:
+        logger.warning("refresh_session clear_cache 失败，继续注入新 cookie: %s", e)
+        return {"ok": False, "reason": str(e)}
+
+
 def _bounded_reload(tab):
     """用 DrissionPage refresh() 刷新页面，再用短超时等待加载完成。"""
     tab.refresh(ignore_cache=False)
@@ -151,12 +161,13 @@ def login_ocr():
     tab = browser_session.get_tab()
     auth_cookies = _stage(timings, "get_login_auth", get_login_auth)
     navigation = _stage(timings, "ensure_admin_host", lambda: _ensure_on_admin_host(tab))
+    cache = _stage(timings, "clear_cache", lambda: _clear_cache(tab))
     injected = _stage(timings, "inject_cookies", lambda: _inject_cookies(auth_cookies, tab))
     reload_loaded = _stage(timings, "reload", lambda: _bounded_reload(tab))
     timings["total"] = round(perf_counter() - started, 3)
     return {"ok": True, "cookies": [c["name"] for c in injected],
             "url": tab.url, "title": tab.title, "navigation": navigation,
-            "reload_loaded": reload_loaded, "timings": timings}
+            "cache": cache, "reload_loaded": reload_loaded, "timings": timings}
 
 
 def check_session():
