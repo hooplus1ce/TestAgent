@@ -592,7 +592,8 @@ return JSON.stringify({ok:true, floats:out});
         else:
             errors.append({"scope": scope, "reason": data.get("reason", "")})
     result = {"ok": True, "count": len(all_floats), "floats": all_floats,
-              "has_active_frame": fr is not None, "frame_url": frame_url}
+              "has_active_frame": fr is not None, "frame_url": frame_url,
+              "active_tab": browser_session.get_active_tab_name()}
     if errors:
         result["errors"] = errors
     return result

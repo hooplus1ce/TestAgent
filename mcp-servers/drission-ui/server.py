@@ -239,11 +239,12 @@ def scan_filter_fields() -> dict:
 @mcp.tool()
 @read_synchronized
 def get_active_frame() -> dict:
-    """获取当前可见 tabpanel 内的业务 iframe。返回 {ok, url}。"""
+    """获取当前可见 tabpanel 内的业务 iframe。返回 {ok, url, tab_name}。"""
     fr = browser_session.get_active_frame()
     if fr is None:
         return {"ok": False, "reason": "未找到活动 iframe，请先 enter_module"}
-    return {"ok": True, "url": getattr(fr, "url", "") or ""}
+    return {"ok": True, "url": getattr(fr, "url", "") or "",
+            "tab_name": browser_session.get_active_tab_name()}
 
 
 @mcp.tool()

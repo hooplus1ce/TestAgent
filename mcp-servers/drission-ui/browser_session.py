@@ -35,6 +35,9 @@ ACTIVE_FRAME_LOC = config.ACTIVE_FRAME_LOC
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 _DP_INI = str(_PROJECT_ROOT / "configs" / "dp_configs.ini")
 
+# 最后一次检测到的活跃 tab 名称缓存
+_active_tab_name = ""
+
 
 def load_js(name: str) -> str:
     """读取 js/ 目录下的页面注入脚本。"""
@@ -197,15 +200,20 @@ def get_active_frame(tab=None):
     with _lock:
         tab = tab or get_tab()
         try:
-            # Step 1: JS 查找 iframe 元素并获取 name/id
+            # Step 1: JS 查找活跃 iframe + 激活 tab 名称
             js = (
                 "var f=document.querySelector('[role=\"tabpanel\"][aria-hidden=\"false\"] iframe');"
-                "if(!f)return JSON.stringify({found:false});"
-                "return JSON.stringify({found:true, name:f.name||'', id:f.id||''});"
+                "var t=document.querySelector('div[role=\"tab\"][aria-selected=\"true\"]');"
+                "var tabName=t?((t.querySelector('.ant-dropdown-trigger')||t).textContent||'').trim():'';"
+                "if(!f)return JSON.stringify({found:false, tabName:tabName});"
+                "return JSON.stringify({found:true, name:f.name||'', id:f.id||'', tabName:tabName});"
             )
             res = tab.run_js(js)
             d = json.loads(res) if isinstance(res, str) else (res or {})
             name = d.get("name") or d.get("id") or ""
+            # 缓存激活 tab 名称供外部查询
+            global _active_tab_name
+            _active_tab_name = d.get("tabName", "") or ""
             
             # Step 2: 优先按 name 查找 frame（DrissionPage 对 name 查找更可靠）
             if name:
@@ -228,6 +236,18 @@ def get_active_frame(tab=None):
         except Exception as e:
             logger.debug("get_active_frame 失败: %s", e)
             return None
+
+
+def get_active_tab_name(tab=None):
+    """获取当前活跃的 tab 名称。
+
+    返回最近一次 get_active_frame 检测到的 tab 名称，
+    或重新查询（tab 为 None 时使用默认 tab）。
+    """
+    global _active_tab_name
+    if not _active_tab_name:
+        get_active_frame(tab or get_tab())
+    return _active_tab_name
 
 
 def get_tab_ro():
