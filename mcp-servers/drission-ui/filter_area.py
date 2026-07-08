@@ -327,6 +327,8 @@ def scan_filter_fields(tab=None):
                     entry["options"] = _collect_dropdown_options(fr, entry["col"], 2)
                 for k in ("col", "hasValueCb", "hasOpCb"):
                     entry.pop(k, None)
+            # 扫描完成后清理所有下拉
+            _close_visible_dropdowns(fr, timeout=0.2)
             return {"ok": True, "fields": fields}
         except Exception as e:
             logger.debug("scan_filter_fields 失败: %s", e)
@@ -361,14 +363,13 @@ def _close_visible_dropdowns(fr, timeout=0.5):
 
 
 def _collect_dropdown_options(fr, col_idx, sel_idx):
-    """读取某字段列内某个 select 的下拉选项：清场 → 打开 → 智能等待 → 读取 → 关闭确认。
+    """读取某字段列内某个 select 的下拉选项：打开 → 智能等待 → 读取。
 
-    col_idx 是 .page-query .legions-pro-quick-filter-row 的直接字段列索引；
-    sel_idx: 0=字段名、1=操作符、2=值选择器。
+    不主动关闭前一个下拉（Ant Design 打开新下拉时会自动关闭旧的下拉），
+    避免 close→open→close→open 冗余循环。
+
+    col_idx 是字段列索引；sel_idx: 0=字段名、1=操作符、2=值选择器。
     """
-    _close_visible_dropdowns(fr, timeout=0.2)
-    fr.run_js("document.querySelectorAll('.ant-select-dropdown, .ant-dropdown').forEach(function(d){d.style.removeProperty('display');});")
-
     open_js = (
         "var cols=document.querySelectorAll('.legions-pro-quick-filter-row > div[class*=\"ant-col-\"]');"
         "var sel=cols[%d]?cols[%d].querySelectorAll('.ant-select')[%d]:null;"
@@ -383,14 +384,12 @@ def _collect_dropdown_options(fr, col_idx, sel_idx):
     except Exception:
         opened = {"ok": False}
     if not opened.get("ok"):
-        _close_visible_dropdowns(fr, timeout=0.2)
         return []
 
     try:
         fr.wait.ele_displayed('c:.ant-select-dropdown:not(.ant-select-dropdown-hidden)', timeout=1)
         fr.wait.ele_displayed('c:.ant-select-dropdown:not(.ant-select-dropdown-hidden) .ant-select-dropdown-menu-item', timeout=0.8)
     except Exception:
-        # 搜索型下拉可能暂无选项；后续读取为空即可。
         pass
 
     read_js = r"""
@@ -401,30 +400,21 @@ def _collect_dropdown_options(fr, col_idx, sel_idx):
         }
         var dropdowns=[].slice.call(document.querySelectorAll('.ant-select-dropdown:not(.ant-select-dropdown-hidden)')).filter(visible);
         var scored=dropdowns.map(function(d){
-            var r=d.getBoundingClientRect();
-            var dx=Math.abs(r.left-target.left);
-            var dy=Math.abs(r.top-(target.top+target.height));
-            return {d:d, score:dx+dy};
+            var rect=d.getBoundingClientRect();
+            var score=Math.abs(rect.left-target.left)+Math.abs(rect.top-target.top);
+            return {el:d,score:score};
         }).sort(function(a,b){return a.score-b.score;});
-        var d=scored.length?scored[0].d:null;
+        var dropdown=scored.length?scored[0].el:null;
+        if(!dropdown)return JSON.stringify([]);
+        var items=[].slice.call(dropdown.querySelectorAll('.ant-select-item,li,.ant-select-item-option'));
         var opts=[];
-        if(d){
-            var items=d.querySelectorAll('.ant-select-dropdown-menu-item, .ant-select-item-option');
-            items.forEach(function(it){
-                var t=it.textContent.trim();
-                if(t&&t.length<60&&opts.indexOf(t)<0)opts.push(t);
-            });
-        }
+        items.forEach(function(it){opts.push((it.textContent||'').trim());});
         return JSON.stringify(opts);
     """.replace('OPENED', json.dumps(opened))
-    res = fr.run_js(read_js)
-    closed = _close_visible_dropdowns(fr, timeout=0.2)
-    if not closed:
-        logger.warning("下拉框未能确认关闭 col=%s sel=%s", col_idx, sel_idx)
-    if isinstance(res, str):
-        try:
-            return json.loads(res)
-        except Exception:
-            return []
-    return res or []
+
+    try:
+        res = fr.run_js(read_js)
+        return json.loads(res) if isinstance(res, str) else (res or [])
+    except Exception:
+        return []
 
