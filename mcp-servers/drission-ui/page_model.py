@@ -498,6 +498,22 @@ for (var i = 0; i < nodes.length; i++) {
       kind: 'clickable-link', extra: true
     });
   }
+
+  // 可展开行图标（ant-table-row-expand-icon，无文本纯图标）
+  var expandIcons = n.querySelectorAll('span.ant-table-row-expand-icon');
+  for (var xi = 0; xi < expandIcons.length; xi++) {
+    var xiEl = expandIcons[xi];
+    if (!duVisible(xiEl)) continue;
+    var xiTxt = xiEl.classList.contains('ant-table-row-collapsed') ? '展开子表' : '收起子表';
+    var dup2 = false;
+    for (var bi = 0; bi < buttons.length; bi++) { if (buttons[bi].text === xiTxt) { dup2 = true; break; } }
+    if (dup2) continue;
+    clickableExtras.push({
+      text: xiTxt, tag: 'span',
+      selectorHint: duCssHint(xiEl), center: frCenter(xiEl), rect: frRect(xiEl),
+      kind: 'expand-icon', extra: true
+    });
+  }
   buttons = buttons.concat(clickableExtras);
 
   // 表单字段（input/select/datepicker/checkbox/radio/switch 等）
