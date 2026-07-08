@@ -36,7 +36,7 @@ description: 为 WMS/MOM/ERP 等企业系统迭代生成测试用例（DrissionP
 - 首次登录或会话过期：直接 `refresh_session()`（内部完成 OCR + HTTP 登录 + Cookie 注入 → 导航 SCM Admin），每次重新获取新 cookie，不再缓存
 
 ### 工具集
-所有浏览器原子操作由 `drission-ui` MCP 提供：点击/输入/截图/弹窗检测/VTable 操作/网络监听/筛选区操作等。AI 只需调用工具并编排顺序，无需关心内部实现。
+所有浏览器原子操作由 `drission-ui` MCP 提供：点击/输入/截图/浮窗检测(`scan_floats`)/VTable 操作/网络监听/筛选区操作/元素坐标获取(`get_element_coords`)/坐标点击(`click_xy`)。AI 只需调用工具并编排顺序，无需关心内部实现。
 
 系统配置与环境信息见 `references/scm-access.md`。
 
@@ -87,25 +87,17 @@ description: 为 WMS/MOM/ERP 等企业系统迭代生成测试用例（DrissionP
 ### Phase 3 — 分区域迭代探索（对话驱动）
 
 **核心原则**：不一次性生成全部用例，通过对话按用户指示逐步覆盖各区域。
-
 ```
 用户 → 指令（如「测一下批量排产按钮」）
-  Agent → 执行（observe_start / click 或 click_table_cell / observe_wait / scan / listen_wait）
+  Agent → 执行（scan_floats / click 或 click_table_cell / scan_floats / listen_wait）
   Agent → 汇报结果 + 询问下一步
 用户 → 继续或调整方向
 ```
 
-**每次 `click`/`click_table_cell`/`click_xy` 前后 MUST 使用两段式观察页面变化**：点击前 `observe_start(...)` 安装监听，点击后 `observe_wait(...)` 读取首个信号并清理。这样可以避免点击后再启动监听而漏掉短寿命 toast。
+**每次 `click`/`click_table_cell`/`click_xy` 后 MUST 使用 `scan_floats()` 检测页面变化**，它能捕获所有类型的浮窗（含短寿命 toast）+ 表格数据变化 + 页签切换。
 
-```
-observe_start(signals=["modal","notification","message","tab","url"])
-click(...) 或 click_table_cell(...)
-observe_wait(timeout=8)
-  → 返回首个命中信号 {type, scope, payload?, elapsedMs}
-  → type ∈ interactive/confirm/system_confirm/notification/message/tab_change/url_change/none
-```
-
-需要抓接口时在 `observe_start` 中加入 `signals=[...,"network"]` + `listen_targets="gateway"`，或单独使用 `listen_start` / `listen_wait` 做接口断言。
+需要抓接口时单独使用 `listen_start` / `listen_wait` 做接口断言。
+只有在 `scan_floats` 返回结果不够明确（如需区分弹窗子类型）时才使用 `observe_start`/`observe_wait`。
 
 **断点续传**：每完成一个区域，调用 `scripts/load-exploration-state.py` 保存进度。
 
@@ -155,27 +147,37 @@ VTable 是 canvas 渲染，无真实 DOM 节点。所有点击走坐标，工具
 如果当前已经是内联模式，直接继续扫描筛选字段；不要重复切换。
 
 ### 弹窗检测
-详见 `references/modal-types.md`。点击前调用 `observe_start`，点击后调用 `observe_wait`，由统一观察器并发捕获弹窗、通知、消息、Tab/URL 变化和可选网络响应。
+详见 `references/modal-types.md`。
+
+**优先使用 `scan_floats(only_visible=True, include_table_data=True)`** 进行综合浮窗检测，一次调用即可获取所有可见浮窗（模态框/抽屉/弹出框/消息/通知等）的结构化信息，包括标题、类型、中心坐标、关闭按钮、操作按钮、表单字段、表格数据。
+
+点击后如需捕获短寿命 toast（如「操作成功」），`scan_floats` 内部已集成 toast 检测，无需额外调用。
+仅在只需知道「有无弹窗」而不需要详细结构时使用 `observe_start`/`observe_wait`。
 
 VTable 列头筛选、单元格编辑器、虚拟下拉等特殊浮层必须通过 `drission-ui` 的 VTable facade 处理。若当前工具无法返回结构化结果，记录工具缺口并降级生成低级展示类用例，不在 skill 中内联 raw JS。
 
 ### 弹窗交互策略
-**与弹窗交互前 MUST 先用 `dom_tree` 获取弹窗完整 DOM 结构**，无论是要点击按钮、输入文本还是关闭弹窗。
+**与弹窗交互前 MUST 先用 `scan_floats` 获取弹窗结构化信息**，如需更详细 DOM 层级再用 `dom_tree`。
 
-原因：SCM 系统大量使用自定义封装的弹窗组件。先通过 `dom_tree` 拿到弹窗内部按钮、字段、文案和层级后，再选择稳定文本或 MCP 返回的结构化目标执行交互，可避免盲目猜测导致点击无效。
+原因：SCM 系统大量使用自定义封装的弹窗组件。先通过 `scan_floats` 拿到弹窗内按钮、字段的标题/坐标/定位符后，再选择稳定的交互目标执行操作，可避免盲目猜测导致点击无效。
 
 流程：
 ```
-observe_start() → click/input/... → observe_wait() → 确认弹窗存在
+click → scan_floats → 确认弹窗存在并获取结构化信息
   ↓
-dom_tree(...)  → 获取弹窗完整结构
+点击按钮/输入字段（用返回的 center 坐标或 selectorHint）
   ↓
-分析 DOM → 确定稳定文本或 MCP 返回的结构化交互目标
-  ↓
-click(input/...) → 执行交互
-  ↓
-observe_start() → click/input/... → observe_wait() → 确认弹窗状态变化
+scan_floats → 确认弹窗状态变化（关闭/新内容/消息反馈）
 ```
+
+### 坐标系统
+所有元素坐标统一使用 `rect.viewport_midpoint`（视口中心点），已自动叠加 iframe 偏移，返回的坐标可直接用于 `click_xy` 或 `tab.actions.move_to()`。
+
+获取坐标的两种方式：
+- `get_element_coords(xpath, index, timeout)` — 传入 XPath 定位符，返回 `{cx, cy}`
+- `get_element_center(el)` — 传入已获取的 ChromiumElement，返回 `{cx, cy}`
+
+双击等多次点击通过 `click_xy(x, y, times=N)` 的 `times` 参数实现。
 
 ### 会话维持
 `check_session()` 检测过期 → 直接 `refresh_session()`（每次重新获取新 cookie，不再缓存）。
@@ -205,4 +207,4 @@ observe_start() → click/input/... → observe_wait() → 确认弹窗状态变
 - [ ] 每条正式用例都映射到覆盖矩阵中的 `已验证` 场景
 - [ ] 已向用户说明 `待验证` / `需用户确认` / `工具缺口` 项
 - [ ] 每条用例通过质量门禁
-- [ ] 每次点击前后都执行了 `observe_start` → action → `observe_wait` 观察页面变化
+- [ ] 每次点击后使用 `scan_floats()` 检测页面变化，捕获浮窗/toast/页签切换
