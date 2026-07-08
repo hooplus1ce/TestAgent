@@ -1,5 +1,9 @@
 """server.py 测试：公开工具面 + synchronized 串行化。"""
 import asyncio
+import json
+import os
+import subprocess
+import sys
 from types import SimpleNamespace
 import threading
 import time
@@ -29,6 +33,7 @@ EXPECTED_PUBLIC_TOOLS = {
     "scan_modal",
     "scan_drawer",
     "scan_pagination",
+    "scan_floats",
     "find_elements",
     "find_batch",
     "click",
@@ -65,6 +70,7 @@ EXPECTED_PUBLIC_TOOLS = {
     "switch_context",
     "list_contexts",
     "set_permission",
+    "get_element_coords",
 }
 
 REMOVED_DUPLICATE_TOOLS = {
@@ -105,6 +111,64 @@ def test_public_tool_surface():
     """公开 MCP 工具应收敛到业务常用工具 + 表格 facade + 高级调试工具。"""
     names = _tool_names()
     assert names == EXPECTED_PUBLIC_TOOLS
+
+
+def test_public_tools_are_grouped_in_caps():
+    """公开工具必须进入 capability 分组，避免 tools/list 与能力说明不一致。"""
+    import caps
+
+    grouped_tools = {
+        tool
+        for tools in caps.CAP_GROUPS.values()
+        for tool in tools
+    }
+    assert EXPECTED_PUBLIC_TOOLS <= grouped_tools
+
+
+def test_drission_ui_caps_filters_public_tools():
+    """DRISSION_UI_CAPS 应实际影响 MCP tools/list，而不只是报告能力分组。"""
+    env = os.environ.copy()
+    env["DRISSION_UI_CAPS"] = "core"
+    script = """
+import asyncio, json, sys
+sys.path.insert(0, 'mcp-servers/drission-ui')
+import server
+
+async def main():
+    tools = await server.mcp.list_tools()
+    print(json.dumps(sorted(t.name for t in tools)))
+
+asyncio.run(main())
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=os.path.dirname(os.path.dirname(__file__)),
+        env=env,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    names = set(json.loads(result.stdout))
+    assert {"connect", "scan_floats", "get_element_coords", "browser_list_caps"} <= names
+    assert "scan_table" not in names
+    assert "run_js" not in names
+
+
+def test_list_parameters_have_typed_items_schema():
+    """常用 list 入参应生成精确 items schema，帮助 Agent 正确构造参数。"""
+    import server
+
+    tools = {t.name: t for t in asyncio.run(server.mcp.list_tools())}
+    checks = [
+        ("find_batch", "locators"),
+        ("observe_start", "signals"),
+        ("explore_action", "signals"),
+        ("explore_action", "modifiers"),
+        ("browser_press_key", "modifiers"),
+    ]
+    for tool_name, field in checks:
+        prop = tools[tool_name].inputSchema["properties"][field]
+        assert prop["items"]["type"] == "string"
 
 
 def test_duplicate_tools_removed_from_public_surface():
@@ -473,3 +537,54 @@ def test_click_xy_cleans_transient_overlays_before_click():
     assert actions.moves == [((12.5, 20.5), 0.3)]
     assert actions.clicked is True
     assert result["pre_cleaned"] == cleanup["closed"]
+
+
+def test_click_text_locator_falls_back_to_js_after_fast_native_failure():
+    import server
+
+    class FakeElement:
+        def __init__(self):
+            self.click_kwargs = None
+
+        def click(self, **kwargs):
+            self.click_kwargs = kwargs
+            return False
+
+    class FakeTarget:
+        def run_js(self, js):
+            assert "var needle" in js
+            return json.dumps({"ok": True, "tag": "BUTTON", "text": "搜索"})
+
+    ele = FakeElement()
+
+    with patch.object(server.modal, "clear_transient_overlays", return_value={"ok": True, "closed": [], "errors": []}), \
+         patch.object(server.browser_session, "find", return_value=ele) as find, \
+         patch.object(server.browser_session, "get_active_frame", return_value=FakeTarget()):
+        result = server.click("text:搜索", timeout=5)
+
+    find.assert_called_once()
+    assert find.call_args.kwargs == {"in_frame": True, "timeout": 1.0, "wait_clickable": False}
+    assert "normalize-space(.)='搜索'" in find.call_args.args[0]
+    assert ele.click_kwargs == {"by_js": False, "timeout": 2.0, "wait_stop": False}
+    assert result["ok"] is True
+    assert result["fallback"] == "js-text"
+    assert "native_error" in result
+
+
+def test_click_text_locator_prefers_clickable_xpath_before_inner_text():
+    import server
+
+    class FakeElement:
+        def click(self, **kwargs):
+            return self
+
+    ele = FakeElement()
+
+    with patch.object(server.modal, "clear_transient_overlays", return_value={"ok": True, "closed": [], "errors": []}), \
+         patch.object(server.browser_session, "find", return_value=ele) as find:
+        result = server.click("text:重置", timeout=5)
+
+    find.assert_called_once()
+    assert "self::button" in find.call_args.args[0]
+    assert "normalize-space(.)='重置'" in find.call_args.args[0]
+    assert result == {"ok": True, "locator": "text:重置"}

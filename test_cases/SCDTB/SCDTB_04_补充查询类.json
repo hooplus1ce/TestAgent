@@ -1,0 +1,92 @@
+{
+  "module_info": {
+    "enterprise_prefix": "NB",
+    "module_name": "生产管理_生产动态表",
+    "module_level1": "生产管理",
+    "module_level2": "生产动态表",
+    "module_pinyin": "SCDTB",
+    "author": "Hooplus1ce"
+  },
+  "category": "F - 补充查询类",
+  "test_cases": [
+    {
+      "case_id": "F006",
+      "case_title": "按不存在的需求单号查询空结果",
+      "priority": "低级",
+      "verify_point": "输入不存在需求单号后列表无数据且分页器不显示",
+      "test_type": "异常测试",
+      "function": "查询",
+      "preconditions": [
+        "已登录 SCM 系统",
+        "在生产管理-生产动态表页面",
+        "生产需求单页签处于选中状态",
+        "数据表格已加载完成"
+      ],
+      "test_steps": [
+        "在需求单号输入框输入「MRO999999999999」",
+        "点击「搜索」按钮",
+        "查看主表数据和分页器"
+      ],
+      "test_data": {
+        "需求单号": "MRO999999999999"
+      },
+      "expected_result": "1. 主表返回 0 条记录\n2. 表格无需求单数据行显示\n3. 分页器不显示",
+      "automation_suggestion": "使用 input 输入不存在的需求单号，click 点击搜索，get_table_data 断言 rows 为空，scan_pagination 断言 count=0"
+    },
+    {
+      "case_id": "F007",
+      "case_title": "按销售单号精确查询生产动态记录",
+      "priority": "低级",
+      "verify_point": "按真实销售单号查询后表格仅返回匹配记录",
+      "test_type": "功能测试",
+      "function": "查询",
+      "preconditions": [
+        "已登录 SCM 系统",
+        "在生产管理-生产动态表页面",
+        "生产需求单页签处于选中状态",
+        "数据表格已加载完成"
+      ],
+      "test_steps": [
+        "在销售单号输入框输入「SO20260703016」",
+        "点击「搜索」按钮",
+        "查看主表销售单号列和当前表格行数"
+      ],
+      "test_data": {
+        "销售单号": "SO20260703016"
+      },
+      "expected_result": "1. 表格返回 1 条记录\n2. 返回记录的销售单号为「SO20260703016」\n3. 返回记录的需求单号为「MRO202607050001」\n4. 返回记录的客户名称为「DDQ」",
+      "automation_suggestion": "使用 input 填写销售单号，click 点击搜索，get_table_values 读取销售单号列并断言 count=1 且唯一值为 SO20260703016"
+    },
+    {
+      "case_id": "F008",
+      "case_title": "按销售单号和生产计划状态组合查询",
+      "priority": "低级",
+      "verify_point": "组合查询后表格仅显示同时满足两个条件的数据",
+      "test_type": "功能测试",
+      "function": "查询",
+      "preconditions": [
+        "已登录 SCM 系统",
+        "在生产管理-生产动态表页面",
+        "生产需求单页签处于选中状态",
+        "数据表格已加载完成"
+      ],
+      "test_steps": [
+        "在销售单号输入框输入「SO20260703016」",
+        "在生产计划状态下拉框选择「待排产」",
+        "点击「搜索」按钮",
+        "查看主表销售单号列、生产计划状态列和当前表格行数"
+      ],
+      "test_data": {
+        "销售单号": "SO20260703016",
+        "生产计划状态": "待排产"
+      },
+      "expected_result": "1. 表格返回 1 条记录\n2. 返回记录的销售单号为「SO20260703016」\n3. 返回记录的生产计划状态为「待排产」\n4. 返回记录的需求单号为「MRO202607050001」",
+      "automation_suggestion": "使用 input 设置销售单号并选择生产计划状态，click 点击搜索，分别用 get_table_values 验证销售单号列和生产计划状态列"
+    }
+  ],
+  "meta_data": {
+    "format_note": "测试数据Excel自动加「表单数据」首行+中文冒号；预期结果保持编号列表格式",
+    "generated_at": "2026-07-08",
+    "testcase_count": 3
+  }
+}

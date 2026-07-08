@@ -190,6 +190,55 @@ return JSON.stringify(closed);
 """
 
 
+_CLEAR_TRANSIENT_ALL_JS = r"""
+var closed = [];
+function clearDoc(doc, scope){
+  if (!doc) return;
+  var win = doc.defaultView || window;
+  function isVis(el){
+    if (!el || !el.isConnected) return false;
+    var cur = el;
+    while (cur && cur.nodeType === 1) {
+      var s = win.getComputedStyle(cur);
+      if (s.display === 'none' || s.visibility === 'hidden' || s.visibility === 'collapse') {
+        return false;
+      }
+      cur = cur.parentElement;
+    }
+    var r = el.getBoundingClientRect();
+    return r.width > 0 && r.height > 0;
+  }
+  doc.querySelectorAll('.ant-notification-notice').forEach(function(n){
+    if (!isVis(n)) return;
+    var m = n.querySelector('.ant-notification-notice-message');
+    var d = n.querySelector('.ant-notification-notice-description');
+    var msg = ((m ? m.textContent : '') || (d ? d.textContent : '')).trim();
+    var btn = n.querySelector('.ant-notification-notice-close');
+    try { if (btn) btn.click(); } catch(e) {}
+    if (n.parentNode) n.parentNode.removeChild(n);
+    closed.push({scope: scope, type: 'notification', message: msg});
+  });
+  doc.querySelectorAll('.ant-message-notice').forEach(function(m){
+    if (!isVis(m)) return;
+    var c = m.querySelector('.ant-message-notice-content');
+    var msg = c ? (c.textContent || '').trim() : '';
+    if (m.parentNode) m.parentNode.removeChild(m);
+    closed.push({scope: scope, type: 'message', message: msg});
+  });
+}
+clearDoc(document, 'top');
+try {
+  var f = document.querySelector('[role="tabpanel"][aria-hidden="false"] iframe');
+  if (f && (f.contentDocument || (f.contentWindow && f.contentWindow.document))) {
+    clearDoc(f.contentDocument || f.contentWindow.document, 'iframe');
+  }
+} catch(e) {
+  closed.push({scope: 'iframe', type: 'error', message: String(e && e.message || e)});
+}
+return JSON.stringify(closed);
+"""
+
+
 def _target_contexts(tab):
     contexts = []
     try:
@@ -220,17 +269,20 @@ def clear_transient_overlays(tab=None):
     need to click their buttons as the next action.
     """
     tab = tab or browser_session.get_tab()
-    closed = []
     errors = []
-    for scope, target in _target_contexts(tab):
-        try:
-            for item in _normalize_js_list(target.run_js(_CLEAR_TRANSIENT_JS)):
-                item["scope"] = scope
-                closed.append(item)
-        except Exception as e:
-            logger.debug("clear transient overlays 失败(%s): %s", scope, e)
-            errors.append("%s: %s" % (scope, e))
-    return {"ok": not errors, "closed": closed, "errors": errors}
+    try:
+        closed = _normalize_js_list(tab.run_js(_CLEAR_TRANSIENT_ALL_JS))
+    except Exception as e:
+        logger.debug("clear transient overlays 失败(top): %s", e)
+        return {"ok": False, "closed": [], "errors": ["top: %s" % e]}
+    normalized = []
+    for item in closed:
+        if item.get("type") == "error":
+            errors.append("%s: %s" % (item.get("scope", ""), item.get("message", "")))
+            continue
+        item.setdefault("scope", "top")
+        normalized.append(item)
+    return {"ok": not errors, "closed": normalized, "errors": errors}
 
 
 def close_modal(tab=None):

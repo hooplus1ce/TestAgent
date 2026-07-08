@@ -119,6 +119,36 @@ def test_get_browser_returns_browser():
     assert result is mock_browser
 
 
+def test_find_passes_timeout_to_clickable_wait():
+    """clickable 等待应使用调用方 timeout，避免退回 DrissionPage 默认长等待。"""
+    import browser_session
+
+    class FakeWait:
+        def __init__(self):
+            self.kwargs = None
+
+        def clickable(self, **kwargs):
+            self.kwargs = kwargs
+            return True
+
+    class FakeStates:
+        is_clickable = True
+
+    fake_ele = MagicMock()
+    fake_ele.wait = FakeWait()
+    fake_ele.states = FakeStates()
+    fake_tab = MagicMock()
+    fake_tab.ele.return_value = fake_ele
+
+    with patch.object(browser_session, "get_tab", return_value=fake_tab), \
+         patch.object(browser_session, "get_active_frame", return_value=None), \
+         patch.object(browser_session, "_lock"):
+        result = browser_session.find("#search", in_frame=True, timeout=1.25)
+
+    assert result is fake_ele
+    assert fake_ele.wait.kwargs == {"timeout": 1.25, "wait_stop": False}
+
+
 # ==================== _ensure_display_env 跨平台/headless 守卫 ====================
 
 def test_ensure_display_skipped_when_headless():
@@ -175,4 +205,3 @@ def test_ensure_display_finds_xauthority():
         browser_session.os.environ.pop("XAUTHORITY", None)
         browser_session._ensure_display_env()
         assert browser_session.os.environ.get("XAUTHORITY", "").endswith(".mutter-Xwaylandauth.ABC123")
-

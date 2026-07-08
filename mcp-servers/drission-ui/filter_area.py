@@ -152,7 +152,9 @@ def select_date_range(field_name: str, start_date: str, end_date: str, tab=None)
         if fr is None:
             return {"ok": False, "reason": "未找到活动 iframe"}
         try:
-            rows = fr.eles('c:.legions-pro-quick-filter .ant-row')
+            rows = fr.eles('c:.legions-pro-query-item', timeout=1) or []
+            if not rows:
+                rows = fr.eles('c:.legions-pro-quick-filter .ant-row', timeout=1)
             target_row = None
             for row in rows:
                 text = row.text
@@ -165,7 +167,7 @@ def select_date_range(field_name: str, start_date: str, end_date: str, tab=None)
             picker_input = target_row.ele('c:.ant-calendar-picker-input')
             picker_input.click()
             # 智能等待：日历面板出现即就绪（ele 自带轮询，无需固定 sleep）
-            cal = browser_session.get_tab().ele('c:.ant-calendar', timeout=5)
+            cal = fr.ele('c:.ant-calendar', timeout=5)
             if cal is None:
                 return {"ok": False, "reason": "日历面板未弹出"}
 
@@ -423,4 +425,3 @@ def _collect_dropdown_options(fr, col_idx, sel_idx):
         return json.loads(res) if isinstance(res, str) else (res or [])
     except Exception:
         return []
-

@@ -31,9 +31,9 @@ CAP_GROUPS = {
         # 页面理解
         "scan_page_elements", "find_elements", "find_batch", "dom_tree",
         "capture_page_model", "scan_toolbar_actions", "scan_form_fields",
-        "scan_modal", "scan_drawer", "scan_pagination",
+        "scan_modal", "scan_drawer", "scan_pagination", "scan_floats",
         # 调试
-        "screenshot", "close_modal",
+        "screenshot", "close_modal", "get_element_coords",
         # 新增：浏览器管理（借鉴 Playwright MCP）
         "browser_tabs",
         # 新增：滚动操作（借鉴 Playwright MCP）
@@ -96,7 +96,9 @@ ENABLED_CAPS = get_enabled_caps()
 
 def is_tool_enabled(tool_name: str) -> bool:
     """检查工具是否在启用的分组中"""
-    if "all" in ENABLED_CAPS:
+    if tool_name == "browser_list_caps":
+        return True
+    if "all" in ENABLED_CAPS or ENABLED_CAPS == set(CAP_GROUPS.keys()):
         return True
     for cap, tools in CAP_GROUPS.items():
         if cap in ENABLED_CAPS and tool_name in tools:

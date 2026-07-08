@@ -40,6 +40,27 @@ logging.basicConfig(
 logger = logging.getLogger("drission-ui")
 
 mcp = FastMCP("drission-ui")
+_fastmcp_tool = mcp.tool
+
+
+def _cap_aware_tool(*args, **kwargs):
+    """Register MCP tools only when enabled by DRISSION_UI_CAPS."""
+    decorator = _fastmcp_tool(*args, **kwargs)
+
+    def register(fn):
+        explicit_name = kwargs.get("name")
+        if args and isinstance(args[0], str):
+            explicit_name = args[0]
+        tool_name = explicit_name or getattr(fn, "__name__", "")
+        if caps.is_tool_enabled(tool_name):
+            return decorator(fn)
+        logger.debug("Skipping MCP tool %s; disabled by DRISSION_UI_CAPS", tool_name)
+        return fn
+
+    return register
+
+
+mcp.tool = _cap_aware_tool
 
 
 class _RWLock:
@@ -535,6 +556,105 @@ def _attach_cleanup(result: dict, cleanup: dict = None) -> dict:
     return result
 
 
+def _short_click_timeout(timeout: float, default: float = 2.0, upper: float = 2.0) -> float:
+    """Keep native click probes responsive before fallback paths run."""
+    try:
+        value = float(timeout)
+    except (TypeError, ValueError):
+        value = default
+    return max(0.0, min(value, upper))
+
+
+def _extract_text_locator(locator: str) -> str | None:
+    for prefix in ("text:", "text=", "tx:", "tx="):
+        if isinstance(locator, str) and locator.startswith(prefix):
+            return locator[len(prefix):]
+    return None
+
+
+def _xpath_literal(value: str) -> str:
+    text = str(value)
+    if "'" not in text:
+        return "'%s'" % text
+    if '"' not in text:
+        return '"%s"' % text
+    parts = text.split("'")
+    return "concat(%s)" % ', "\'", '.join("'%s'" % part for part in parts)
+
+
+def _clickable_text_locators(raw_text: str) -> list[str]:
+    text = str(raw_text).strip()
+    if not text:
+        return []
+    literal = _xpath_literal(text)
+    clickable = (
+        "self::button or self::a or @role='button' or @role='tab' or @role='menuitem' "
+        "or contains(concat(' ', normalize-space(@class), ' '), ' ant-btn ') "
+        "or contains(concat(' ', normalize-space(@class), ' '), ' ant-tabs-tab ') "
+        "or contains(concat(' ', normalize-space(@class), ' '), ' ant-dropdown-menu-item ') "
+        "or contains(concat(' ', normalize-space(@class), ' '), ' ant-pagination-item ')"
+    )
+    return [
+        "x://*[%s][normalize-space(.)=%s]" % (clickable, literal),
+        "x://*[%s][contains(normalize-space(.), %s)]" % (clickable, literal),
+    ]
+
+
+def _click_text_by_js(locator: str, in_frame: bool = True) -> dict | None:
+    raw_text = _extract_text_locator(locator)
+    if not raw_text:
+        return None
+
+    target = (browser_session.get_active_frame() if in_frame else None) or browser_session.get_tab()
+    needle = json.dumps("".join(str(raw_text).split()), ensure_ascii=False)
+    js = f"""
+        var needle = {needle};
+        var preferredSelector = [
+          'button', 'a', '[role="button"]', '[role="tab"]', '[role="menuitem"]',
+          'input[type="button"]', 'input[type="submit"]',
+          '.ant-btn', '.ant-tabs-tab', '.ant-dropdown-menu-item', '.ant-pagination-item'
+        ].join(',');
+        var allSelector = preferredSelector + ',span,div';
+        function norm(v) {{ return (v || '').trim().replace(/\\s+/g, ''); }}
+        function visible(el) {{
+          var style = window.getComputedStyle(el);
+          var rect = el.getBoundingClientRect();
+          return style.visibility !== 'hidden' && style.display !== 'none' && rect.width > 0 && rect.height > 0;
+        }}
+        function disabled(el) {{
+          return el.disabled || el.getAttribute('aria-disabled') === 'true' || el.classList.contains('disabled');
+        }}
+        function clickTarget(el) {{
+          return el.closest(preferredSelector) || el;
+        }}
+        function probe(selector) {{
+          var els = Array.from(document.querySelectorAll(selector));
+          for (var i = 0; i < els.length; i++) {{
+            var el = els[i];
+            if (!visible(el) || norm(el.innerText || el.textContent) !== needle) continue;
+            var target = clickTarget(el);
+            if (!visible(target) || disabled(target)) continue;
+            target.click();
+            return JSON.stringify({{
+              ok: true,
+              tag: target.tagName,
+              className: target.className || '',
+              text: (target.innerText || target.textContent || '').trim().slice(0, 80)
+            }});
+          }}
+          return null;
+        }}
+        return probe(preferredSelector) || probe(allSelector) || JSON.stringify({{ok:false}});
+    """
+    res = target.run_js(js)
+    if isinstance(res, str):
+        try:
+            res = json.loads(res)
+        except json.JSONDecodeError:
+            return {"ok": False, "reason": "JS 文本点击返回非 JSON: %s" % res}
+    return res or {"ok": False}
+
+
 @mcp.tool()
 @read_synchronized
 def scan_page_elements(include_iframe: bool = True, max_items: int = 200, filename: str = None) -> dict:
@@ -744,9 +864,9 @@ def _press_key_raw(tab, key: str, modifiers: list = None, interval: float = 0.01
 def explore_action(action: str = "click", locator: str = None, x: float = None, y: float = None,
                    row: int = 0, col: int = None, column_title: str = None, kind: str = "auto",
                    table_index: int = 0, icon_name: str = None, option_text: str = None,
-                   field_name: str = None, key: str = None, modifiers: list = None,
+                   field_name: str = None, key: str = None, modifiers: list[str] = None,
                    by_js: bool = False, in_frame: bool = True, timeout: float = 8,
-                   signals: list = None, listen_targets: str = None,
+                   signals: list[str] = None, listen_targets: str = None,
                    capture_before: bool = False, capture_after: bool = True,
                    clean_overlays: bool = True) -> dict:
     """动作探索封装：observe_start → 执行动作 → observe_wait → 可选页面模型快照。
@@ -976,7 +1096,7 @@ def find_static(locator: str = None, in_frame: bool = True, timeout: float = 5, 
 
 @mcp.tool()
 @read_synchronized
-def find_batch(locators: list, in_frame: bool = True, timeout: float = 5,
+def find_batch(locators: list[str], in_frame: bool = True, timeout: float = 5,
                any_one: bool = True, first_ele: bool = True) -> dict:
     """同时匹配多个定位符（find 封装）。一次调用查找多个不同元素。
 
@@ -1042,32 +1162,33 @@ def click(locator: str, in_frame: bool = True, by_js: bool = False, timeout: flo
     文档：https://drissionpage.cn/browser_control/get_elements/syntax
     """
     cleanup = _pre_click_cleanup(clean_overlays)
-    ele = browser_session.find(locator, in_frame=in_frame, timeout=timeout)
-    if not ele and locator.startswith("text:") and in_frame:
-        raw_text = locator[5:]
+    click_timeout = _short_click_timeout(timeout)
+    raw_text = _extract_text_locator(locator)
+    ele = None
+    if raw_text:
+        for candidate in _clickable_text_locators(raw_text):
+            ele = browser_session.find(candidate, in_frame=in_frame, timeout=min(timeout, 1.0),
+                                       wait_clickable=False)
+            if ele:
+                break
+    if not ele:
+        ele = browser_session.find(locator, in_frame=in_frame, timeout=timeout, wait_clickable=False)
+    if not ele and raw_text and in_frame:
         # 1. @@text(): 搜索整个元素内所有文本（非仅直接文本节点）
         if " " in raw_text:
-            ele = browser_session.find(f"@@text():{raw_text}", in_frame=in_frame, timeout=timeout)
+            ele = browser_session.find(f"@@text():{raw_text}", in_frame=in_frame, timeout=timeout,
+                                       wait_clickable=False)
         # 2. tx: 简化写法
         if not ele:
-            ele = browser_session.find(f"tx:{raw_text}", in_frame=in_frame, timeout=timeout)
+            ele = browser_session.find(f"tx:{raw_text}", in_frame=in_frame, timeout=timeout,
+                                       wait_clickable=False)
         # 3. tx= 精确匹配
         if not ele:
-            ele = browser_session.find(f"tx={raw_text}", in_frame=in_frame, timeout=timeout)
+            ele = browser_session.find(f"tx={raw_text}", in_frame=in_frame, timeout=timeout,
+                                       wait_clickable=False)
         # 4. JS 降级：textContent 去空格宽松匹配
         if not ele:
-            safe_text = raw_text.replace("\\", "\\\\").replace("'", "\\'")
-            target = browser_session.get_active_frame() or browser_session.get_tab()
-            res = target.run_js(
-                "var els=document.querySelectorAll('*');"
-                "for(var i=0;i<els.length;i++){"
-                "var t=els[i].textContent.trim().replace(/\\s+/g,'');"
-                "if(t==='"+safe_text.replace(" ", "")+"'){els[i].click();return JSON.stringify({ok:true});}"
-                "}"
-                "return JSON.stringify({ok:false});"
-            )
-            if isinstance(res, str):
-                res = json.loads(res)
+            res = _click_text_by_js(locator, in_frame=in_frame)
             if res and res.get("ok"):
                 return _attach_cleanup({"ok": True, "locator": locator, "fallback": "js-text"}, cleanup)
             return _attach_cleanup(
@@ -1076,7 +1197,19 @@ def click(locator: str, in_frame: bool = True, by_js: bool = False, timeout: flo
             )
     if not ele:
         return _attach_cleanup({"ok": False, "reason": "元素未找到: %s（等待 %.1fs）" % (locator, timeout)}, cleanup)
-    ele.click(by_js=by_js)
+    try:
+        clicked = ele.click(by_js=by_js, timeout=click_timeout, wait_stop=False)
+        if clicked is False:
+            raise RuntimeError("DrissionPage click returned False")
+    except Exception as e:
+        if not by_js:
+            res = _click_text_by_js(locator, in_frame=in_frame)
+            if res and res.get("ok"):
+                return _attach_cleanup(
+                    {"ok": True, "locator": locator, "fallback": "js-text", "native_error": str(e)},
+                    cleanup,
+                )
+        return _attach_cleanup({"ok": False, "locator": locator, "reason": "点击失败: %s" % e}, cleanup)
     return _attach_cleanup({"ok": True, "locator": locator}, cleanup)
 
 
@@ -1580,7 +1713,7 @@ def observe_post_click(timeout: float = 10, signals: list = None,
 
 @mcp.tool()
 @write_synchronized
-def observe_start(signals: list = None, listen_targets: str = None) -> dict:
+def observe_start(signals: list[str] = None, listen_targets: str = None) -> dict:
     """两段式观察器·启动：**点击前**调用，安装 MutationObserver + 网络监听，立即返回。
     observer 在点击前就已监听，消除「点击→观察」调用间隙（agent 思考时间可能 > toast 寿命），
     可靠捕获短寿命 toast（如保存成功 ~3s）。必须配对调用 observe_wait() 读取信号并清理。
@@ -2216,7 +2349,7 @@ def browser_console_messages(level: str = "", timeout: float = 0.0, start: bool 
 
 @mcp.tool()
 @write_synchronized
-def browser_press_key(key: str, modifiers: list = None, interval: float = 0.01) -> dict:
+def browser_press_key(key: str, modifiers: list[str] = None, interval: float = 0.01) -> dict:
     """按键操作工具（借鉴 Playwright MCP）
 
     Args:

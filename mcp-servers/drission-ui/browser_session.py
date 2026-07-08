@@ -332,7 +332,7 @@ def find(locator: str, in_frame: bool = True, timeout: float = 5, wait_clickable
             return None
         if wait_clickable:
             try:
-                ele.wait.clickable(wait_stop=False)  # 轮询至可点击或超时（超时不抛错）
+                ele.wait.clickable(timeout=timeout, wait_stop=False)  # 轮询至可点击或超时（超时不抛错）
                 if not ele.states.is_clickable:
                     logger.debug("元素已找到但不可点击: %s", locator)
                     return None
@@ -450,5 +450,4 @@ def switch_context(cid):
         except Exception as e:
             logger.warning("switch_context 取 tab 失败: %s", e)
             return None
-
 

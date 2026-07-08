@@ -1,0 +1,66 @@
+{
+  "module_info": {
+    "enterprise_prefix": "NB",
+    "module_name": "生产管理_生产动态表",
+    "module_level1": "生产管理",
+    "module_level2": "生产动态表",
+    "module_pinyin": "SCDTB",
+    "author": "Hooplus1ce"
+  },
+  "category": "I - 制令单页签类",
+  "test_cases": [
+    {
+      "case_id": "I003",
+      "case_title": "切换到制令单页签查看制令单列表",
+      "priority": "低级",
+      "verify_point": "切换制令单页签后展示制令单专属筛选条件和列表列",
+      "test_type": "功能测试",
+      "function": "页签切换",
+      "preconditions": [
+        "已登录 SCM 系统",
+        "在生产管理-生产动态表页面",
+        "生产需求单页签处于选中状态",
+        "数据表格已加载完成"
+      ],
+      "test_steps": [
+        "点击左侧工作区「制令单」页签",
+        "查看查询区字段",
+        "查看制令单列表表头和分页器"
+      ],
+      "test_data": {
+        "页签": "制令单"
+      },
+      "expected_result": "1. 页面未出现弹窗、通知、URL 跳转或新标签页\n2. 查询区显示制令单页签字段：创建日期、需求单号、制令单单号、销售单号、商品识别码、商品名称、客户名称\n3. 表格显示列：客户名称、销售单号、商品识别码、商品名称、制令单单号、需求单号、创建日期\n4. 分页器显示「共 36 条数据」",
+      "automation_suggestion": "click 点击制令单页签，scan_form_fields 验证筛选字段，scan_table 验证表头，scan_pagination 验证总数"
+    },
+    {
+      "case_id": "F009",
+      "case_title": "在制令单页签按制令单单号精确查询",
+      "priority": "低级",
+      "verify_point": "制令单页签按真实制令单号查询后仅返回匹配记录",
+      "test_type": "功能测试",
+      "function": "查询",
+      "preconditions": [
+        "已登录 SCM 系统",
+        "在生产管理-生产动态表页面",
+        "制令单页签处于选中状态",
+        "制令单列表已加载完成"
+      ],
+      "test_steps": [
+        "在制令单单号输入框输入「MO202607080013」",
+        "点击「搜索」按钮",
+        "查看制令单单号列和当前表格行数"
+      ],
+      "test_data": {
+        "制令单单号": "MO202607080013"
+      },
+      "expected_result": "1. 表格返回 1 条记录\n2. 返回记录的制令单单号为「MO202607080013」\n3. 返回记录的销售单号为「SO20260708013」\n4. 返回记录的商品识别码为「CP0301001」，商品名称为「成品001」\n5. 返回记录的需求单号为「MRO202607080014」",
+      "automation_suggestion": "切换到制令单页签后使用 input 填写制令单单号，click 点击搜索，get_table_values 验证制令单单号列唯一值"
+    }
+  ],
+  "meta_data": {
+    "format_note": "测试数据Excel自动加「表单数据」首行+中文冒号；预期结果保持编号列表格式",
+    "generated_at": "2026-07-08",
+    "testcase_count": 2
+  }
+}

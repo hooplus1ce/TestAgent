@@ -36,5 +36,44 @@ env_vars = [
   "HL_REFRESH_HTTP_TIMEOUT",
 ]
 
+[mcp_servers.drission-ui.tools.click]
+approval_mode = "approve"
+
+[mcp_servers.drission-ui.tools.find_elements]
+approval_mode = "approve"
+
+[mcp_servers.drission-ui.tools.browser_get_element_state]
+approval_mode = "approve"
+
+[mcp_servers.drission-ui.tools.run_js]
+approval_mode = "approve"
+
+[mcp_servers.drission-ui.tools.check_session]
+approval_mode = "approve"
+
+[mcp_servers.drission-ui.tools.get_active_frame]
+approval_mode = "approve"
+
+[mcp_servers.drission-ui.tools.scan_toolbar_actions]
+approval_mode = "approve"
+
+[mcp_servers.drission-ui.tools.scan_form_fields]
+approval_mode = "approve"
+
+[mcp_servers.drission-ui.tools.dom_tree]
+approval_mode = "approve"
+
+[mcp_servers.drission-ui.tools.get_element_coords]
+approval_mode = "approve"
+
+[mcp_servers.drission-ui.tools.observe_start]
+approval_mode = "approve"
+
+[mcp_servers.drission-ui.tools.observe_wait]
+approval_mode = "approve"
+
+[mcp_servers.drission-ui.tools.screenshot]
+approval_mode = "approve"
+
 # [mcp_servers.drission-ui.env]
 # DRISSION_UI_CAPS = "core,vtable,filter,observe,network"

@@ -1,0 +1,123 @@
+{
+  "module_info": {
+    "enterprise_prefix": "NB",
+    "module_name": "生产管理_生产动态表",
+    "module_level1": "生产管理",
+    "module_level2": "生产动态表",
+    "module_pinyin": "SCDTB",
+    "author": "Hooplus1ce"
+  },
+  "category": "F - 筛选查询类",
+  "test_cases": [
+    {
+      "case_id": "F001",
+      "case_title": "按需求单号精确查询生产动态记录",
+      "priority": "低级",
+      "verify_point": "按真实需求单号查询后表格仅返回匹配记录",
+      "test_type": "功能测试",
+      "function": "查询",
+      "preconditions": [
+        "已登录 SCM 系统",
+        "在生产管理-生产动态表页面",
+        "生产需求单页签处于选中状态",
+        "数据表格已加载完成"
+      ],
+      "test_steps": [
+        "在需求单号输入框输入「MRO202607030010」",
+        "点击「搜索」按钮",
+        "查看主表需求单号列和当前表格行数"
+      ],
+      "test_data": {
+        "需求单号": "MRO202607030010"
+      },
+      "expected_result": "1. 表格返回 1 条记录\n2. 返回记录的需求单号为「MRO202607030010」\n3. 返回记录的销售单号显示「SO20260703010,SO20260703008」\n4. 无其他需求单号记录显示",
+      "automation_suggestion": "使用 input 填写需求单号，click 点击搜索，get_table_values 读取需求单号列并断言 count=1 且唯一值为 MRO202607030010"
+    },
+    {
+      "case_id": "F002",
+      "case_title": "按是否分析状态筛选待分析记录",
+      "priority": "低级",
+      "verify_point": "选择待分析后表格仅显示待分析记录",
+      "test_type": "功能测试",
+      "function": "查询",
+      "preconditions": [
+        "已登录 SCM 系统",
+        "在生产管理-生产动态表页面",
+        "生产需求单页签处于选中状态",
+        "数据表格已加载完成"
+      ],
+      "test_steps": [
+        "展开是否分析下拉框",
+        "选择「待分析」",
+        "点击「搜索」按钮",
+        "查看主表是否分析列和当前表格行数"
+      ],
+      "test_data": {
+        "是否分析": "待分析"
+      },
+      "expected_result": "1. 表格返回 2 条记录\n2. 所有记录的是否分析列均为「待分析」\n3. 返回记录包含需求单号「MRO202607030015」和「MRO202607020007」\n4. 无「已分析」记录显示",
+      "automation_suggestion": "使用 click 打开是否分析下拉并选择待分析，click 点击搜索，get_table_values 读取是否分析列并断言所有值均为待分析"
+    },
+    {
+      "case_id": "F003",
+      "case_title": "按生产状态筛选生产完成记录",
+      "priority": "低级",
+      "verify_point": "选择生产完成后表格仅显示生产完成记录",
+      "test_type": "功能测试",
+      "function": "查询",
+      "preconditions": [
+        "已登录 SCM 系统",
+        "在生产管理-生产动态表页面",
+        "生产需求单页签处于选中状态",
+        "数据表格已加载完成"
+      ],
+      "test_steps": [
+        "展开生产状态下拉框",
+        "选择「生产完成」",
+        "点击「搜索」按钮",
+        "查看主表生产状态列和当前表格行数"
+      ],
+      "test_data": {
+        "生产状态": "生产完成"
+      },
+      "expected_result": "1. 表格返回 2 条记录\n2. 所有记录的生产状态列均为「生产完成」\n3. 返回记录包含需求单号「MRO202607020004」和「MRO202607010001」\n4. 无非「生产完成」状态记录显示",
+      "automation_suggestion": "使用 click 打开生产状态下拉并选择生产完成，click 点击搜索，get_table_values 读取生产状态列并断言所有值均为生产完成"
+    },
+    {
+      "case_id": "F004",
+      "case_title": "按生产计划状态筛选待排产记录",
+      "priority": "低级",
+      "verify_point": "选择待排产后表格仅显示待排产记录",
+      "test_type": "功能测试",
+      "function": "查询",
+      "preconditions": [
+        "已登录 SCM 系统",
+        "在生产管理-生产动态表页面",
+        "生产需求单页签处于选中状态",
+        "数据表格已加载完成"
+      ],
+      "test_steps": [
+        "展开生产计划状态下拉框",
+        "选择「待排产」",
+        "点击「搜索」按钮",
+        "查看主表生产计划状态列和当前表格行数"
+      ],
+      "test_data": {
+        "生产计划状态": "待排产"
+      },
+      "expected_result": "1. 表格返回 3 条记录\n2. 所有记录的生产计划状态列均为「待排产」\n3. 返回记录包含需求单号「MRO202607050001」「MRO202607030015」「MRO202607020007」\n4. 无非「待排产」状态记录显示",
+      "automation_suggestion": "使用 click 打开生产计划状态下拉并选择待排产，click 点击搜索，get_table_values 读取生产计划状态列并断言所有值均为待排产"
+    }
+  ],
+  "meta_data": {
+    "format_note": "测试数据Excel自动加「表单数据」首行+中文冒号；预期结果保持编号列表格式",
+    "generated_at": "2026-07-08",
+    "testcase_count": 4,
+    "evidence_files": [
+      "resources/生产动态表/explore_01_filter_demand_no_values.json",
+      "resources/生产动态表/explore_04_filter_analysis_values.json",
+      "resources/生产动态表/explore_05_filter_production_status_values.json",
+      "resources/生产动态表/explore_06_filter_plan_status_values.json"
+    ]
+  }
+}
