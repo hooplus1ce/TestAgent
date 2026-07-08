@@ -426,10 +426,10 @@ def scan_floats(only_visible: bool = True, include_table_data: bool = True) -> d
         js = _COMMON_JS + """
 var nodeList = [].slice.call(document.querySelectorAll(
   '.ant-modal, .ant-drawer, .ant-popover, .ant-tooltip, '
-  + '.ant-dropdown, .ant-message-notice, .ant-notification-notice'
+  + '.ant-dropdown'
 ));
-var nodes = ONLY_VISIBLE ? nodeList.filter(duVisible) : nodeList;
 var allWrappers = [].slice.call(document.querySelectorAll('.ant-table-wrapper'));
+var nodes = ONLY_VISIBLE ? nodeList.filter(duVisible) : nodeList;
 // iframe 偏移：叠加到坐标使结果始终为 top-viewport 坐标
 var ifrOff = {left:0, top:0};
 var _ifrEl = window.frameElement;
@@ -446,9 +446,6 @@ for (var i = 0; i < nodes.length; i++) {
   else if (/\\bant-popover\\b/.test(cls)) kind = 'popover';
   else if (/\\bant-tooltip\\b/.test(cls)) kind = 'tooltip';
   else if (/\\bant-dropdown\\b/.test(cls)) kind = 'dropdown';
-  else if (/\\bant-message-notice\\b/.test(cls)) kind = 'message';
-  else if (/\\bant-notification-notice\\b/.test(cls)) kind = 'notification';
-
   // 标题提取
   var titleEl = n.querySelector('.ant-modal-title, .ant-drawer-title, .ant-modal-header');
   var title = titleEl ? duCleanText(titleEl.textContent) : '';
