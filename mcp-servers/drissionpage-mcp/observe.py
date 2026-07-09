@@ -49,6 +49,113 @@ def _pick_primary(events: list) -> dict:
             best = ev
     return best
 
+
+def _event_payload(event: dict) -> dict:
+    payload = event.get("payload") if isinstance(event, dict) else None
+    return payload if isinstance(payload, dict) else {}
+
+
+def _short_text(value, limit: int = 160) -> str:
+    text = " ".join(str(value or "").split())
+    return text[:limit]
+
+
+def _rect_key(rect: dict):
+    if not isinstance(rect, dict):
+        return ()
+    keys = ("x", "y", "width", "height")
+    out = []
+    for key in keys:
+        try:
+            out.append(round(float(rect.get(key) or 0), 1))
+        except (TypeError, ValueError):
+            out.append(0)
+    return tuple(out)
+
+
+def _event_identity(event: dict):
+    """Build a compact identity key for de-duplicating repeated DOM signals."""
+    payload = _event_payload(event)
+    etype = event.get("type", "")
+    if etype == "network":
+        return (
+            etype,
+            event.get("method", ""),
+            event.get("url", ""),
+            event.get("api_target", ""),
+            event.get("status", ""),
+        )
+    title = payload.get("title") or event.get("title") or ""
+    message = payload.get("message") or event.get("message") or ""
+    content = payload.get("content") or event.get("content") or ""
+    options = payload.get("options") or []
+    rect = payload.get("rect") or event.get("rect") or {}
+    return (
+        etype,
+        event.get("scope") or payload.get("scope") or "",
+        _short_text(title, 80),
+        _short_text(message or content, 120),
+        tuple(options[:10]) if isinstance(options, list) else (),
+        _rect_key(rect),
+    )
+
+
+def _dedupe_events(events: list) -> list:
+    out = []
+    seen = set()
+    for event in events:
+        if not isinstance(event, dict):
+            continue
+        key = _event_identity(event)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(event)
+    return out
+
+
+def _event_summary(event: dict) -> dict:
+    """Return a dense timeline item without duplicating full payload."""
+    payload = _event_payload(event)
+    out = {
+        "type": event.get("type"),
+        "elapsedMs": event.get("elapsedMs", 0),
+    }
+    scope = event.get("scope") or payload.get("scope")
+    if scope:
+        out["scope"] = scope
+
+    title = payload.get("title") or event.get("title")
+    message = payload.get("message") or event.get("message")
+    content = payload.get("content") or event.get("content")
+    if title:
+        out["title"] = _short_text(title, 120)
+    if message:
+        out["message"] = _short_text(message, 160)
+    elif content:
+        out["content"] = _short_text(content, 160)
+
+    if event.get("type") == "network":
+        for key in ("method", "url", "api_target", "status"):
+            value = event.get(key)
+            if value not in (None, "", False):
+                out[key] = value
+    elif event.get("type") in ("calendar", "select-dropdown", "dropdown"):
+        if payload.get("mode"):
+            out["mode"] = payload.get("mode")
+        if payload.get("cellCount") is not None:
+            out["cellCount"] = payload.get("cellCount")
+        options = payload.get("options")
+        if isinstance(options, list):
+            out["optionCount"] = len(options)
+
+    return out
+
+
+def _compact_events(events: list) -> tuple[list, list]:
+    unique = _dedupe_events(events)
+    return unique, [_event_summary(event) for event in unique]
+
 logger = logging.getLogger("drissionpage-mcp")
 
 # ---- 信号选择器 ----
@@ -522,6 +629,11 @@ def observe_start(signals=None, listen_targets=None) -> dict:
     Returns:
         {ok, session:'active', watched:[...], base_url, base_tab_count}
     """
+    sess = _build_session(signals, listen_targets)
+    return {"ok": True, "session": "active", "watched": sorted(sess["sigset"]),
+            "base_url": sess["base_url"], "base_tab_count": sess["base_tab_count"]}
+
+
 def observe_wait(timeout: float = 8.0, poll_interval: float = 0.12,
                  include_snapshot: bool = True, detail: str = "summary") -> dict:
     """两段式观察器·等待: 轮询 observe_start 安装的 observer, 在短窗口内收集多个事件,
@@ -536,7 +648,7 @@ def observe_wait(timeout: float = 8.0, poll_interval: float = 0.12,
         detail: 快照详情级别, "summary"(默认) 精简日历单元格, "full" 返回完整单元格.
 
     Returns:
-        有事件: {type, events: [...], primary_event: {...}, elapsedMs, snapshot_after}
+        有事件: {type, payload?, events: [摘要...], event_count, elapsedMs, snapshot_after}
         无事件: {type:'none', events:[], elapsedMs, watched:[...], snapshot_after}
         无 session: {type:'none', reason:'...', events:[], snapshot_after}
     """
@@ -568,10 +680,11 @@ def observe_wait(timeout: float = 8.0, poll_interval: float = 0.12,
                       "elapsedMs": int((time.time() - sess["start"]) * 1000),
                       "watched": sorted(sess["sigset"])}
         else:
+            events, summaries = _compact_events(events)
             primary = _pick_primary(events)
             result = dict(primary)
-            result["events"] = events
-            result["primary_event"] = primary
+            result["events"] = summaries
+            result["event_count"] = len(events)
 
         return _attach_snapshot(result, include_snapshot, detail=detail)
     finally:
@@ -597,7 +710,7 @@ def observe_post_click(timeout: float = 10.0, signals=None, listen_targets=None,
         detail: 快照详情级别，"summary"（默认）精简日历单元格，"full" 返回完整单元格。
 
     Returns:
-        同 observe_wait：{type, events, primary_event?, elapsedMs, snapshot_after, ...}
+        同 observe_wait：{type, payload?, events, event_count, elapsedMs, snapshot_after, ...}
     """
     observe_start(signals=signals, listen_targets=listen_targets)
     return observe_wait(timeout=timeout, poll_interval=poll_interval,

@@ -51,6 +51,7 @@
 - 只需确认浮层有无 → `explore_action`（`signal.snapshot_after` 够用）
 - 需要完整页面动作列表/表格数据 → 显式 `capture_after=True`
 - 需要全量日历单元格 → `observe_snapshot(detail="full")` 或 `explore_action(detail="full")`
+- 设置单日期字段 → `set_date(field_name="工作日期", date="2026-06-01")`，一次完成打开日历、翻月、选日和字段值校验，只返回日期浮窗与字段值的紧凑信息
 
 ### 其他规则
 

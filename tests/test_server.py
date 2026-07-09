@@ -235,6 +235,287 @@ def test_list_parameters_have_typed_items_schema():
         assert prop["items"]["type"] == "string"
 
 
+def test_explore_action_uses_default_observe_signals_without_listen_targets():
+    """explore_action 默认观察信号不应依赖未定义局部变量。"""
+    import server
+
+    calls = {}
+
+    with patch.object(server.observe, "observe_start", side_effect=lambda **kwargs: calls.setdefault("observe_start", kwargs) or {"ok": True}), \
+         patch.object(server.observe, "observe_wait", return_value={"type": "none"}), \
+         patch.object(server, "_pre_click_cleanup", return_value=None), \
+         patch.object(server, "_attach_cleanup", side_effect=lambda result, cleanup: result), \
+         patch.object(server.browser_session, "get_tab", return_value=SimpleNamespace()):
+        result = server.explore_action(action="noop", timeout=0.01)
+
+    assert result["ok"] is False
+    assert calls["observe_start"]["signals"] == ["overlay", "notification", "message", "tab", "url"]
+    assert calls["observe_start"]["listen_targets"] is None
+
+
+def test_explore_action_adds_network_signal_when_listen_targets_present():
+    """传 listen_targets 时默认观察信号应包含 network。"""
+    import server
+
+    calls = {}
+
+    with patch.object(server.observe, "observe_start", side_effect=lambda **kwargs: calls.setdefault("observe_start", kwargs) or {"ok": True}), \
+         patch.object(server.observe, "observe_wait", return_value={"type": "none"}), \
+         patch.object(server, "_pre_click_cleanup", return_value=None), \
+         patch.object(server, "_attach_cleanup", side_effect=lambda result, cleanup: result), \
+         patch.object(server.browser_session, "get_tab", return_value=SimpleNamespace()):
+        result = server.explore_action(action="noop", listen_targets="gateway", timeout=0.01)
+
+    assert result["ok"] is False
+    assert calls["observe_start"]["signals"] == ["overlay", "notification", "message", "tab", "url", "network"]
+    assert calls["observe_start"]["listen_targets"] == "gateway"
+
+
+def test_explore_action_button_target_resolves_visible_toolbar_action():
+    """语义按钮目标应先扫描可见工具栏动作，再用坐标点击，避免命中文本隐藏节点。"""
+    import server
+
+    class FakeActions:
+        def __init__(self):
+            self.moves = []
+            self.clicked = False
+
+        def move_to(self, point, duration=0):
+            self.moves.append((point, duration))
+            return self
+
+        def click(self):
+            self.clicked = True
+            return self
+
+    actions = FakeActions()
+    fake_tab = SimpleNamespace(actions=actions)
+    calls = {}
+
+    with patch.object(server.page_model, "scan_toolbar_actions", return_value={
+            "ok": True,
+            "actions": [{"text": "添 加", "cx": 356.6, "cy": 117.0}],
+         }) as scan, \
+         patch.object(server.observe, "observe_start", side_effect=lambda **kwargs: calls.setdefault("observe_start", kwargs) or {"ok": True}), \
+         patch.object(server.observe, "observe_wait", side_effect=lambda **kwargs: calls.setdefault("observe_wait", kwargs) or {"type": "modal"}), \
+         patch.object(server, "_pre_click_cleanup", return_value=None), \
+         patch.object(server, "_attach_cleanup", side_effect=lambda result, cleanup: result), \
+         patch.object(server.browser_session, "get_tab", return_value=fake_tab):
+        result = server.explore_action(target={"type": "button", "text": "添加"}, timeout=8)
+
+    scan.assert_called_once_with(scope="toolbar", in_frame=True, max_items=160)
+    assert actions.moves == [((356.6, 117.0), 0.3)]
+    assert actions.clicked is True
+    assert result["ok"] is True
+    assert result["action"]["action"] == "click_xy"
+    assert result["observe_policy"]["expect"] == "modal"
+    assert calls["observe_start"]["signals"] == ["modal"]
+    assert calls["observe_wait"]["include_snapshot"] is True
+
+
+def test_explore_action_field_target_infers_calendar_fast_mode():
+    """字段目标包含“日期/时间”时，fast 模式应只等待 calendar 且不附加快照。"""
+    import server
+
+    calls = {}
+
+    with patch.object(server.observe, "observe_start", side_effect=lambda **kwargs: calls.setdefault("observe_start", kwargs) or {"ok": True}), \
+         patch.object(server.observe, "observe_wait", side_effect=lambda **kwargs: calls.setdefault("observe_wait", kwargs) or {"type": "calendar"}), \
+         patch.object(server, "_pre_click_cleanup", return_value=None), \
+         patch.object(server, "_attach_cleanup", side_effect=lambda result, cleanup: result), \
+         patch.object(server.browser_session, "get_tab", return_value=SimpleNamespace()), \
+         patch.object(server, "_click_field_raw", return_value={"ok": True, "action": "field_click", "control_type": "date-picker"}) as click_field:
+        result = server.explore_action(
+            target={"type": "field", "name": "工作日期"},
+            observe_mode="fast",
+            timeout=8,
+        )
+
+    click_field.assert_called_once()
+    assert result["ok"] is True
+    assert result["observe_policy"]["expect"] == "calendar"
+    assert calls["observe_start"]["signals"] == ["calendar"]
+    assert calls["observe_wait"]["timeout"] == 2.0
+    assert calls["observe_wait"]["include_snapshot"] is False
+
+
+def test_explore_action_observe_mode_none_skips_observer():
+    """纯操作场景可跳过 observe_start/observe_wait，保留动作执行结果。"""
+    import server
+
+    class FakeActions:
+        def __init__(self):
+            self.clicked = False
+
+        def move_to(self, point, duration=0):
+            return self
+
+        def click(self):
+            self.clicked = True
+            return self
+
+    actions = FakeActions()
+    fake_tab = SimpleNamespace(actions=actions)
+
+    with patch.object(server.observe, "observe_start", side_effect=AssertionError("observe_start should be skipped")), \
+         patch.object(server.observe, "observe_wait", side_effect=AssertionError("observe_wait should be skipped")), \
+         patch.object(server, "_pre_click_cleanup", return_value=None), \
+         patch.object(server, "_attach_cleanup", side_effect=lambda result, cleanup: result), \
+         patch.object(server.browser_session, "get_tab", return_value=fake_tab):
+        result = server.explore_action(
+            action="click_xy",
+            x=10,
+            y=20,
+            observe_mode="none",
+        )
+
+    assert actions.clicked is True
+    assert result["ok"] is True
+    assert result["observe_start"]["session"] == "skipped"
+    assert result["signal"]["type"] == "skipped"
+
+
+def test_explore_action_capture_after_disables_snapshot_by_default():
+    """capture_after 已会返回 after 模型，默认不再重复附带 snapshot_after。"""
+    import server
+
+    class FakeActions:
+        def move_to(self, point, duration=0):
+            return self
+
+        def click(self):
+            return self
+
+    calls = {}
+    fake_tab = SimpleNamespace(actions=FakeActions())
+
+    with patch.object(server.observe, "observe_start", return_value={"ok": True}), \
+         patch.object(server.observe, "observe_wait", side_effect=lambda **kwargs: calls.setdefault("observe_wait", kwargs) or {"type": "modal"}), \
+         patch.object(server.page_model, "capture_page_model", return_value={"ok": True, "modals": {"count": 1}}), \
+         patch.object(server, "_pre_click_cleanup", return_value=None), \
+         patch.object(server, "_attach_cleanup", side_effect=lambda result, cleanup: result), \
+         patch.object(server.browser_session, "get_tab", return_value=fake_tab):
+        result = server.explore_action(
+            action="click_xy",
+            x=10,
+            y=20,
+            capture_after=True,
+        )
+
+    assert result["ok"] is True
+    assert calls["observe_wait"]["include_snapshot"] is False
+    assert result["observe_policy"]["include_snapshot"] is False
+    assert result["after"] == {"ok": True, "modals": {"count": 1}}
+
+
+def test_drissionpage_observe_wait_compacts_and_dedupes_events():
+    """drissionpage-mcp observe_wait 应保留主 payload，但 events 只返回去重摘要。"""
+    script = r"""
+import json
+import sys
+import time
+sys.path.insert(0, 'mcp-servers/drissionpage-mcp')
+import observe
+
+event = {
+    "type": "interactive",
+    "scope": "iframe",
+    "elapsedMs": 12,
+    "payload": {
+        "type": "interactive",
+        "scope": "iframe",
+        "title": "添加工资明细",
+        "content": "工作日期 生产部门 薪资计算类型",
+        "buttons": ["取 消", "确 定"],
+        "rect": {"x": 100, "y": 120, "width": 680, "height": 530},
+    },
+}
+events = [dict(event), dict(event)]
+def fake_poll(sess, now):
+    return events.pop(0) if events else None
+
+with observe._session_lock:
+    observe._session.clear()
+    observe._session.update({
+        "active": True,
+        "sigset": {"modal"},
+        "start": time.time(),
+        "tab": object(),
+        "fr": None,
+        "watch_network": False,
+    })
+
+observe._poll_once = fake_poll
+observe._teardown_session = lambda sess: None
+observe._COLLECT_WINDOW = 0.01
+result = observe.observe_wait(timeout=0.05, poll_interval=0.001, include_snapshot=False)
+print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=os.path.dirname(os.path.dirname(__file__)),
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    data = json.loads(result.stdout)
+
+    assert data["type"] == "interactive"
+    assert data["payload"]["title"] == "添加工资明细"
+    assert "primary_event" not in data
+    assert data["event_count"] == 1
+    assert data["events"] == [{
+        "type": "interactive",
+        "elapsedMs": 12,
+        "scope": "iframe",
+        "title": "添加工资明细",
+        "content": "工作日期 生产部门 薪资计算类型",
+    }]
+
+
+def test_drissionpage_set_date_tool_and_date_normalization():
+    """drissionpage-mcp 应提供单日期字段紧凑设置工具。"""
+    script = r"""
+import asyncio
+import json
+import sys
+sys.path.insert(0, 'mcp-servers/drissionpage-mcp')
+import server
+
+async def main():
+    tools = await server.mcp.list_tools()
+    data = {
+        "has_set_date": "set_date" in {tool.name for tool in tools},
+        "dash": server._normalize_date_value("2026-06-01"),
+        "slash": server._normalize_date_value("2026/06/01"),
+        "invalid": server._normalize_date_value("2026.06.01"),
+    }
+    print(json.dumps(data, ensure_ascii=False, sort_keys=True))
+
+asyncio.run(main())
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=os.path.dirname(os.path.dirname(__file__)),
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    data = json.loads(result.stdout)
+
+    assert data["has_set_date"] is True
+    assert data["dash"] == {
+        "ok": True,
+        "dash": "2026-06-01",
+        "slash": "2026/06/01",
+        "year": 2026,
+        "month": 6,
+        "day": 1,
+    }
+    assert data["slash"]["dash"] == "2026-06-01"
+    assert data["invalid"]["ok"] is False
+
+
 def test_duplicate_tools_removed_from_public_surface():
     """重复/内部 helper 不应再作为 public MCP 工具暴露。"""
     names = _tool_names()
@@ -334,6 +615,7 @@ def test_scan_floats_includes_ant_calendar_by_dom_presence():
     js = captured_js[0]
     assert ".ant-calendar-picker-container, .ant-calendar" in js
     assert "function duCalendarActive" in js
+    assert "title: title\n  };\n}\nfunction duScanCalendar" in js
     assert "return !!(el && el.isConnected);" in js
     assert "var nodes = nodeList.filter(duKeepFloatNode);" in js
     assert "nodeList.filter(duVisible)" not in js
@@ -360,6 +642,37 @@ def test_observe_snapshot_wraps_scan_floats_as_unified_overlays():
     assert result["page"]["active_tab"] == "active"
     assert result["source"] == "scan_floats"
     scan.assert_called_once_with(only_visible=True, include_table_data=True)
+
+
+def test_observe_start_creates_active_session():
+    import observe
+
+    fake_tab = SimpleNamespace(url="https://example.test/top")
+    fake_frame = SimpleNamespace(url="https://example.test/frame")
+
+    with observe._session_lock:
+        observe._session.clear()
+
+    try:
+        with patch.object(observe.browser_session, "get_tab", return_value=fake_tab), \
+             patch.object(observe.browser_session, "get_active_frame", return_value=fake_frame), \
+             patch.object(observe.browser_session, "tab_count", return_value=3), \
+             patch.object(observe, "_run_js_safe", return_value={"ok": True}):
+            result = observe.observe_start(signals=["modal", "message"])
+
+        assert result == {
+            "ok": True,
+            "session": "active",
+            "watched": ["message", "modal"],
+            "base_url": "https://example.test/frame",
+            "base_tab_count": 3,
+        }
+        with observe._session_lock:
+            assert observe._session["active"] is True
+            assert observe._session["sigset"] == {"modal", "message"}
+    finally:
+        with observe._session_lock:
+            observe._session.clear()
 
 
 def test_observe_wait_attaches_snapshot_after_signal():

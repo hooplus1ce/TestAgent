@@ -147,27 +147,9 @@ def main():
     iframe.set.show_trail(True)
     tab.set.show_trail(True)
 
-    # ret = get_iframe_floats(only_visible=True, iframe_active=iframe)
-    # print(ret)
 
-    # tree(iframe.ele("t:div@@class:ant-modal-wrap"), text=True, show_css=True)
-    # iframe.actions.move_to(
-    #     (
-    #         ret["floats"][-1]["buttons"][0]["rect"]["x"],
-    #         ret["floats"][-1]["buttons"][0]["rect"]["y"],
-    #     ),
-    #     duration=2,
-    # ).wait(1).hold().click()
-    # iframe.actions.move_to((334.0, 314), duration=2).wait(0.15).click(times=1)
-    try:
-        t = iframe.wait.ele_displayed(
-            "c:.ant-select-dropdown:not(.ant-select-dropdown-hidden)",
-            timeout=2,
-            raise_err=True,
-        )
-        print(t)
-    except Exception as e:
-        print(e)
+    iframe.actions.move_to((1089, 444.6), duration=2).wait(0.15).click(times=1)
+
     tab.set.show_trail(False)
     iframe.set.show_trail(False)
     exit()

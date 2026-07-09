@@ -997,37 +997,436 @@ def _press_key_raw(tab, key: str, modifiers: list = None, interval: float = 0.01
     return {"ok": True, "key": key, "modifiers": modifiers}
 
 
+def _compact_text(text: str) -> str:
+    return "".join(str(text or "").split()).lower()
+
+
+def _xpath_literal(value: str) -> str:
+    value = str(value or "")
+    if "'" not in value:
+        return f"'{value}'"
+    if '"' not in value:
+        return f'"{value}"'
+    parts = value.split("'")
+    return "concat(%s)" % ', "\'", '.join(f"'{part}'" for part in parts)
+
+
+def _normalize_target_dict(target):
+    if target is None:
+        return None
+    if isinstance(target, str):
+        return {"type": "locator", "locator": target}
+    if isinstance(target, dict):
+        return dict(target)
+    return {"type": "locator", "locator": str(target)}
+
+
+def _target_get(target: dict, *names, default=None):
+    for name in names:
+        if name in target and target[name] is not None:
+            return target[name]
+    return default
+
+
+def _as_locator(prefix: str, value: str) -> str:
+    value = str(value or "")
+    if not value:
+        return ""
+    for known in ("css:", "c:", "xpath:", "x:", "text:", "tx:", "tag:", "t:", "ax:", "#", "."):
+        if value.startswith(known):
+            return value
+    return f"{prefix}:{value}"
+
+
+def _resolve_visible_action_target(target: dict, in_frame: bool) -> dict:
+    text = _target_get(target, "text", "name", "label", "title")
+    if not text:
+        return {"ok": False, "reason": "action/button target requires text/name/label"}
+    scope = str(_target_get(target, "scope", default="toolbar") or "toolbar")
+    max_items = int(_target_get(target, "max_items", default=160) or 160)
+    data = page_model.scan_toolbar_actions(scope=scope, in_frame=in_frame, max_items=max_items)
+    if not data.get("ok"):
+        return {"ok": False, "reason": data.get("reason", "scan toolbar actions failed")}
+
+    needle = _compact_text(text)
+    candidates = []
+    for item in data.get("actions", []) or []:
+        hay = _compact_text(item.get("text") or item.get("title") or "")
+        if hay == needle:
+            candidates.insert(0, item)
+        elif needle and needle in hay:
+            candidates.append(item)
+    if not candidates:
+        return {"ok": False, "reason": "visible action not found: %s" % text}
+
+    item = candidates[0]
+    cx = item.get("cx") or item.get("viewportX")
+    cy = item.get("cy") or item.get("viewportY")
+    if cx is None or cy is None:
+        rect = item.get("rect") or {}
+        if {"x", "y", "width", "height"} <= set(rect):
+            cx = float(rect["x"]) + float(rect["width"]) / 2
+            cy = float(rect["y"]) + float(rect["height"]) / 2
+    if cx is None or cy is None:
+        return {"ok": False, "reason": "visible action has no usable coordinates: %s" % text}
+    return {
+        "ok": True,
+        "action": "click_xy",
+        "x": float(cx),
+        "y": float(cy),
+        "meta": {
+            "target_type": "action",
+            "text": item.get("text") or text,
+            "matched": item,
+        },
+    }
+
+
+def _click_field_raw(field_name: str, in_frame: bool = True, timeout: float = 5.0,
+                     scope: str = "auto", select_index: int = 0) -> dict:
+    field_name = str(field_name or "").strip()
+    if not field_name:
+        return {"ok": False, "reason": "field target requires name/field_name"}
+
+    tab = browser_session.get_tab()
+    candidates = []
+    if in_frame and scope in ("auto", "frame", "iframe"):
+        fr = browser_session.get_active_frame(tab)
+        if fr is not None:
+            candidates.append(("iframe", fr))
+    if scope in ("auto", "top") or not candidates:
+        candidates.append(("top", tab))
+
+    label_lit = _xpath_literal(field_name)
+    container_locators = [
+        "xpath://div[contains(@class, 'ant-form-item')][.//*[contains(normalize-space(.), %s)]]" % label_lit,
+        "xpath://div[contains(@class, 'ant-col')][.//*[contains(normalize-space(.), %s)]]" % label_lit,
+    ]
+    control_locator = (
+        "css:.ant-calendar-picker,.ant-picker,.ant-select:not(.ant-select-disabled),"
+        "input:not([type='hidden']),textarea,.ant-input-number,.ant-checkbox-wrapper,"
+        ".ant-radio-group,.ant-switch,[role='combobox']"
+    )
+    opener_locator = (
+        "css:.ant-calendar-picker-input,.ant-picker-input input,.ant-select-selection,"
+        ".ant-select-selector,[role='combobox'],input:not([type='hidden']),textarea,"
+        ".ant-input-number-input,.ant-checkbox-wrapper,.ant-radio-group,.ant-switch"
+    )
+
+    for scope_name, target in candidates:
+        for locator in container_locators:
+            try:
+                containers = target.eles(locator, timeout=min(timeout, 2.0))
+            except Exception:
+                containers = []
+            if not containers:
+                continue
+            for container in containers:
+                try:
+                    controls = container.eles(control_locator, timeout=0.3)
+                except Exception:
+                    controls = []
+                if not controls:
+                    continue
+                control = controls[min(select_index, len(controls) - 1)]
+                opener = None
+                try:
+                    opener = control.ele(opener_locator, timeout=0.2)
+                except Exception:
+                    opener = None
+                opener = opener or control
+                try:
+                    opener.click()
+                    cls = ""
+                    try:
+                        cls = control.attr("class") or ""
+                    except Exception:
+                        pass
+                    control_type = "field"
+                    if "calendar" in cls or "ant-picker" in cls:
+                        control_type = "date-picker"
+                    elif "ant-select" in cls:
+                        control_type = "select"
+                    elif "input-number" in cls:
+                        control_type = "number"
+                    return {
+                        "ok": True,
+                        "action": "field_click",
+                        "field_name": field_name,
+                        "scope": scope_name,
+                        "control_type": control_type,
+                    }
+                except Exception as e:
+                    return {"ok": False, "reason": "field click failed: %s" % e,
+                            "field_name": field_name, "scope": scope_name}
+    return {"ok": False, "reason": "field not found: %s" % field_name}
+
+
+def _resolve_target_action(target, action_name: str, locator, x, y, field_name,
+                           row, col, column_title, kind, table_index, icon_name,
+                           option_text, key, modifiers, in_frame: bool):
+    meta = {}
+    target = _normalize_target_dict(target)
+    if not target:
+        return {
+            "action": action_name, "locator": locator, "x": x, "y": y,
+            "field_name": field_name, "row": row, "col": col,
+            "column_title": column_title, "kind": kind, "table_index": table_index,
+            "icon_name": icon_name, "option_text": option_text, "key": key,
+            "modifiers": modifiers, "target_meta": meta, "target_error": None,
+        }
+
+    target_type = str(_target_get(target, "type", "kind", default="") or "").lower()
+    if not target_type:
+        if _target_get(target, "x") is not None and _target_get(target, "y") is not None:
+            target_type = "xy"
+        elif _target_get(target, "field_name", "name") is not None:
+            target_type = "field"
+        elif _target_get(target, "row") is not None:
+            target_type = "table_cell"
+        else:
+            target_type = "locator"
+
+    meta["target_type"] = target_type
+    if target_type in ("xy", "point", "coord", "coordinate"):
+        x = float(_target_get(target, "x", "cx", "viewportX", default=x))
+        y = float(_target_get(target, "y", "cy", "viewportY", default=y))
+        action_name = "click_xy"
+    elif target_type in ("action", "button", "toolbar"):
+        resolved = _resolve_visible_action_target(target, in_frame=in_frame)
+        if not resolved.get("ok"):
+            return {"target_error": resolved, "target_meta": meta, "action": action_name,
+                    "locator": locator, "x": x, "y": y, "field_name": field_name,
+                    "row": row, "col": col, "column_title": column_title, "kind": kind,
+                    "table_index": table_index, "icon_name": icon_name,
+                    "option_text": option_text, "key": key, "modifiers": modifiers}
+        action_name = resolved["action"]
+        x = resolved["x"]
+        y = resolved["y"]
+        meta.update(resolved.get("meta") or {})
+    elif target_type in ("field", "form_field", "date", "date-picker", "select"):
+        field_name = str(_target_get(target, "field_name", "name", "label", default=field_name) or "")
+        action_name = "field_click" if action_name in ("click", "click_xy") else action_name
+        meta["field_name"] = field_name
+        if target_type in ("date", "date-picker") or any(word in field_name for word in ("日期", "时间")):
+            meta["control_type"] = "date-picker"
+        elif target_type == "select":
+            meta["control_type"] = "select"
+    elif target_type in ("css", "xpath", "text", "locator"):
+        if target_type == "css":
+            locator = _as_locator("css", _target_get(target, "value", "css", "selector", default=locator))
+        elif target_type == "xpath":
+            locator = _as_locator("xpath", _target_get(target, "value", "xpath", default=locator))
+        elif target_type == "text":
+            locator = _as_locator("text", _target_get(target, "value", "text", "name", default=locator))
+        else:
+            locator = _target_get(target, "locator", "value", default=locator)
+        action_name = "click" if action_name == "click_xy" else action_name
+    elif target_type in ("table_cell", "cell"):
+        action_name = "table_cell"
+        row = int(_target_get(target, "row", default=row) or 0)
+        col = _target_get(target, "col", "column", default=col)
+        col = int(col) if col is not None else None
+        column_title = _target_get(target, "column_title", "columnTitle", "title", default=column_title)
+        kind = _target_get(target, "table_kind", "kind", default=kind)
+        table_index = int(_target_get(target, "table_index", "tableIndex", default=table_index) or 0)
+        icon_name = _target_get(target, "icon_name", "iconName", default=icon_name)
+    elif target_type in ("option", "select_option"):
+        action_name = "select_option"
+        field_name = _target_get(target, "field_name", "name", "label", default=field_name)
+        option_text = _target_get(target, "option_text", "option", "value", "text", default=option_text)
+    elif target_type in ("key", "keyboard"):
+        action_name = "press_key"
+        key = _target_get(target, "key", "value", default=key)
+        modifiers = _target_get(target, "modifiers", default=modifiers)
+    else:
+        return {"target_error": {"ok": False, "reason": "unsupported target type: %s" % target_type},
+                "target_meta": meta, "action": action_name, "locator": locator, "x": x, "y": y,
+                "field_name": field_name, "row": row, "col": col,
+                "column_title": column_title, "kind": kind, "table_index": table_index,
+                "icon_name": icon_name, "option_text": option_text, "key": key,
+                "modifiers": modifiers}
+
+    return {
+        "action": action_name, "locator": locator, "x": x, "y": y,
+        "field_name": field_name, "row": row, "col": col,
+        "column_title": column_title, "kind": kind, "table_index": table_index,
+        "icon_name": icon_name, "option_text": option_text, "key": key,
+        "modifiers": modifiers, "target_meta": meta, "target_error": None,
+    }
+
+
+def _signals_for_expect(expect) -> list[str]:
+    if not expect:
+        return []
+    if isinstance(expect, (list, tuple, set)):
+        parts = [str(x).lower() for x in expect]
+    else:
+        parts = [p.strip().lower() for p in str(expect).replace("|", ",").split(",") if p.strip()]
+    mapping = {
+        "none": [],
+        "modal": ["modal"],
+        "drawer": ["drawer"],
+        "overlay": ["overlay"],
+        "calendar": ["calendar"],
+        "date": ["calendar"],
+        "dropdown": ["dropdown"],
+        "select": ["dropdown"],
+        "toast": ["message", "notification"],
+        "message": ["message"],
+        "notification": ["notification"],
+        "network": ["network"],
+        "navigation": ["url", "tab"],
+        "url": ["url"],
+        "tab": ["tab"],
+    }
+    out = []
+    for part in parts:
+        for sig in mapping.get(part, [part]):
+            if sig and sig not in out:
+                out.append(sig)
+    return out
+
+
+def _infer_expect(expect, action_name: str, target_meta: dict) -> str:
+    raw = str(expect or "auto").strip().lower()
+    if raw and raw != "auto":
+        return raw
+    control_type = (target_meta or {}).get("control_type", "")
+    if control_type == "date-picker":
+        return "calendar"
+    if control_type in ("select", "searchable-select"):
+        return "dropdown"
+    target_type = (target_meta or {}).get("target_type", "")
+    text = _compact_text((target_meta or {}).get("text", ""))
+    if target_type == "action":
+        if any(word in text for word in ("添加", "新增", "编辑", "详情", "查看")):
+            return "modal"
+        if any(word in text for word in ("保存", "确定", "提交", "删除", "审核")):
+            return "toast"
+    if action_name == "select_option":
+        return "dropdown"
+    return "auto"
+
+
+def _resolve_observe_policy(signals, listen_targets, expect: str, observe_mode: str,
+                            include_snapshot, detail: str, action_name: str,
+                            target_meta: dict, timeout: float) -> dict:
+    mode = str(observe_mode or "auto").strip().lower()
+    if mode not in ("auto", "fast", "evidence", "full", "none", "off"):
+        mode = "auto"
+    inferred_expect = _infer_expect(expect, action_name, target_meta)
+    semantic_requested = (
+        str(expect or "auto").strip().lower() != "auto"
+        or mode not in ("auto",)
+        or bool(target_meta)
+    )
+
+    if signals is not None:
+        effective_signals = signals
+    elif semantic_requested and inferred_expect != "auto":
+        effective_signals = _signals_for_expect(inferred_expect)
+    elif semantic_requested and mode in ("fast", "none", "off"):
+        effective_signals = []
+    else:
+        effective_signals = (
+            ["overlay", "notification", "message", "tab", "url", "network"]
+            if listen_targets else ["overlay", "notification", "message", "tab", "url"]
+        )
+
+    if mode in ("none", "off") or inferred_expect == "none":
+        effective_signals = []
+
+    effective_detail = "full" if mode == "full" and detail == "summary" else detail
+    if include_snapshot is None:
+        effective_snapshot = mode not in ("fast", "none", "off")
+    else:
+        effective_snapshot = bool(include_snapshot)
+
+    wait_timeout = timeout
+    if mode == "fast":
+        wait_timeout = min(timeout, 2.0)
+
+    return {
+        "mode": mode,
+        "expect": inferred_expect,
+        "signals": effective_signals,
+        "include_snapshot": effective_snapshot,
+        "detail": effective_detail,
+        "timeout": wait_timeout,
+        "skip_observe": not effective_signals,
+    }
+
+
 @mcp.tool()
 @write_synchronized
-def explore_action(action: str = "click", locator: str = None, x: float = None, y: float = None,
+def explore_action(action: str = "click", target: dict = None,
+                   locator: str = None, x: float = None, y: float = None,
                    row: int = 0, col: int = None, column_title: str = None, kind: str = "auto",
                    table_index: int = 0, icon_name: str = None, option_text: str = None,
                    field_name: str = None, key: str = None, modifiers: list[str] = None,
                    by_js: bool = False, in_frame: bool = True, timeout: float = 8,
                    signals: list[str] = None, listen_targets: str = None,
-                   capture_before: bool = False, capture_after: bool = True,
+                   capture_before: bool = False, capture_after: bool = False,
+                   include_snapshot: bool = None, detail: str = "summary",
+                   expect: str = "auto", observe_mode: str = "auto",
                    clean_overlays: bool = True) -> dict:
     """动作探索封装：observe_start → 执行动作 → observe_wait → 可选页面模型快照。
 
-    action 可选 click/click_xy/table_cell/select_option/press_key。用于让 Agent 可靠记录按钮、
-    弹窗、toast、URL、Tab、网络首包等状态流转证据。
+    action 可选 click/click_xy/table_cell/select_option/press_key。target 可选语义目标：
+    {"type":"field","name":"工作日期"}、{"type":"button","text":"添加"}、
+    {"type":"css","value":"button.ant-btn"}、{"type":"xpath","value":"//button"}、
+    {"type":"xy","x":100,"y":200}。旧参数 locator/x/y/field_name 仍保持兼容。
     """
-    effective_signals = signals or (
-        ["overlay", "notification", "message", "tab", "url", "network"]
-        if listen_targets else ["overlay", "notification", "message", "tab", "url"]
+    action_name = (action or "click").lower()
+    resolved = _resolve_target_action(
+        target, action_name, locator, x, y, field_name, row, col, column_title,
+        kind, table_index, icon_name, option_text, key, modifiers, in_frame,
     )
+    target_meta = resolved.get("target_meta") or {}
+    target_error = resolved.get("target_error")
+    if not target_error:
+        action_name = resolved["action"]
+        locator = resolved["locator"]
+        x = resolved["x"]
+        y = resolved["y"]
+        field_name = resolved["field_name"]
+        row = resolved["row"]
+        col = resolved["col"]
+        column_title = resolved["column_title"]
+        kind = resolved["kind"]
+        table_index = resolved["table_index"]
+        icon_name = resolved["icon_name"]
+        option_text = resolved["option_text"]
+        key = resolved["key"]
+        modifiers = resolved["modifiers"]
+
+    observe_policy = _resolve_observe_policy(
+        signals, listen_targets, expect, observe_mode, include_snapshot, detail,
+        action_name, target_meta, timeout,
+    )
+    if capture_after and include_snapshot is None:
+        observe_policy["include_snapshot"] = False
     before = None
     if capture_before:
         before = page_model.capture_page_model(include_filters=False, include_table_data=False,
                                                max_table_rows=20, max_elements=80)
 
-    observe_start_result = observe.observe_start(signals=effective_signals, listen_targets=listen_targets)
+    if observe_policy["skip_observe"]:
+        observe_start_result = {"ok": True, "session": "skipped",
+                                "reason": "observe disabled by expect/observe_mode"}
+    else:
+        observe_start_result = observe.observe_start(
+            signals=observe_policy["signals"],
+            listen_targets=listen_targets,
+        )
     action_result = {"ok": False, "reason": "action not executed"}
     cleanup = _pre_click_cleanup(clean_overlays)
     try:
         tab = browser_session.get_tab()
-        action_name = (action or "click").lower()
-        if action_name == "click":
+        if target_error:
+            action_result = dict(target_error)
+        elif action_name == "click":
             if not locator:
                 action_result = {"ok": False, "reason": "locator is required for click"}
             else:
@@ -1043,6 +1442,12 @@ def explore_action(action: str = "click", locator: str = None, x: float = None, 
             else:
                 tab.actions.move_to((x, y), duration=0.3).click()
                 action_result = {"ok": True, "action": "click_xy", "x": x, "y": y}
+        elif action_name == "field_click":
+            scope = "auto" if in_frame else "top"
+            action_result = _click_field_raw(field_name or "", in_frame=in_frame,
+                                             timeout=min(timeout, 5), scope=scope)
+            if action_result.get("control_type") and "control_type" not in target_meta:
+                target_meta["control_type"] = action_result["control_type"]
         elif action_name == "table_cell":
             action_result = _click_table_cell_raw(
                 row=row, col=col, column_title=column_title, kind=kind,
@@ -1063,7 +1468,17 @@ def explore_action(action: str = "click", locator: str = None, x: float = None, 
         action_result = {"ok": False, "reason": str(e)}
     finally:
         action_result = _attach_cleanup(action_result, cleanup)
-        signal = observe.observe_wait(timeout=timeout)
+        if observe_policy["skip_observe"]:
+            signal = {"type": "skipped", "reason": observe_start_result["reason"],
+                      "events": []}
+        elif not action_result.get("ok"):
+            signal = observe.observe_wait(timeout=0, include_snapshot=False)
+            signal["skipped_reason"] = "action_failed"
+        else:
+            signal = observe.observe_wait(
+                timeout=observe_policy["timeout"],
+                include_snapshot=observe_policy["include_snapshot"],
+            )
 
     after = None
     if capture_after:
@@ -1072,6 +1487,8 @@ def explore_action(action: str = "click", locator: str = None, x: float = None, 
     return {
         "ok": bool(action_result.get("ok")),
         "observe_start": observe_start_result,
+        "observe_policy": observe_policy,
+        "target": target_meta or None,
         "action": action_result,
         "signal": signal,
         "before": before,

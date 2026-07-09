@@ -27,7 +27,7 @@ CAP_GROUPS = {
         # 导航与 frame
         "enter_module", "get_active_frame",
         # 通用 DOM 原语
-        "click", "click_xy", "input", "insert_text", "hover",
+        "click", "click_xy", "input", "insert_text", "hover", "set_date",
         # 页面理解
         "scan_page_elements", "find_elements", "find_batch", "dom_tree",
         "capture_page_model", "scan_toolbar_actions", "scan_form_fields",

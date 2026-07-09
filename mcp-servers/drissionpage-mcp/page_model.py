@@ -528,6 +528,9 @@ function duCalendarPanel(panel, side) {
     side: side,
     yearText: duCleanText(ye ? ye.textContent : ''),
     monthText: duCleanText(me ? me.textContent : ''),
+    title: title
+  };
+}
 function duScanCalendar(el) {
   var root = duCalendarRoot(el);
   if (!root) return null;
