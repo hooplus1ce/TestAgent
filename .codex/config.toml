@@ -43,7 +43,7 @@ env_vars = [
 
 [mcp_servers.drissionpage-mcp]
 command = "uv"
-args = ["run", "--project", "drissionpage-mcp", "python", "drissionpage-mcp/server.py"]
+args = ["run", "python", "mcp-servers/drissionpage-mcp/server.py"]
 enabled = true
 required = false
 startup_timeout_sec = 30
@@ -74,89 +74,5 @@ env_vars = [
 [mcp_servers.drissionpage-mcp.env]
 DRISSIONPAGE_MCP_CAPS = "all"
 
-[mcp_servers.drission-ui.tools.click]
-approval_mode = "approve"
-
-[mcp_servers.drission-ui.tools.find_elements]
-approval_mode = "approve"
-
-[mcp_servers.drission-ui.tools.browser_get_element_state]
-approval_mode = "approve"
-
-[mcp_servers.drission-ui.tools.run_js]
-approval_mode = "approve"
-
-[mcp_servers.drission-ui.tools.check_session]
-approval_mode = "approve"
-
-[mcp_servers.drission-ui.tools.get_active_frame]
-approval_mode = "approve"
-
-[mcp_servers.drission-ui.tools.scan_toolbar_actions]
-approval_mode = "approve"
-
-[mcp_servers.drission-ui.tools.scan_form_fields]
-approval_mode = "approve"
-
-[mcp_servers.drission-ui.tools.dom_tree]
-approval_mode = "approve"
-
-[mcp_servers.drission-ui.tools.get_element_coords]
-approval_mode = "approve"
-
-[mcp_servers.drission-ui.tools.observe_start]
-approval_mode = "approve"
-
-[mcp_servers.drission-ui.tools.observe_wait]
-approval_mode = "approve"
-
-[mcp_servers.drission-ui.tools.screenshot]
-approval_mode = "approve"
-
-[mcp_servers.drission-ui.tools.scan_floats]
-approval_mode = "approve"
-
 # [mcp_servers.drission-ui.env]
 # DRISSION_UI_CAPS = "core,vtable,filter,observe,network"
-
-[mcp_servers.drissionpage-mcp.tools.click]
-approval_mode = "approve"
-
-[mcp_servers.drissionpage-mcp.tools.find_elements]
-approval_mode = "approve"
-
-[mcp_servers.drissionpage-mcp.tools.browser_get_element_state]
-approval_mode = "approve"
-
-[mcp_servers.drissionpage-mcp.tools.run_js]
-approval_mode = "approve"
-
-[mcp_servers.drissionpage-mcp.tools.check_session]
-approval_mode = "approve"
-
-[mcp_servers.drissionpage-mcp.tools.get_active_frame]
-approval_mode = "approve"
-
-[mcp_servers.drissionpage-mcp.tools.scan_toolbar_actions]
-approval_mode = "approve"
-
-[mcp_servers.drissionpage-mcp.tools.scan_form_fields]
-approval_mode = "approve"
-
-[mcp_servers.drissionpage-mcp.tools.dom_tree]
-approval_mode = "approve"
-
-[mcp_servers.drissionpage-mcp.tools.get_element_coords]
-approval_mode = "approve"
-
-[mcp_servers.drissionpage-mcp.tools.observe_start]
-approval_mode = "approve"
-
-[mcp_servers.drissionpage-mcp.tools.observe_wait]
-approval_mode = "approve"
-
-[mcp_servers.drissionpage-mcp.tools.screenshot]
-approval_mode = "approve"
-
-[mcp_servers.drissionpage-mcp.tools.scan_floats]
-approval_mode = "approve"

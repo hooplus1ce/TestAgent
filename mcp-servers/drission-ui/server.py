@@ -592,9 +592,9 @@ def _element_text(ele) -> str:
 
 
 def _scan_controls_in_context(target, frame_label: str, start_seq: int, max_items: int):
-    """Scan visible controls and return top-viewport click coordinates.
+    """Scan visible controls and return top-viewport center coordinates.
 
-    DrissionPage's ``rect.viewport_click_point`` already accounts for iframe
+    DrissionPage's ``rect.viewport_midpoint`` already accounts for iframe
     offset, so returned ``cx/cy`` can be passed directly to ``click_xy``.
     """
     out = []
@@ -611,7 +611,7 @@ def _scan_controls_in_context(target, frame_label: str, start_seq: int, max_item
             w, h = ele.rect.size
             if not w or not h:
                 continue
-            vx, vy = ele.rect.viewport_click_point
+            vx, vy = ele.rect.viewport_midpoint
         except Exception:
             continue
 
@@ -629,12 +629,12 @@ def _scan_controls_in_context(target, frame_label: str, start_seq: int, max_item
             "cls": str(cls)[:50],
             "disabled": disabled,
             # Backward-compatible names, now top-viewport absolute coordinates.
-            "cx": round(vx),
-            "cy": round(vy),
-            "viewportX": round(vx, 1),
-            "viewportY": round(vy, 1),
+            "cx": round(float(vx), 1),
+            "cy": round(float(vy), 1),
+            "viewportX": round(float(vx), 1),
+            "viewportY": round(float(vy), 1),
             "coordinate_space": "top-viewport",
-            "coord_source": "DrissionPage.Element.rect.viewport_click_point",
+            "coord_source": "DrissionPage.Element.rect.viewport_midpoint",
         })
     return out, seq
 
@@ -818,7 +818,7 @@ def scan_page_elements(include_iframe: bool = True, max_items: int = 200, filena
         "total": len(elements),
         "elements": elements,
         "coordinate_space": "top-viewport",
-        "coord_source": "DrissionPage.Element.rect.viewport_click_point",
+        "coord_source": "DrissionPage.Element.rect.viewport_midpoint",
     }
 
     if len(elements) >= max_items:
@@ -1178,14 +1178,14 @@ def find_elements(locator: str, in_frame: bool = True, timeout: float = 5) -> di
             "attrs": {k: e.attr(k) for k in ("id", "class", "href", "src", "title", "aria-label", "placeholder") if e.attr(k)}
         }
         try:
-            vx, vy = e.rect.viewport_click_point
+            vx, vy = e.rect.viewport_midpoint
             item.update({
-                "cx": round(vx),
-                "cy": round(vy),
-                "viewportX": round(vx, 1),
-                "viewportY": round(vy, 1),
+                "cx": round(float(vx), 1),
+                "cy": round(float(vy), 1),
+                "viewportX": round(float(vx), 1),
+                "viewportY": round(float(vy), 1),
                 "coordinate_space": "top-viewport",
-                "coord_source": "DrissionPage.Element.rect.viewport_click_point",
+                "coord_source": "DrissionPage.Element.rect.viewport_midpoint",
             })
         except Exception:
             pass

@@ -7,7 +7,7 @@
 - **"手"与"脑"分离**：本服务器只做确定性浏览器原语（"手"）；测试编排与判断留在技能层（"脑"）。
 - **接管而非启动**：连接用户已在 `9222` 端口打开的 Chrome，不启动新实例、不无头。
 - **脆弱 JS 被封装**：VTable 扫描/列值/坐标计算等依赖 React fiber 与 canvas scenegraph 的逻辑，作为工具的**内部实现**（`frame.run_js(bundled JS)`），AI 调用即得结构化 JSON，不再每轮手写 `eval`。
-- **坐标自动换算**：DOM 控件使用 DrissionPage `ele.rect.viewport_click_point` 获取顶层视口坐标；VTable canvas 坐标由内置 JS 一次换算到顶层视口 → 输出可直接点击的落点（调用侧不再叠加 iframe 偏移）。
+- **坐标自动换算**：DOM 控件使用 DrissionPage `ele.rect.viewport_midpoint` 获取顶层视口坐标；VTable canvas 坐标由内置 JS 一次换算到顶层视口 → 输出可直接点击的落点（调用侧不再叠加 iframe 偏移）。
 - **Token 效率优先**：借鉴 Playwright MCP，工具支持 `filename` 参数将大输出保存到文件，避免占用 LLM 上下文；支持 `DRISSION_UI_CAPS` 环境变量按需启用工具分组。
 - **MCP 元数据完整**：工具注册时自动补充 `readOnlyHint` / `destructiveHint` / `idempotentHint` / `openWorldHint` annotations；同时暴露 caps、运行上下文和证据文件索引 resources。
 
@@ -205,7 +205,7 @@ capture_page_model(filename="WMS/采购入库/page-model.json")
 
 ## 坐标换算（关键）
 
-`scan_page_elements` / `find_elements` 返回的 `cx/cy`、`viewportX/viewportY` 均为**顶层视口坐标**，来源为 DrissionPage 官方元素信息接口 `ele.rect.viewport_click_point`。这个坐标已经包含 iframe 相对顶层视口的偏移，可直接传给 `click_xy` / `hover`。
+`scan_page_elements` / `find_elements` 返回的 `cx/cy`、`viewportX/viewportY` 均为**顶层视口坐标**，来源为 DrissionPage 官方元素信息接口 `ele.rect.viewport_midpoint`。这个坐标已经包含 iframe 相对顶层视口的偏移，可直接传给 `click_xy` / `hover`。
 
 不要在 iframe 内用 `getBoundingClientRect()` 结果直接点击顶层视口；该结果只表示元素相对 iframe 当前视口的位置，缺少 iframe 自身在顶层页面里的偏移。
 

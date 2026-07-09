@@ -1,11 +1,15 @@
 {
-  "mcpServers": {
-    "drissionpage-mcp": {
-      "command": "uv",
-      "args": ["run", "--project", "drissionpage-mcp", "python", "drissionpage-mcp/server.py"],
-      "env": {
-        "DRISSIONPAGE_MCP_CAPS": "all"
-      }
+    "mcpServers": {
+        "drissionpage-mcp": {
+            "command": "uv",
+            "args": [
+                "run",
+                "python",
+                "mcp-servers/drissionpage-mcp/server.py"
+            ],
+            "env": {
+                "DRISSIONPAGE_MCP_CAPS": "all"
+            }
+        }
     }
-  }
 }

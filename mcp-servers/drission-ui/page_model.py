@@ -163,6 +163,23 @@ function duCssHint(el){
     el.className.split(/\s+/).filter(Boolean).slice(0, 3).join('.') : '';
   return cls ? tag + '.' + cls : tag;
 }
+function duXPath(el){
+  if (!el || !el.tagName) return '';
+  var parts = [];
+  var node = el;
+  while (node && node.nodeType === 1) {
+    var tag = node.tagName.toLowerCase();
+    var idx = 1;
+    var sib = node.previousElementSibling;
+    while (sib) {
+      if (sib.tagName && sib.tagName.toLowerCase() === tag) idx++;
+      sib = sib.previousElementSibling;
+    }
+    parts.unshift(tag + '[' + idx + ']');
+    node = node.parentElement;
+  }
+  return '/' + parts.join('/');
+}
 function duArea(el){
   if (el.closest('.ant-modal')) return 'modal';
   if (el.closest('.ant-drawer')) return 'drawer';
@@ -290,6 +307,7 @@ function duScanButtons(root, maxItems){
         el.className.indexOf('dropdown') >= 0),
       icons: icons,
       selectorHint: duCssHint(el),
+      xpath: duXPath(el),
       rect: duRect(el)
     });
   }
@@ -318,6 +336,33 @@ return JSON.stringify({ok:true, scope:SCOPE, total:actions.length, actions:actio
     data = _run_json(target, js, {"ok": False, "reason": "scan failed"})
     if isinstance(data, dict):
         data["target"] = "iframe" if target is not browser_session.get_tab_ro() else "top"
+        for action in data.get("actions", []) or []:
+            xpath = action.get("xpath")
+            if not xpath:
+                continue
+            try:
+                el = target.ele(f"xpath:{xpath}", timeout=0.2)
+                center = get_element_center(el) if el is not None else None
+                if not center:
+                    continue
+                rect = action.get("rect") or {}
+                width = float(rect.get("width") or 0)
+                height = float(rect.get("height") or 0)
+                cx = center["cx"]
+                cy = center["cy"]
+                action["cx"] = cx
+                action["cy"] = cy
+                action["viewportX"] = cx
+                action["viewportY"] = cy
+                action["coordinate_space"] = "top-viewport"
+                action["coord_source"] = "DrissionPage.Element.rect.viewport_midpoint"
+                rect["x"] = round(cx - width / 2, 1)
+                rect["y"] = round(cy - height / 2, 1)
+                rect["width"] = round(width, 1)
+                rect["height"] = round(height, 1)
+                action["rect"] = rect
+            except Exception as e:
+                action["coord_error"] = str(e)
     return data
 
 

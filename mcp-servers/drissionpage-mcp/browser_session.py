@@ -3,6 +3,7 @@
 所有 MCP 工具通过本模块取 tab / frame，保证跨工具调用复用同一个浏览器连接。
 启动/接管由 DrissionPage 的 Chromium() 依据 dp_configs.ini 自动处理（端口无实例则启动，有则接管）。
 """
+
 import json
 import logging
 import os
@@ -32,7 +33,7 @@ _lock = threading.RLock()
 ACTIVE_FRAME_LOC = config.ACTIVE_FRAME_LOC
 
 # dp_configs.ini 路径（configs/ 目录）
-_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 _DP_INI = str(_PROJECT_ROOT / "configs" / "dp_configs.ini")
 
 # 最后一次检测到的活跃 tab 名称缓存
@@ -75,8 +76,11 @@ def _ensure_display_env():
                     break
         except OSError:
             pass
-    logger.info("补齐图形环境: DISPLAY=%s XAUTHORITY=%s",
-                os.environ.get("DISPLAY"), os.environ.get("XAUTHORITY", "(未找到)"))
+    logger.info(
+        "补齐图形环境: DISPLAY=%s XAUTHORITY=%s",
+        os.environ.get("DISPLAY"),
+        os.environ.get("XAUTHORITY", "(未找到)"),
+    )
 
 
 def _pick_tab(browser, hint):
@@ -103,7 +107,9 @@ def _pick_tab(browser, hint):
     return browser.latest_tab
 
 
-def connect(port: int = config.DEFAULT_PORT, target_hint: str = config.DEFAULT_TARGET_HINT):
+def connect(
+    port: int = config.DEFAULT_PORT, target_hint: str = config.DEFAULT_TARGET_HINT
+):
     """连接 Chrome：接管指定端口已运行实例，或按 dp_configs.ini 自启动。
 
     交给 DrissionPage 的 Chromium() 处理——端口有实例则接管，无则启动
@@ -119,20 +125,24 @@ def connect(port: int = config.DEFAULT_PORT, target_hint: str = config.DEFAULT_T
 
         _ensure_display_env()
         co = ChromiumOptions(read_file=True, ini_path=_DP_INI)
-        co.set_address(f'127.0.0.1:{port}')
+        co.set_address(f"127.0.0.1:{port}")
         # 浏览器路径（跨平台）：优先 HL_CHROME_PATH；否则 Linux 显式指向 google-chrome
         # （ini 默认 'chrome' 在多数发行版无此命令），Windows/macOS 交给 DrissionPage 自动探测。
         if config.CHROME_PATH:
             co.set_browser_path(config.CHROME_PATH)
         elif sys.platform.startswith("linux"):
-            exe = shutil.which("google-chrome") or shutil.which("google-chrome-stable") \
-                or shutil.which("chromium") or shutil.which("chromium-browser")
+            exe = (
+                shutil.which("google-chrome")
+                or shutil.which("google-chrome-stable")
+                or shutil.which("chromium")
+                or shutil.which("chromium-browser")
+            )
             if exe:
                 co.set_browser_path(exe)
         if config.HEADLESS:
             # CI/CD 无图形环境：无头 + 容器常需 no-sandbox
             co.headless(True)
-            co.set_argument('--no-sandbox')
+            co.set_argument("--no-sandbox")
             logger.info("headless 模式启动")
         _browser = Chromium(co)
 
@@ -194,7 +204,7 @@ def get_browser():
 
 def get_active_frame(tab=None):
     """取当前可见 tabpanel 内的业务 iframe（ChromiumFrame）；无则返回 None。
-    
+
     修复: 两步策略——先用 JS document.querySelector 获取 iframe name，
     再用 DrissionPage get_frame(name) 按名称查找，避免 CSS 选择器
     因 ChromiumFrame 类型检查失败而返回 NoneElement。
@@ -204,8 +214,8 @@ def get_active_frame(tab=None):
         try:
             # Step 1: JS 查找活跃 iframe + 激活 tab 名称
             js = (
-                "var f=document.querySelector('[role=\"tabpanel\"][aria-hidden=\"false\"] iframe');"
-                "var t=document.querySelector('div[role=\"tab\"][aria-selected=\"true\"]');"
+                'var f=document.querySelector(\'[role="tabpanel"][aria-hidden="false"] iframe\');'
+                'var t=document.querySelector(\'div[role="tab"][aria-selected="true"]\');'
                 "var tabName=t?((t.querySelector('.ant-dropdown-trigger')||t).textContent||'').trim():'';"
                 "if(!f)return JSON.stringify({found:false, tabName:tabName});"
                 "return JSON.stringify({found:true, name:f.name||'', id:f.id||'', tabName:tabName});"
@@ -216,24 +226,32 @@ def get_active_frame(tab=None):
             # 缓存激活 tab 名称供外部查询
             global _active_tab_name
             _active_tab_name = d.get("tabName", "") or ""
-            
+
             # Step 2: 优先按 name 查找 frame（DrissionPage 对 name 查找更可靠）
             if name:
                 try:
                     fr = tab.get_frame(name, timeout=3)
-                    if fr and not isinstance(fr, str) and getattr(fr, '_type', None) == 'ChromiumFrame':
+                    if (
+                        fr
+                        and not isinstance(fr, str)
+                        and getattr(fr, "_type", None) == "ChromiumFrame"
+                    ):
                         return fr
                 except Exception:
                     pass
-            
+
             # Step 3: 降级到原始 CSS 选择器
             try:
                 fr = tab.get_frame(ACTIVE_FRAME_LOC, timeout=3)
-                if fr and not isinstance(fr, str) and getattr(fr, '_type', None) == 'ChromiumFrame':
+                if (
+                    fr
+                    and not isinstance(fr, str)
+                    and getattr(fr, "_type", None) == "ChromiumFrame"
+                ):
                     return fr
             except Exception:
                 pass
-            
+
             return None
         except Exception as e:
             logger.debug("get_active_frame 失败: %s", e)
@@ -259,7 +277,7 @@ def get_tab_ro():
 
 def get_active_frame_ro(tab=None):
     """取活动 iframe（只读版本，不加 _lock，不重连）。
-    
+
     仅在读锁保护下调用：保证 _tab 不会被写操作替换。
     """
     tab = tab or _tab
@@ -267,7 +285,7 @@ def get_active_frame_ro(tab=None):
         return None
     try:
         js = (
-            "var f=document.querySelector('[role=\"tabpanel\"][aria-hidden=\"false\"] iframe');"
+            'var f=document.querySelector(\'[role="tabpanel"][aria-hidden="false"] iframe\');'
             "if(!f)return JSON.stringify({found:false});"
             "return JSON.stringify({found:true, name:f.name||'', id:f.id||''});"
         )
@@ -277,13 +295,21 @@ def get_active_frame_ro(tab=None):
         if name:
             try:
                 fr = tab.get_frame(name, timeout=3)
-                if fr and not isinstance(fr, str) and getattr(fr, '_type', None) == 'ChromiumFrame':
+                if (
+                    fr
+                    and not isinstance(fr, str)
+                    and getattr(fr, "_type", None) == "ChromiumFrame"
+                ):
                     return fr
             except Exception:
                 pass
         try:
             fr = tab.get_frame(ACTIVE_FRAME_LOC, timeout=3)
-            if fr and not isinstance(fr, str) and getattr(fr, '_type', None) == 'ChromiumFrame':
+            if (
+                fr
+                and not isinstance(fr, str)
+                and getattr(fr, "_type", None) == "ChromiumFrame"
+            ):
                 return fr
         except Exception:
             pass
@@ -293,7 +319,9 @@ def get_active_frame_ro(tab=None):
         return None
 
 
-def find(locator: str, in_frame: bool = True, timeout: float = 5, wait_clickable: bool = True):
+def find(
+    locator: str, in_frame: bool = True, timeout: float = 5, wait_clickable: bool = True
+):
     """按 DrissionPage 定位符查找元素：优先在活动 iframe 内，未命中再回退到 top 文档。
 
     支持完整 DP 定位语法：
@@ -334,7 +362,9 @@ def find(locator: str, in_frame: bool = True, timeout: float = 5, wait_clickable
             return None
         if wait_clickable:
             try:
-                ele.wait.clickable(timeout=timeout, wait_stop=False)  # 轮询至可点击或超时（超时不抛错）
+                ele.wait.clickable(
+                    timeout=timeout, wait_stop=False
+                )  # 轮询至可点击或超时（超时不抛错）
                 if not ele.states.is_clickable:
                     logger.debug("元素已找到但不可点击: %s", locator)
                     return None
@@ -342,6 +372,7 @@ def find(locator: str, in_frame: bool = True, timeout: float = 5, wait_clickable
                 # 某些元素无 clickable 概念（如纯展示节点），忽略校验返回元素
                 pass
         return ele
+
 
 def find_all(locator: str, in_frame: bool = True, timeout: float = 5):
     """按 DrissionPage 定位符查找所有匹配元素（eles 封装）。
@@ -361,7 +392,9 @@ def find_all(locator: str, in_frame: bool = True, timeout: float = 5):
         return tab.eles(locator, timeout=timeout)
 
 
-def find_static(locator: str = None, in_frame: bool = True, timeout: float = 5, index: int = 1):
+def find_static(
+    locator: str = None, in_frame: bool = True, timeout: float = 5, index: int = 1
+):
     """按 DrissionPage 定位符查找元素的静态版本（s_ele 封装）。
 
     静态元素（SessionElement）由纯文本构造，速度极快，适合批量数据采集。
@@ -373,14 +406,25 @@ def find_static(locator: str = None, in_frame: bool = True, timeout: float = 5, 
         if in_frame:
             fr = get_active_frame(tab)
             if fr is not None:
-                ele = fr.s_ele(locator, index=index, timeout=timeout) if locator else fr.s_ele()
+                ele = (
+                    fr.s_ele(locator, index=index, timeout=timeout)
+                    if locator
+                    else fr.s_ele()
+                )
                 if ele:
                     return ele
-        return tab.s_ele(locator, index=index, timeout=timeout) if locator else tab.s_ele()
+        return (
+            tab.s_ele(locator, index=index, timeout=timeout) if locator else tab.s_ele()
+        )
 
 
-def find_batch(locators: list, in_frame: bool = True, timeout: float = 5,
-               any_one: bool = True, first_ele: bool = True):
+def find_batch(
+    locators: list,
+    in_frame: bool = True,
+    timeout: float = 5,
+    any_one: bool = True,
+    first_ele: bool = True,
+):
     """同时匹配多个定位符（find 封装）。返回 dict{定位符: 元素} 或 tuple(定位符, 元素)。
 
     any_one=True: 返回第一个有结果的 (定位符, 元素)
@@ -391,7 +435,9 @@ def find_batch(locators: list, in_frame: bool = True, timeout: float = 5,
         if in_frame:
             fr = get_active_frame(tab)
             if fr is not None:
-                res = fr.find(locators, any_one=any_one, first_ele=first_ele, timeout=timeout)
+                res = fr.find(
+                    locators, any_one=any_one, first_ele=first_ele, timeout=timeout
+                )
                 if any_one:
                     if res[0] is not None:
                         return res
@@ -432,8 +478,10 @@ def register_context(ctx):
 
 def list_contexts():
     """列出所有已注册上下文的 id 与 tab 列表。"""
-    return [{"context_id": cid, "tab_ids": list(getattr(ctx, "tab_ids", []) or [])}
-            for cid, ctx in _contexts.items()]
+    return [
+        {"context_id": cid, "tab_ids": list(getattr(ctx, "tab_ids", []) or [])}
+        for cid, ctx in _contexts.items()
+    ]
 
 
 def switch_context(cid):
