@@ -1017,17 +1017,20 @@ def explore_action(action: str = "click", locator: str = None, x: float = None, 
                    field_name: str = None, key: str = None, modifiers: list[str] = None,
                    by_js: bool = False, in_frame: bool = True, timeout: float = 8,
                    signals: list[str] = None, listen_targets: str = None,
-                   capture_before: bool = False, capture_after: bool = True,
+                   capture_before: bool = False, capture_after: bool = False,
+                   include_snapshot: bool = True, detail: str = "summary",
                    clean_overlays: bool = True) -> dict:
     """动作探索封装：observe_start → 执行动作 → observe_wait → 可选页面模型快照。
 
     action 可选 click/click_xy/table_cell/select_option/press_key。用于让 Agent 可靠记录按钮、
     弹窗、toast、URL、Tab、网络首包等状态流转证据。
+
+    瘦身说明（2026-07）：
+    - capture_after 默认 False，避免返回冗余的完整页面模型（actions/fields/modals/tables）。
+    - include_snapshot 默认 True，通过 observe_wait 返回精简浮层快照（signal.snapshot_after）。
+    - 只需确认浮层有无 → 用 signal.snapshot_after 即可。
+    - 需要完整页面动作列表/表格数据 → 显式 capture_after=True。
     """
-    effective_signals = signals or (
-        ["overlay", "notification", "message", "tab", "url", "network"]
-        if listen_targets else ["overlay", "notification", "message", "tab", "url"]
-    )
     before = None
     if capture_before:
         before = page_model.capture_page_model(include_filters=False, include_table_data=False,
@@ -1075,7 +1078,7 @@ def explore_action(action: str = "click", locator: str = None, x: float = None, 
         action_result = {"ok": False, "reason": str(e)}
     finally:
         action_result = _attach_cleanup(action_result, cleanup)
-        signal = observe.observe_wait(timeout=timeout)
+        signal = observe.observe_wait(timeout=timeout, include_snapshot=include_snapshot, detail=detail)
 
     after = None
     if capture_after:
@@ -1940,14 +1943,22 @@ def observe_wait(timeout: float = 8, poll_interval: float = 0.12,
 
 @mcp.tool()
 @read_synchronized
-def observe_snapshot(only_visible: bool = True, include_table_data: bool = False) -> dict:
+def observe_snapshot(only_visible: bool = True, include_table_data: bool = False,
+                     detail: str = "summary") -> dict:
     """统一观察器快照：读取当前可见浮层/弹窗/抽屉/dropdown/calendar/toast。
 
     这是手工检查当前浮层状态的推荐入口；legacy scan_floats/scan_modal/scan_drawer 保留内部兼容，
     但不再作为默认公开工具暴露。
+
+    Args:
+        only_visible: 是否只返回可见浮层。
+        include_table_data: 是否包含浮层内表格数据。
+        detail: 详情级别，"summary"（默认）只返回浮层标题/文本摘要/按钮/日历摘要，
+                "full" 返回完整日历单元格、字段详情等。
     """
     return observe.observe_snapshot(only_visible=only_visible,
-                                    include_table_data=include_table_data)
+                                    include_table_data=include_table_data,
+                                    detail=detail)
 
 
 @read_synchronized

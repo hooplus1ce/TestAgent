@@ -466,7 +466,8 @@ def scan_modal(max_items: int = 20) -> dict:
     return _scan_overlay("modal", max_items=max_items)
 
 
-def scan_floats(only_visible: bool = True, include_table_data: bool = True) -> dict:
+def scan_floats(only_visible: bool = True, include_table_data: bool = True,
+                detail: str = "summary") -> dict:
     """扫描所有可见浮窗（modal/drawer/popover/tooltip/dropdown/calendar/message/notification）。
 
     单次 JS 注入完成。返回浮窗内所有操作按钮的位置（可点击）、
@@ -475,12 +476,14 @@ def scan_floats(only_visible: bool = True, include_table_data: bool = True) -> d
     Args:
         only_visible: 过滤不可见元素
         include_table_data: 是否自动提取 HTML 表格全量行数据
+        detail: 详情级别，"summary"（默认）日历只返回年/月/选中日期/单元格数，
+                "full" 返回每个单元格的 title/text/disabled/selected/today/selectorHint/xpath/center/rect。
 
     Returns:
         {ok, count, floats: [{title, type, text, rect, scope,
             buttons: [{text, rect, selectorHint, disabled, ...}],
             closeButton: {selectorHint, rect} | null,
-            calendar: {mode, panels, selectedDates, cells, ...} | null,
+            calendar: {mode, panels, selectedDates, cellCount, cells, ...} | null,
             tableCount, tables: [{index, kind, headers, rowCount,
                                   data: [[str]]?}]}]}
     """
@@ -525,9 +528,6 @@ function duCalendarPanel(panel, side) {
     side: side,
     yearText: duCleanText(ye ? ye.textContent : ''),
     monthText: duCleanText(me ? me.textContent : ''),
-    title: title
-  };
-}
 function duScanCalendar(el) {
   var root = duCalendarRoot(el);
   if (!root) return null;
@@ -544,35 +544,52 @@ function duScanCalendar(el) {
     var single = duCalendarPanel(root, 'single');
     if (single) panels.push(single);
   }
-  var cells = [];
+  var cells = null;
   var selectedDates = [];
   var cellNodes = root.querySelectorAll('td[title] .ant-calendar-date');
-  for (var ci = 0; ci < cellNodes.length && cells.length < 120; ci++) {
-    var cell = cellNodes[ci];
-    var td = cell.closest('td');
-    if (!td || !td.isConnected) continue;
-    var tdCls = td.className || '';
-    var title = td.getAttribute('title') || cell.getAttribute('title') || '';
-    var selected = /\bant-calendar-selected-date\b|\bant-calendar-selected-start-date\b|\bant-calendar-selected-end-date\b/.test(tdCls);
-    if (selected && title) selectedDates.push(title);
-    cells.push({
-      title: title,
-      text: duCleanText(cell.textContent),
-      disabled: /\bant-calendar-disabled-cell\b/.test(tdCls) || duDisabled(cell),
-      selected: selected,
-      today: /\bant-calendar-today\b/.test(tdCls),
-      inView: !(/\bant-calendar-last-month-cell\b|\bant-calendar-next-month-btn-day\b|\bant-calendar-next-month-cell\b/.test(tdCls)),
-      selectorHint: duCssHint(cell),
-      xpath: duXPath(cell),
-      center: frCenter(cell),
-      rect: frRect(cell)
-    });
+  var cellCount = cellNodes.length;
+  if (DETAIL === 'full') {
+    cells = [];
+    for (var ci = 0; ci < cellNodes.length && cells.length < 120; ci++) {
+      var cell = cellNodes[ci];
+      var td = cell.closest('td');
+      if (!td || !td.isConnected) continue;
+      var tdCls = td.className || '';
+      var title = td.getAttribute('title') || cell.getAttribute('title') || '';
+      var selected = /\bant-calendar-selected-date\b|\bant-calendar-selected-start-date\b|\bant-calendar-selected-end-date\b/.test(tdCls);
+      if (selected && title) selectedDates.push(title);
+      cells.push({
+        title: title,
+        text: duCleanText(cell.textContent),
+        disabled: /\bant-calendar-disabled-cell\b/.test(tdCls) || duDisabled(cell),
+        selected: selected,
+        today: /\bant-calendar-today\b/.test(tdCls),
+        inView: !(/\bant-calendar-last-month-cell\b|\bant-calendar-next-month-btn-day\b|\bant-calendar-next-month-cell\b/.test(tdCls)),
+        selectorHint: duCssHint(cell),
+        xpath: duXPath(cell),
+        center: frCenter(cell),
+        rect: frRect(cell)
+      });
+    }
+  } else {
+    // summary: only collect selected dates, no cell details
+    for (var ci = 0; ci < cellNodes.length; ci++) {
+      var cell = cellNodes[ci];
+      var td = cell.closest('td');
+      if (!td || !td.isConnected) continue;
+      var tdCls = td.className || '';
+      var selected = /\bant-calendar-selected-date\b|\bant-calendar-selected-start-date\b|\bant-calendar-selected-end-date\b/.test(tdCls);
+      if (selected) {
+        var title = td.getAttribute('title') || cell.getAttribute('title') || '';
+        if (title) selectedDates.push(title);
+      }
+    }
   }
   return {
     mode: isRange ? 'range' : 'single',
     panels: panels,
     selectedDates: selectedDates,
-    cellCount: cells.length,
+    cellCount: cellCount,
     cells: cells,
     hasTimePicker: !!root.querySelector('.ant-calendar-time-picker,.ant-time-picker-panel'),
     hasFooter: !!root.querySelector('.ant-calendar-footer')
@@ -739,9 +756,11 @@ for (var i = 0; i < nodes.length; i++) {
 }
 return JSON.stringify({ok:true, floats:out});
 """.replace("ONLY_VISIBLE", "true" if only_visible else "false").replace(
-                "INCLUDE_TABLE_DATA", "true" if include_table_data else "false"
-            )
-        )
+    "INCLUDE_TABLE_DATA", "true" if include_table_data else "false"
+).replace(
+    'DETAIL', "'" + detail + "'"
+)
+)
         data = _run_json(target, js, {"ok": False, "reason": "scan_floats JS failed"})
         if data.get("ok"):
             for item in data.get("floats", []):

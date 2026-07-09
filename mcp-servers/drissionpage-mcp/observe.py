@@ -25,6 +25,30 @@ import time
 import browser_session
 import network_record
 
+_COLLECT_WINDOW = 0.6  # 首次信号后继续收集的窗口秒数，避免 first-signal-wins 漏掉 .ant-message
+_SIGNAL_PRIORITY = {
+    "message": 0,
+    "notification": 0,
+    "confirm": 0,
+    "interactive": 0,
+    "drawer": 0,
+    "url_change": 1,
+    "tab_change": 1,
+    "network": 2,
+}
+
+
+def _pick_primary(events: list) -> dict:
+    """按优先级选主事件：message/notification/modal > url/tab > network。"""
+    best = events[0] if events else {}
+    best_prio = _SIGNAL_PRIORITY.get(best.get("type", ""), 9)
+    for ev in events[1:]:
+        prio = _SIGNAL_PRIORITY.get(ev.get("type", ""), 9)
+        if prio < best_prio:
+            best_prio = prio
+            best = ev
+    return best
+
 logger = logging.getLogger("drissionpage-mcp")
 
 # ---- 信号选择器 ----
@@ -425,11 +449,18 @@ def _poll_once(sess, now):
     return None
 
 
-def observe_snapshot(only_visible: bool = True, include_table_data: bool = False) -> dict:
+def observe_snapshot(only_visible: bool = True, include_table_data: bool = False,
+                     detail: str = "summary") -> dict:
     """统一观察器快照：复用结构化浮层扫描能力，作为当前 UI 状态的唯一推荐读取入口。
 
     返回 overlays 字段，覆盖 modal/drawer/popover/tooltip/dropdown/calendar/message/notification。
     scan_floats 继续作为内部兼容实现保留，但外部模型应优先调用本工具。
+
+    Args:
+        only_visible: 是否只返回可见浮层。
+        include_table_data: 是否包含浮层内表格数据。
+        detail: 详情级别，"summary"（默认）精简日历单元格和字段详情，
+                "full" 返回完整日历单元格/按钮/字段细节。
     """
     try:
         import page_model
@@ -437,6 +468,7 @@ def observe_snapshot(only_visible: bool = True, include_table_data: bool = False
         data = page_model.scan_floats(
             only_visible=only_visible,
             include_table_data=include_table_data,
+            detail=detail,
         )
         overlays = data.get("floats", []) if isinstance(data, dict) else []
         return {
@@ -456,11 +488,13 @@ def observe_snapshot(only_visible: bool = True, include_table_data: bool = False
         return {"ok": False, "type": "snapshot", "count": 0, "overlays": [], "reason": str(e)}
 
 
-def _attach_snapshot(result: dict, include_snapshot: bool, include_table_data: bool = False) -> dict:
+def _attach_snapshot(result: dict, include_snapshot: bool, include_table_data: bool = False,
+                     detail: str = "summary") -> dict:
     if not include_snapshot:
         return result
     try:
-        result["snapshot_after"] = observe_snapshot(include_table_data=include_table_data)
+        result["snapshot_after"] = observe_snapshot(include_table_data=include_table_data,
+                                                     detail=detail)
     except Exception as e:
         result["snapshot_after"] = {
             "ok": False,
@@ -487,59 +521,66 @@ def observe_start(signals=None, listen_targets=None) -> dict:
 
     Returns:
         {ok, session:'active', watched:[...], base_url, base_tab_count}
-
-    典型用法：
-        observe_start(signals=["message","network"], listen_targets="gateway")
-        click(...)                       # 触发动作
-        observe_wait(timeout=8)          # 读首个信号 + 清理
     """
-    sess = _build_session(signals, listen_targets)
-    return {"ok": True, "session": "active", "watched": sorted(sess["sigset"]),
-            "base_url": sess["base_url"], "base_tab_count": sess["base_tab_count"]}
-
-
 def observe_wait(timeout: float = 8.0, poll_interval: float = 0.12,
-                 include_snapshot: bool = True) -> dict:
-    """两段式观察器·等待：轮询 observe_start 安装的 observer，任一信号命中立即返回（first-signal-wins），
-    随后清理 observer + listener。
+                 include_snapshot: bool = True, detail: str = "summary") -> dict:
+    """两段式观察器·等待: 轮询 observe_start 安装的 observer, 在短窗口内收集多个事件,
+    按优先级选主事件返回, 避免 first-signal-wins 漏掉 .ant-message.
+
+    收集窗口 _COLLECT_WINDOW=0.6s, 首次信号后继续收集, 窗口结束或超时返回.
 
     Args:
-        timeout: 最长等待秒数（默认 8）。
-        poll_interval: Python 侧读缓冲间隔秒数（默认 0.12）；DOM 由 MutationObserver 即时触发。
-        include_snapshot: 返回时附带当前浮层快照 snapshot_after，默认 True。
+        timeout: 最长等待秒数 (默认 8).
+        poll_interval: Python 侧读缓冲间隔秒数 (默认 0.12); DOM 由 MutationObserver 即时触发.
+        include_snapshot: 返回时附带当前浮层快照 snapshot_after, 默认 True.
+        detail: 快照详情级别, "summary"(默认) 精简日历单元格, "full" 返回完整单元格.
 
     Returns:
-        命中：{type, scope?, payload?, elapsedMs, snapshot_after, ...信号专属字段}
-        未命中：{type:'none', elapsedMs, watched:[...], snapshot_after}
-        无活跃 session：{type:'none', reason:'no active observe session', snapshot_after}
+        有事件: {type, events: [...], primary_event: {...}, elapsedMs, snapshot_after}
+        无事件: {type:'none', events:[], elapsedMs, watched:[...], snapshot_after}
+        无 session: {type:'none', reason:'...', events:[], snapshot_after}
     """
     with _session_lock:
         sess = dict(_session)
     if not sess.get("active"):
         return _attach_snapshot(
-            {"type": "none", "reason": "no active observe session; call observe_start first"},
-            include_snapshot,
+            {"type": "none", "reason": "no active observe session; call observe_start first",
+             "events": []},
+            include_snapshot, detail=detail,
         )
     deadline = time.time() + timeout
+    collect_deadline = None
+    events = []
     try:
         while time.time() < deadline:
             sig = _poll_once(sess, time.time())
             if sig:
-                return _attach_snapshot(sig, include_snapshot)
+                events.append(sig)
+                if collect_deadline is None:
+                    collect_deadline = time.time() + _COLLECT_WINDOW
+            if collect_deadline and time.time() >= collect_deadline:
+                break
             time.sleep(poll_interval)
-        return _attach_snapshot(
-            {"type": "none", "elapsedMs": int((time.time() - sess["start"]) * 1000),
-             "watched": sorted(sess["sigset"])},
-            include_snapshot,
-        )
+
+        if not events:
+            result = {"type": "none",
+                      "events": [],
+                      "elapsedMs": int((time.time() - sess["start"]) * 1000),
+                      "watched": sorted(sess["sigset"])}
+        else:
+            primary = _pick_primary(events)
+            result = dict(primary)
+            result["events"] = events
+            result["primary_event"] = primary
+
+        return _attach_snapshot(result, include_snapshot, detail=detail)
     finally:
         with _session_lock:
             _teardown_session(sess)
             _session.clear()
-
-
 def observe_post_click(timeout: float = 10.0, signals=None, listen_targets=None,
-                       poll_interval: float = 0.12, include_snapshot: bool = True) -> dict:
+                       poll_interval: float = 0.12, include_snapshot: bool = True,
+                       detail: str = "summary") -> dict:
     """点击后统一观察器（便捷封装）：observe_start + observe_wait 一次调用。
     适用于点击已发生、或不需要在点击间隙观察的场景。
 
@@ -548,36 +589,19 @@ def observe_post_click(timeout: float = 10.0, signals=None, listen_targets=None,
     observer 在点击前就监听。
 
     Args:
-        timeout: 最长观察秒数（默认 10）。信号命中会立即提前返回。
+        timeout: 最长观察秒数（默认 10）。窗口结束或超时返回多个事件。
         signals: 监听信号类型列表，默认 ['overlay','notification','message','tab','url']。
         listen_targets: 网络监听 URL 特征（逗号分隔）；仅 signals 含 'network' 时生效。
         poll_interval: 轮询间隔秒数（默认 0.12）。
         include_snapshot: 返回时附带当前浮层快照 snapshot_after，默认 True。
+        detail: 快照详情级别，"summary"（默认）精简日历单元格，"full" 返回完整单元格。
 
     Returns:
-        命中：{type, scope?, payload?, elapsedMs, snapshot_after, ...信号专属字段}
-        未命中：{type:'none', elapsedMs, watched:[...], snapshot_after}
+        同 observe_wait：{type, events, primary_event?, elapsedMs, snapshot_after, ...}
     """
-    sess = _build_session(signals, listen_targets, timeout_for_net=timeout)
-    with _session_lock:
-        _session["start"] = time.time()  # 单次封装：start 重置为现在
-        sess = dict(_session)
-    deadline = sess["start"] + timeout
-    try:
-        while time.time() < deadline:
-            sig = _poll_once(sess, time.time())
-            if sig:
-                return _attach_snapshot(sig, include_snapshot)
-            time.sleep(poll_interval)
-        return _attach_snapshot(
-            {"type": "none", "elapsedMs": int((time.time() - sess["start"]) * 1000),
-             "watched": sorted(sess["sigset"])},
-            include_snapshot,
-        )
-    finally:
-        with _session_lock:
-            _teardown_session(sess)
-            _session.clear()
+    observe_start(signals=signals, listen_targets=listen_targets)
+    return observe_wait(timeout=timeout, poll_interval=poll_interval,
+                        include_snapshot=include_snapshot, detail=detail)
 
 
 # ==================== 原子检测工具（单点排查用） ====================
