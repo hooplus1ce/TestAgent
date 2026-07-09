@@ -516,6 +516,67 @@ asyncio.run(main())
     assert data["invalid"]["ok"] is False
 
 
+def test_drissionpage_explore_action_click_reuses_click_fallbacks():
+    """drissionpage-mcp explore_action(click) 应复用 click 的定位和降级逻辑。"""
+    script = r"""
+import json
+import sys
+from types import SimpleNamespace
+from unittest.mock import patch
+sys.path.insert(0, 'mcp-servers/drissionpage-mcp')
+import server
+
+class FakeElement:
+    def __init__(self):
+        self.click_calls = []
+
+    def click(self, **kwargs):
+        self.click_calls.append(kwargs)
+        if kwargs.get("by_js"):
+            raise RuntimeError("direct js failed")
+        return False
+
+class FakeTarget:
+    def run_js(self, js):
+        assert "var needle" in js
+        return json.dumps({"ok": True, "tag": "BUTTON", "text": "搜索"})
+
+ele = FakeElement()
+with patch.object(server.browser_session, "get_tab", return_value=SimpleNamespace()), \
+     patch.object(server.browser_session, "find", return_value=ele) as find, \
+     patch.object(server.browser_session, "get_active_frame", return_value=FakeTarget()), \
+     patch.object(server, "_pre_click_cleanup", return_value=None):
+    result = server.explore_action(
+        action="click",
+        locator="text:搜索",
+        observe_mode="none",
+        timeout=5,
+    )
+
+print(json.dumps({
+    "result": result,
+    "find_args": find.call_args.args,
+    "find_kwargs": find.call_args.kwargs,
+    "click_calls": ele.click_calls,
+}, ensure_ascii=False, sort_keys=True))
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=os.path.dirname(os.path.dirname(__file__)),
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    data = json.loads(result.stdout)
+
+    assert data["result"]["ok"] is True
+    assert data["result"]["action"]["action"] == "click"
+    assert data["result"]["action"]["fallback"] == "js-text"
+    assert data["find_kwargs"] == {"in_frame": True, "timeout": 1.0, "wait_clickable": False}
+    assert "normalize-space(.)='搜索'" in data["find_args"][0]
+    assert data["click_calls"][0] == {"by_js": False, "timeout": 2.0, "wait_stop": False}
+
+
 def test_duplicate_tools_removed_from_public_surface():
     """重复/内部 helper 不应再作为 public MCP 工具暴露。"""
     names = _tool_names()

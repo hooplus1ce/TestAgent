@@ -1812,12 +1812,11 @@ def explore_action(action: str = "click", target: dict = None,
             if not locator:
                 action_result = {"ok": False, "reason": "locator is required for click"}
             else:
-                ele = browser_session.find(locator, in_frame=in_frame, timeout=min(timeout, 5))
-                if not ele:
-                    action_result = {"ok": False, "reason": "元素未找到: %s" % locator}
-                else:
-                    ele.click(by_js=by_js)
-                    action_result = {"ok": True, "action": "click", "locator": locator}
+                action_result = _resolve_and_click(
+                    locator, in_frame=in_frame, by_js=by_js, timeout=timeout,
+                )
+                if action_result.get("ok"):
+                    action_result["action"] = "click"
         elif action_name == "click_xy":
             if x is None or y is None:
                 action_result = {"ok": False, "reason": "x/y are required for click_xy"}
@@ -2084,6 +2083,100 @@ def get_frame(locator, timeout: float = 5) -> dict:
     return {"ok": True, "url": getattr(fr, "url", "") or "", "title": getattr(fr, "title", "") or ""}
 
 
+def _resolve_and_click(locator: str, in_frame: bool = True, by_js: bool = False,
+                       timeout: float = 5) -> dict:
+    """Resolve a locator, click it, and apply the standard click fallbacks."""
+    click_timeout = _short_click_timeout(timeout)
+    raw_text = _extract_text_locator(locator)
+    ele = None
+    if raw_text:
+        for candidate in _clickable_text_locators(raw_text):
+            ele = browser_session.find(candidate, in_frame=in_frame, timeout=min(timeout, 1.0),
+                                       wait_clickable=False)
+            if ele:
+                break
+    if not ele:
+        ele = browser_session.find(locator, in_frame=in_frame, timeout=timeout,
+                                   wait_clickable=False)
+    if not ele and raw_text and in_frame:
+        # 1. @@text(): 搜索整个元素内所有文本（非仅直接文本节点）
+        if " " in raw_text:
+            ele = browser_session.find(f"@@text():{raw_text}", in_frame=in_frame,
+                                       timeout=timeout, wait_clickable=False)
+        # 2. tx: 简化写法
+        if not ele:
+            ele = browser_session.find(f"tx:{raw_text}", in_frame=in_frame,
+                                       timeout=timeout, wait_clickable=False)
+        # 3. tx= 精确匹配
+        if not ele:
+            ele = browser_session.find(f"tx={raw_text}", in_frame=in_frame,
+                                       timeout=timeout, wait_clickable=False)
+        # 4. JS 降级：textContent 去空格宽松匹配
+        if not ele:
+            res = _click_text_by_js(locator, in_frame=in_frame)
+            if res and res.get("ok"):
+                return {"ok": True, "locator": locator, "fallback": "js-text"}
+            return {
+                "ok": False,
+                "reason": "元素未找到: %s（等待 %.1fs，DP 降级+JS 均失败）" % (locator, timeout),
+            }
+    if not ele:
+        return {"ok": False, "reason": "元素未找到: %s（等待 %.1fs）" % (locator, timeout)}
+    try:
+        clicked = ele.click(by_js=by_js, timeout=click_timeout, wait_stop=False)
+        if clicked is False:
+            raise RuntimeError("DrissionPage click returned False")
+    except Exception as e:
+        # Fallback 1: Try coordinate-based click
+        if not by_js:
+            try:
+                mp = ele.rect.viewport_midpoint
+                cx, cy = float(mp[0]), float(mp[1])
+                if cx > 0 and cy > 0:
+                    logger.info(
+                        "Native click failed on %s, trying coordinate-click fallback at (%.1f, %.1f)",
+                        locator, cx, cy,
+                    )
+                    tab = browser_session.get_tab()
+                    tab.actions.move_to((cx, cy)).click()
+                    return {
+                        "ok": True,
+                        "locator": locator,
+                        "fallback": "coordinate-click",
+                        "coords": [cx, cy],
+                        "native_error": str(e),
+                    }
+            except Exception as coord_err:
+                logger.debug("Coordinate click fallback failed: %s", coord_err)
+
+        # Fallback 2: Try JS click directly on the found element
+        if not by_js:
+            try:
+                logger.info("Coordinate click failed or skipped, trying direct JS click on %s", locator)
+                ele.click(by_js=True)
+                return {
+                    "ok": True,
+                    "locator": locator,
+                    "fallback": "direct-js",
+                    "native_error": str(e),
+                }
+            except Exception as js_err:
+                logger.debug("Direct JS click fallback failed: %s", js_err)
+
+        # Fallback 3: Try text search JS click
+        if not by_js:
+            res = _click_text_by_js(locator, in_frame=in_frame)
+            if res and res.get("ok"):
+                return {
+                    "ok": True,
+                    "locator": locator,
+                    "fallback": "js-text",
+                    "native_error": str(e),
+                }
+        return {"ok": False, "locator": locator, "reason": "点击失败: %s" % e}
+    return {"ok": True, "locator": locator}
+
+
 @mcp.tool()
 @write_synchronized
 def click(locator: str, in_frame: bool = True, by_js: bool = False, timeout: float = 5,
@@ -2101,84 +2194,8 @@ def click(locator: str, in_frame: bool = True, by_js: bool = False, timeout: flo
     文档：https://drissionpage.cn/browser_control/get_elements/syntax
     """
     cleanup = _pre_click_cleanup(clean_overlays)
-    click_timeout = _short_click_timeout(timeout)
-    raw_text = _extract_text_locator(locator)
-    ele = None
-    if raw_text:
-        for candidate in _clickable_text_locators(raw_text):
-            ele = browser_session.find(candidate, in_frame=in_frame, timeout=min(timeout, 1.0),
-                                       wait_clickable=False)
-            if ele:
-                break
-    if not ele:
-        ele = browser_session.find(locator, in_frame=in_frame, timeout=timeout, wait_clickable=False)
-    if not ele and raw_text and in_frame:
-        # 1. @@text(): 搜索整个元素内所有文本（非仅直接文本节点）
-        if " " in raw_text:
-            ele = browser_session.find(f"@@text():{raw_text}", in_frame=in_frame, timeout=timeout,
-                                       wait_clickable=False)
-        # 2. tx: 简化写法
-        if not ele:
-            ele = browser_session.find(f"tx:{raw_text}", in_frame=in_frame, timeout=timeout,
-                                       wait_clickable=False)
-        # 3. tx= 精确匹配
-        if not ele:
-            ele = browser_session.find(f"tx={raw_text}", in_frame=in_frame, timeout=timeout,
-                                       wait_clickable=False)
-        # 4. JS 降级：textContent 去空格宽松匹配
-        if not ele:
-            res = _click_text_by_js(locator, in_frame=in_frame)
-            if res and res.get("ok"):
-                return _attach_cleanup({"ok": True, "locator": locator, "fallback": "js-text"}, cleanup)
-            return _attach_cleanup(
-                {"ok": False, "reason": "元素未找到: %s（等待 %.1fs，DP 降级+JS 均失败）" % (locator, timeout)},
-                cleanup,
-            )
-    if not ele:
-        return _attach_cleanup({"ok": False, "reason": "元素未找到: %s（等待 %.1fs）" % (locator, timeout)}, cleanup)
-    try:
-        clicked = ele.click(by_js=by_js, timeout=click_timeout, wait_stop=False)
-        if clicked is False:
-            raise RuntimeError("DrissionPage click returned False")
-    except Exception as e:
-        # Fallback 1: Try coordinate-based click
-        if not by_js:
-            try:
-                mp = ele.rect.viewport_midpoint
-                cx, cy = float(mp[0]), float(mp[1])
-                if cx > 0 and cy > 0:
-                    logger.info("Native click failed on %s, trying coordinate-click fallback at (%.1f, %.1f)", locator, cx, cy)
-                    tab = browser_session.get_tab()
-                    tab.actions.move_to((cx, cy)).click()
-                    return _attach_cleanup(
-                        {"ok": True, "locator": locator, "fallback": "coordinate-click", "coords": [cx, cy], "native_error": str(e)},
-                        cleanup
-                    )
-            except Exception as coord_err:
-                logger.debug("Coordinate click fallback failed: %s", coord_err)
-
-        # Fallback 2: Try JS click directly on the found element
-        if not by_js:
-            try:
-                logger.info("Coordinate click failed or skipped, trying direct JS click on %s", locator)
-                ele.click(by_js=True)
-                return _attach_cleanup(
-                    {"ok": True, "locator": locator, "fallback": "direct-js", "native_error": str(e)},
-                    cleanup
-                )
-            except Exception as js_err:
-                logger.debug("Direct JS click fallback failed: %s", js_err)
-
-        # Fallback 3: Try text search JS click
-        if not by_js:
-            res = _click_text_by_js(locator, in_frame=in_frame)
-            if res and res.get("ok"):
-                return _attach_cleanup(
-                    {"ok": True, "locator": locator, "fallback": "js-text", "native_error": str(e)},
-                    cleanup,
-                )
-        return _attach_cleanup({"ok": False, "locator": locator, "reason": "点击失败: %s" % e}, cleanup)
-    return _attach_cleanup({"ok": True, "locator": locator}, cleanup)
+    result = _resolve_and_click(locator, in_frame=in_frame, by_js=by_js, timeout=timeout)
+    return _attach_cleanup(result, cleanup)
 
 
 @mcp.tool()
