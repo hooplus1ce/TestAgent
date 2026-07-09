@@ -7,9 +7,9 @@ description: 为 WMS/MOM/ERP 等企业系统迭代生成测试用例（DrissionP
 
 你是一个迭代式企业系统测试用例生成器。核心原则：**基于真实浏览器交互反馈 + 接口断言生成用例，而非凭空臆测**。通过多轮对话与用户协作，逐步探索模块，最终输出格式化的 Excel 文档。
 
-浏览器自动化通过 **`drission-ui` MCP 服务器**暴露的结构化工具实现。所有 VTable 脆弱 JS、坐标换算、iframe 穿越由工具自动处理，AI 只需编排调用顺序并消费结构化 JSON。
+浏览器自动化通过 **`drissionpage-mcp` 服务器**暴露的结构化工具实现。所有 VTable 脆弱 JS、坐标换算、iframe 穿越由工具自动处理，AI 只需编排调用顺序并消费结构化 JSON。
 
-> 开始前确认：① Chrome 已在 9222 端口启动并登录目标系统 ② `drission-ui` MCP 可用 ③ 准备好目标模块名
+> 开始前确认：① Chrome 已在 9222 端口启动并登录目标系统 ② `drissionpage-mcp` MCP 可用 ③ 准备好目标模块名
 
 然后直接说：**「生成 `<模块名>` 的测试用例」**。
 
@@ -36,7 +36,7 @@ description: 为 WMS/MOM/ERP 等企业系统迭代生成测试用例（DrissionP
 - 首次登录或会话过期：直接 `refresh_session()`（内部完成 OCR + HTTP 登录 + Cookie 注入 → 导航 SCM Admin），每次重新获取新 cookie，不再缓存
 
 ### 工具集
-所有浏览器原子操作由 `drission-ui` MCP 提供：点击/输入/截图/浮窗检测(`scan_floats`)/VTable 操作/网络监听/筛选区操作/元素坐标获取(`get_element_coords`)/坐标点击(`click_xy`)。AI 只需调用工具并编排顺序，无需关心内部实现。
+所有浏览器原子操作由 `drissionpage-mcp` MCP 提供：点击/输入/截图/浮窗检测(`scan_floats`)/VTable 操作/网络监听/筛选区操作/元素坐标获取(`get_element_coords`)/坐标点击(`click_xy`)。AI 只需调用工具并编排顺序，无需关心内部实现。
 
 系统配置与环境信息见 `references/scm-access.md`。
 
@@ -77,7 +77,7 @@ description: 为 WMS/MOM/ERP 等企业系统迭代生成测试用例（DrissionP
 
 **质量门**（详见 `references/quality-rubric.md`）：
 - 预期结果(L) 必须可验证——优先用 `listen_wait` 拿接口 `response.body` 作为可断言预期
-- 自动化建议(S) 必须说明可由 drission-ui MCP 执行的关键动作与断言方式
+- 自动化建议(S) 必须说明可由 drissionpage-mcp MCP 执行的关键动作与断言方式
 - 级别(C) 按决策树分配
 - DFS 衍生用例导出前去重
 - 每条用例必须能映射回 Phase 1.5 覆盖矩阵中的一个 `已验证` 场景
@@ -103,11 +103,11 @@ description: 为 WMS/MOM/ERP 等企业系统迭代生成测试用例（DrissionP
 
 ### Phase 4 — Excel 导出
 
-1. 将探索产物按分类追加到项目级 `test_cases/<MODULE_PINYIN>/*.json`，文件名必须带两位序号（如 `01_筛选查询类.json`），作为功能首次出现顺序的稳定来源。
+1. 将探索产物按分类追加到项目级 `test_cases/<LEVEL1_PINYIN>_<MODULE_PINYIN>/*.json`，文件名必须带两位序号（如 `01_筛选查询类.json`），作为功能首次出现顺序的稳定来源。
 2. 每条 JSON 用例的 `function` 字段必须填写稳定中文功能名；同一功能必须完全同名，禁止混用「查询」/「筛选查询」/「搜索」这类近义别名。
 3. 导出 Excel 前必须按功能维度稳定排序：以排序后 JSON 文件中的首次出现顺序确定功能组顺序，相同 `function` 的用例连续写入；同一功能组内按 `case_id` 自然序 + 原始顺序排序。
 4. MUST 按视觉布局安排 JSON 文件序号：筛选区(F) → 页签/按钮(I/B) → 表格交互(T/I) → 页面级(P/D/W)。导出器只负责稳定分组，不依赖人工手动拖动 Excel 行。
-5. 用 `uv run python .claude/skills/test-case-generator-dp/scripts/generate_from_json.py test_cases/<MODULE_PINYIN>/*.json` 导出 Excel
+5. 用 `uv run python .claude/skills/test-case-generator-dp/scripts/generate_from_json.py test_cases/<LEVEL1_PINYIN>_<MODULE_PINYIN>/*.json` 导出 Excel
 6. 告知用户文件路径
 
 新流程禁止把用例硬编码进 Python。用例数据必须先沉淀为 JSON，再由通用导出器生成 Excel。

@@ -31,10 +31,8 @@ EXPECTED_PUBLIC_TOOLS = {
     "scan_page_elements",
     "scan_toolbar_actions",
     "scan_form_fields",
-    "scan_modal",
-    "scan_drawer",
     "scan_pagination",
-    "scan_floats",
+    "observe_snapshot",
     "find_elements",
     "find_batch",
     "click",
@@ -94,6 +92,9 @@ REMOVED_DUPLICATE_TOOLS = {
     "detect_message",
     "detect_url_change",
     "detect_tab_change",
+    "scan_modal",
+    "scan_drawer",
+    "scan_floats",
     "scan_html_table",
     "get_html_table_values",
     "click_html_table_cell",
@@ -134,6 +135,8 @@ def test_public_tools_include_mcp_annotations():
 
     assert tools["find_elements"].annotations.readOnlyHint is True
     assert tools["find_elements"].annotations.destructiveHint is False
+    assert tools["observe_snapshot"].annotations.readOnlyHint is True
+    assert tools["observe_snapshot"].annotations.destructiveHint is False
     assert tools["click"].annotations.readOnlyHint is False
     assert tools["click"].annotations.destructiveHint is True
     assert tools["connect"].annotations.readOnlyHint is False
@@ -209,7 +212,8 @@ asyncio.run(main())
         check=True,
     )
     names = set(json.loads(result.stdout))
-    assert {"connect", "scan_floats", "get_element_coords", "browser_list_caps"} <= names
+    assert {"connect", "observe_snapshot", "get_element_coords", "browser_list_caps"} <= names
+    assert "scan_floats" not in names
     assert "scan_table" not in names
     assert "run_js" not in names
 
@@ -298,6 +302,97 @@ def test_get_all_table_data_auto_prefers_vtable_backend():
     assert result["kind"] == "vtable"
     assert result["rows"] == [{"订单号": "SO001"}]
     get_values.assert_called_once_with("订单号", raw=False)
+
+
+def test_scan_floats_includes_ant_calendar_by_dom_presence():
+    import page_model
+
+    captured_js = []
+
+    def fake_run_json(target, js, default):
+        captured_js.append(js)
+        return {
+            "ok": True,
+            "floats": [{
+                "type": "calendar",
+                "title": "日期选择器 2026年7月",
+                "calendar": {"mode": "single", "panels": [], "selectedDates": [], "cells": []},
+            }],
+        }
+
+    with patch.object(page_model, "_targets", return_value=(object(), None, [("top", object())])), \
+         patch.object(page_model, "_run_json", side_effect=fake_run_json), \
+         patch.object(page_model.browser_session, "get_active_tab_name", return_value="active"), \
+         patch("observe.detect_message", return_value={}), \
+         patch("observe.detect_notification", return_value={}):
+        result = page_model.scan_floats()
+
+    assert result["count"] == 1
+    assert result["floats"][0]["type"] == "calendar"
+    assert result["floats"][0]["scope"] == "top"
+    assert captured_js
+    js = captured_js[0]
+    assert ".ant-calendar-picker-container, .ant-calendar" in js
+    assert "function duCalendarActive" in js
+    assert "return !!(el && el.isConnected);" in js
+    assert "var nodes = nodeList.filter(duKeepFloatNode);" in js
+    assert "nodeList.filter(duVisible)" not in js
+
+
+def test_observe_snapshot_wraps_scan_floats_as_unified_overlays():
+    import observe
+    import page_model
+
+    with patch.object(page_model, "scan_floats", return_value={
+        "ok": True,
+        "count": 1,
+        "floats": [{"type": "calendar", "title": "日期选择器"}],
+        "active_tab": "active",
+        "has_active_frame": True,
+        "frame_url": "https://example.test/frame",
+    }) as scan:
+        result = observe.observe_snapshot(include_table_data=True)
+
+    assert result["ok"] is True
+    assert result["type"] == "snapshot"
+    assert result["count"] == 1
+    assert result["overlays"] == [{"type": "calendar", "title": "日期选择器"}]
+    assert result["page"]["active_tab"] == "active"
+    assert result["source"] == "scan_floats"
+    scan.assert_called_once_with(only_visible=True, include_table_data=True)
+
+
+def test_observe_wait_attaches_snapshot_after_signal():
+    import observe
+
+    sess = {
+        "active": True,
+        "sigset": {"overlay"},
+        "start": time.time(),
+        "tab": object(),
+        "fr": None,
+        "watch_network": False,
+    }
+    with observe._session_lock:
+        observe._session.clear()
+        observe._session.update(sess)
+
+    try:
+        with patch.object(observe, "_poll_once", return_value={"type": "calendar", "elapsedMs": 1}), \
+             patch.object(observe, "_teardown_session"), \
+             patch.object(observe, "observe_snapshot", return_value={
+                 "ok": True,
+                 "type": "snapshot",
+                 "count": 1,
+                 "overlays": [{"type": "calendar"}],
+             }):
+            result = observe.observe_wait(timeout=0.2, poll_interval=0.01)
+    finally:
+        with observe._session_lock:
+            observe._session.clear()
+
+    assert result["type"] == "calendar"
+    assert result["snapshot_after"]["overlays"] == [{"type": "calendar"}]
 
 
 def test_click_table_cell_routes_to_vtable_backend_by_col():
@@ -395,7 +490,7 @@ def test_scan_controls_uses_drission_viewport_click_point():
     class FakeElement:
         tag = "button"
         text = "查 询"
-        rect = SimpleNamespace(size=(80, 32), viewport_click_point=(1152.2, 211.7))
+        rect = SimpleNamespace(size=(80, 32), viewport_midpoint=(1152.2, 211.7))
 
         def attr(self, name):
             return {"class": "el-button", "type": "button"}.get(name)
@@ -407,12 +502,12 @@ def test_scan_controls_uses_drission_viewport_click_point():
 
     items, seq = server._scan_controls_in_context(FakeTarget(), "active_iframe", 0, 10)
     assert seq == 1
-    assert items[0]["cx"] == 1152
-    assert items[0]["cy"] == 212
+    assert items[0]["cx"] == 1152.2
+    assert items[0]["cy"] == 211.7
     assert items[0]["viewportX"] == 1152.2
     assert items[0]["viewportY"] == 211.7
     assert items[0]["coordinate_space"] == "top-viewport"
-    assert items[0]["coord_source"] == "DrissionPage.Element.rect.viewport_click_point"
+    assert items[0]["coord_source"] == "DrissionPage.Element.rect.viewport_midpoint"
 
 
 def test_listen_start_sets_http_listener_state_for_drissionpage_42():

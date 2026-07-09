@@ -31,7 +31,7 @@ function isVisible(el){
 
 
 _VISIBLE_MODAL_STATE_JS = _VISIBLE_ELEMENT_JS + r"""
-var m = document.querySelector('.ant-modal-content');
+var m = this;
 var w = m ? (m.closest('.ant-modal-wrap') || document.querySelector('.ant-modal-wrap')) : null;
 return JSON.stringify({visible: !!(m && isVisible(m) && (!w || isVisible(w)))});
 """
@@ -48,10 +48,10 @@ def _parse_json(res):
     return res
 
 
-def _modal_visibility(target, modal_ele):
+def _modal_visibility(modal_ele):
     """Return False for hidden/closed modal residue, True for visible, None if unknown."""
     try:
-        info = _parse_json(target.run_js(_VISIBLE_MODAL_STATE_JS))
+        info = _parse_json(modal_ele.run_js(_VISIBLE_MODAL_STATE_JS))
         if isinstance(info, dict) and "visible" in info:
             return bool(info["visible"])
     except Exception:
@@ -59,7 +59,7 @@ def _modal_visibility(target, modal_ele):
     try:
         return bool(modal_ele.states.is_displayed)
     except Exception:
-        return None
+        return False
 
 
 def _detect_in_target(target):
@@ -86,8 +86,9 @@ def _detect_in_target(target):
             var r = el.getBoundingClientRect();
             return r.width > 0 && r.height > 0;
         }
-        var m = document.querySelector('.ant-modal-content');
-        if (m) {
+        var modals = document.querySelectorAll('.ant-modal-content');
+        for (var i = 0; i < modals.length; i++) {
+            var m = modals[i];
             var w = m.closest('.ant-modal-wrap') || document.querySelector('.ant-modal-wrap');
             var wrapHidden = w && !isVis(w);
             if (!wrapHidden && isVis(m)) {
@@ -100,7 +101,6 @@ def _detect_in_target(target):
                     content: body ? (body.textContent||'').trim().slice(0,200) : '',
                     buttons: btns, hasClose: !!m.querySelector('.ant-modal-close')});
             }
-            // modal 隐藏/残留 → 不早退，继续查 notification/message
         }
         var n = document.querySelector('.ant-notification-notice');
         if (n && isVis(n)) {
@@ -313,40 +313,31 @@ def close_modal(tab=None):
 
     try:
         for scope, target in _target_contexts(tab):
-            # 关闭业务弹窗（点取消优先，其次×）
-            modal = target.ele('c:.ant-modal-content', timeout=0.5)
-            if modal:
-                visible = _modal_visibility(target, modal)
-                if visible is False:
-                    continue
-                cancel = modal.ele('c:.ant-btn:not(.ant-btn-primary)', timeout=0.3)
+            # 关闭业务弹窗（根据 .ant-modal-wrap 的 visibility 寻找真正可见的那个）
+            wrappers = target.eles('c:.ant-modal-wrap')
+            active_wrap = None
+            for w in wrappers:
+                if w.states.is_displayed:
+                    active_wrap = w
+                    break
+            
+            if active_wrap:
+                cancel = active_wrap.ele('c:.ant-btn:not(.ant-btn-primary)', timeout=0.3)
                 if cancel:
                     cancel.click()
                 else:
-                    close_x = modal.ele('c:.ant-modal-close', timeout=0.3)
+                    close_x = active_wrap.ele('c:.ant-modal-close', timeout=0.3)
                     if close_x:
                         close_x.click()
                     else:
                         errors.append("%s modal: 无可点击的取消/关闭按钮" % scope)
                 if not any(e.startswith("%s modal: 无可点击" % scope) for e in errors):
-                    # 优先等元素从 DOM 删除，超时后降级检查 ant-modal-wrap 是否 display:none
-                    try:
-                        modal.wait.ele_deleted(timeout=3)
+                    # 使用原生方法等待最外层包裹元素 .ant-modal-wrap 隐藏
+                    hidden = target.wait.ele_hidden(active_wrap, timeout=3, raise_err=False)
+                    if hidden:
                         closed.append("%s:modal" % scope)
-                    except Exception:
-                        # React 组件卸载不彻底时 ant-modal 残留但 wrap 已隐藏
-                        try:
-                            wrap_hidden = target.run_js(
-                                "var w=document.querySelector('.ant-modal-wrap');"
-                                "if(!w)return true;"
-                                "return window.getComputedStyle(w).display==='none';"
-                            )
-                            if wrap_hidden:
-                                closed.append("%s:modal" % scope)
-                            else:
-                                errors.append("%s modal: 等待关闭超时" % scope)
-                        except Exception:
-                            errors.append("%s modal: 等待关闭超时" % scope)
+                    else:
+                        errors.append("%s modal: 等待关闭超时" % scope)
     except Exception as e:
         logger.debug("close_modal 失败: %s", e)
         errors.append(str(e))

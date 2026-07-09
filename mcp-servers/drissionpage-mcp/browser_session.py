@@ -46,6 +46,34 @@ def load_js(name: str) -> str:
         return f.read()
 
 
+def ele_with_fallback(target, css_selector, xpath_selector, timeout=1.0):
+    """尝试用 CSS 定位元素，失败后用 XPath 兜底。"""
+    try:
+        el = target.ele(css_selector, timeout=timeout)
+        if el and not isinstance(el, str):
+            return el
+    except Exception:
+        pass
+    try:
+        return target.ele(xpath_selector, timeout=timeout)
+    except Exception:
+        return None
+
+
+def eles_with_fallback(target, css_selector, xpath_selector):
+    """尝试用 CSS 批量获取元素，若为空用 XPath 兜底。"""
+    try:
+        res = target.eles(css_selector)
+        if res:
+            return res
+    except Exception:
+        pass
+    try:
+        return target.eles(xpath_selector)
+    except Exception:
+        return []
+
+
 def _ensure_display_env():
     """确保图形环境变量就绪，供 DrissionPage 启动非 headless Chrome（仅 Linux 有头场景）。
 
@@ -203,55 +231,38 @@ def get_browser():
 
 
 def get_active_frame(tab=None):
-    """取当前可见 tabpanel 内的业务 iframe（ChromiumFrame）；无则返回 None。
-
-    修复: 两步策略——先用 JS document.querySelector 获取 iframe name，
-    再用 DrissionPage get_frame(name) 按名称查找，避免 CSS 选择器
-    因 ChromiumFrame 类型检查失败而返回 NoneElement。
-    """
+    """取当前可见 tabpanel 内的业务 iframe（ChromiumFrame）；无则返回 None。"""
     with _lock:
         tab = tab or get_tab()
         try:
-            # Step 1: JS 查找活跃 iframe + 激活 tab 名称
-            js = (
-                'var f=document.querySelector(\'[role="tabpanel"][aria-hidden="false"] iframe\');'
-                'var t=document.querySelector(\'div[role="tab"][aria-selected="true"]\');'
-                "var tabName=t?((t.querySelector('.ant-dropdown-trigger')||t).textContent||'').trim():'';"
-                "if(!f)return JSON.stringify({found:false, tabName:tabName});"
-                "return JSON.stringify({found:true, name:f.name||'', id:f.id||'', tabName:tabName});"
-            )
-            res = tab.run_js(js)
-            d = json.loads(res) if isinstance(res, str) else (res or {})
-            name = d.get("name") or d.get("id") or ""
-            # 缓存激活 tab 名称供外部查询
+            # 1. 缓存激活 tab 名称供外部查询
             global _active_tab_name
-            _active_tab_name = d.get("tabName", "") or ""
+            tab_el = ele_with_fallback(
+                tab,
+                'css:div[role="tab"][aria-selected="true"]',
+                'xpath://div[@role="tab" and @aria-selected="true"]',
+                timeout=0.5
+            )
+            if tab_el:
+                trigger = ele_with_fallback(
+                    tab_el,
+                    'css:.ant-dropdown-trigger',
+                    'xpath:.//*[contains(@class, "ant-dropdown-trigger")]',
+                    timeout=0.1
+                ) or tab_el
+                _active_tab_name = (trigger.text or "").strip()
+            else:
+                _active_tab_name = ""
 
-            # Step 2: 优先按 name 查找 frame（DrissionPage 对 name 查找更可靠）
-            if name:
-                try:
-                    fr = tab.get_frame(name, timeout=3)
-                    if (
-                        fr
-                        and not isinstance(fr, str)
-                        and getattr(fr, "_type", None) == "ChromiumFrame"
-                    ):
-                        return fr
-                except Exception:
-                    pass
-
-            # Step 3: 降级到原始 CSS 选择器
-            try:
-                fr = tab.get_frame(ACTIVE_FRAME_LOC, timeout=3)
-                if (
-                    fr
-                    and not isinstance(fr, str)
-                    and getattr(fr, "_type", None) == "ChromiumFrame"
-                ):
-                    return fr
-            except Exception:
-                pass
-
+            # 2. 获取可见 iframe 对应的 ChromiumFrame 对象
+            fr = ele_with_fallback(
+                tab,
+                ACTIVE_FRAME_LOC,
+                'xpath://div[@role="tabpanel" and not(@aria-hidden="true")]//iframe',
+                timeout=1.0
+            )
+            if fr and not isinstance(fr, str) and getattr(fr, "_type", None) == "ChromiumFrame":
+                return fr
             return None
         except Exception as e:
             logger.debug("get_active_frame 失败: %s", e)
@@ -284,35 +295,14 @@ def get_active_frame_ro(tab=None):
     if tab is None:
         return None
     try:
-        js = (
-            'var f=document.querySelector(\'[role="tabpanel"][aria-hidden="false"] iframe\');'
-            "if(!f)return JSON.stringify({found:false});"
-            "return JSON.stringify({found:true, name:f.name||'', id:f.id||''});"
+        fr = ele_with_fallback(
+            tab,
+            ACTIVE_FRAME_LOC,
+            'xpath://div[@role="tabpanel" and not(@aria-hidden="true")]//iframe',
+            timeout=1.0
         )
-        res = tab.run_js(js)
-        d = json.loads(res) if isinstance(res, str) else (res or {})
-        name = d.get("name") or d.get("id") or ""
-        if name:
-            try:
-                fr = tab.get_frame(name, timeout=3)
-                if (
-                    fr
-                    and not isinstance(fr, str)
-                    and getattr(fr, "_type", None) == "ChromiumFrame"
-                ):
-                    return fr
-            except Exception:
-                pass
-        try:
-            fr = tab.get_frame(ACTIVE_FRAME_LOC, timeout=3)
-            if (
-                fr
-                and not isinstance(fr, str)
-                and getattr(fr, "_type", None) == "ChromiumFrame"
-            ):
-                return fr
-        except Exception:
-            pass
+        if fr and not isinstance(fr, str) and getattr(fr, "_type", None) == "ChromiumFrame":
+            return fr
         return None
     except Exception as e:
         logger.debug("get_active_frame_ro 失败: %s", e)
@@ -367,7 +357,6 @@ def find(
                 )  # 轮询至可点击或超时（超时不抛错）
                 if not ele.states.is_clickable:
                     logger.debug("元素已找到但不可点击: %s", locator)
-                    return None
             except Exception:
                 # 某些元素无 clickable 概念（如纯展示节点），忽略校验返回元素
                 pass

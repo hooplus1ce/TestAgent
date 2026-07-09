@@ -25,11 +25,11 @@
 | **P** | 编写人 | `"编写人"` | ✅ | 初始填 `DEFAULT_AUTHOR`，可被用户覆盖 |
 | **Q** | 编写时间 | `"编写时间"` | ✅ | `date.today().isoformat()`，自动填充 |
 | **R** | 备注 | `"备注"` | ❌ | 骨架用例填 `[待确认]`，其余留空 |
-| **S** | 自动化建议 | `"自动化建议"` | ✅ | 面向 drission-ui MCP 自动执行的动作与断言建议，如使用 `scan_filter_fields`、`input`、`select_date_range`、`get_column_values`、`listen_wait` 等 |
+| **S** | 自动化建议 | `"自动化建议"` | ✅ | 面向 drissionpage-mcp MCP 自动执行的动作与断言建议，如使用 `scan_filter_fields`、`input`、`select_date_range`、`get_column_values`、`listen_wait` 等 |
 
 ## 与 JSON 导出器的对应关系
 
-`generate_from_json.py` 中 `HEADERS_19` 数组顺序 = 上表 A→S 顺序，**一一对应，无错位**。AI 在 Phase 4 写入项目级 `test_cases/<MODULE_PINYIN>/*.json` 后，由 `generate_from_json.py` 将 JSON 字段映射到 Excel：
+`generate_from_json.py` 中 `HEADERS_19` 数组顺序 = 上表 A→S 顺序，**一一对应，无错位**。AI 在 Phase 4 写入项目级 `test_cases/<LEVEL1_PINYIN>_<MODULE_PINYIN>/*.json` 后，由 `generate_from_json.py` 将 JSON 字段映射到 Excel：
 
 ## 排序约定（Excel 写入前强制执行）
 

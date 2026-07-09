@@ -13,6 +13,16 @@ from datetime import date
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 
+_LEVEL1_PINYIN_MAP = {
+    "生产管理": "SCGL",
+    "协同管理": "XTGL",
+    "基础数据": "JCSJ",
+    "采购管理": "CGGL",
+    "销售管理": "XSGL",
+    "仓储管理": "CCGL",
+    "系统管理": "XTGL",
+}
+
 # ============================================================
 # 样式定义
 header_fill = PatternFill(start_color="2C5282", end_color="2C5282", fill_type="solid")
@@ -50,6 +60,7 @@ HEADERS_19 = [
 COL_WIDTHS = [18, 42, 12, 18, 18, 18, 12, 42, 50, 44, 44, 60, 10, 10, 12, 12, 12, 0, 58]
 
 CASE_ID_RE = re.compile(r"^([A-Za-z]+)(\d+)$")
+LEADING_NUMBER_RE = re.compile(r"^\s*\d+\s*[\.、)]\s*")
 
 
 def natural_case_id_key(case_id):
@@ -76,6 +87,19 @@ def sort_test_cases(test_cases):
             natural_case_id_key(case.get("case_id", "")),
             case.get("_source_order", 0),
         ),
+    )
+
+
+def strip_leading_number(text):
+    """去掉源 JSON 中手写的步骤编号，避免导出时出现 1. 1. xxx。"""
+    return LEADING_NUMBER_RE.sub("", str(text or "")).strip()
+
+
+def numbered_lines(items):
+    """按 Excel 标准输出连续编号列表。"""
+    return "\n".join(
+        f"{i + 1}. {strip_leading_number(item)}"
+        for i, item in enumerate(items or [])
     )
 
 def apply_priority_style(cell):
@@ -135,9 +159,25 @@ def load_testcases_from_json(json_files):
     return module_info, all_cases
 
 
-def build_excel(module_info, test_cases, output_dir=".", custom_filename=None):
+def build_excel(module_info, test_cases, output_dir=None, custom_filename=None):
     """构建Excel文件"""
     test_cases = sort_test_cases(test_cases)
+
+    # 从module_info提取配置
+    prefix = module_info.get("enterprise_prefix", "NB")
+    pinyin = module_info.get("module_pinyin", "TEST")
+    level1 = module_info.get("module_level1", "")
+    level2 = module_info.get("module_level2", "")
+    author = module_info.get("author", "")
+    write_date = date.today().isoformat()
+
+    if output_dir is None or output_dir == ".":
+        level1_pinyin = _LEVEL1_PINYIN_MAP.get(level1.strip()) if level1 else None
+        if level1_pinyin:
+            folder_name = f"{level1_pinyin}_{pinyin}"
+        else:
+            folder_name = pinyin
+        output_dir = os.path.join("test_cases", folder_name)
 
     wb = Workbook()
     
@@ -153,21 +193,13 @@ def build_excel(module_info, test_cases, output_dir=".", custom_filename=None):
         cell.alignment = Alignment(horizontal="center", vertical="center")
         cell.border = thin_border
     
-    # 从module_info提取配置
-    prefix = module_info.get("enterprise_prefix", "NB")
-    pinyin = module_info.get("module_pinyin", "TEST")
-    level1 = module_info.get("module_level1", "")
-    level2 = module_info.get("module_level2", "")
-    author = module_info.get("author", "")
-    write_date = date.today().isoformat()
-    
     # 写入用例数据（列顺序与 HEADERS_19 完全一致）
     for case in test_cases:
         case_id = f"{prefix}_{pinyin}_{case['case_id']}"
         
         # 处理多行文本
-        preconditions = "\n".join([f"{i+1}. {p}" for i, p in enumerate(case.get("preconditions", []))])
-        test_steps = "\n".join([f"{i+1}. {s}" for i, s in enumerate(case.get("test_steps", []))])
+        preconditions = numbered_lines(case.get("preconditions", []))
+        test_steps = numbered_lines(case.get("test_steps", []))
         
         # 测试数据格式：匹配test.xlsx风格 - 首行固定"表单数据" + 中文冒号键值对
         test_data_dict = case.get("test_data", {})
@@ -291,7 +323,14 @@ def build_excel(module_info, test_cases, output_dir=".", custom_filename=None):
         print(f"{'='*60}")
         return filepath
     except PermissionError:
-        fallback = os.path.join(".", filename)
+        stem, ext = os.path.splitext(filename)
+        fallback_name = f"{stem}_修正版{ext}"
+        fallback = os.path.join(output_dir, fallback_name)
+        index = 2
+        while os.path.exists(fallback):
+            fallback_name = f"{stem}_修正版{index}{ext}"
+            fallback = os.path.join(output_dir, fallback_name)
+            index += 1
         wb.save(fallback)
         print(f"⚠️ 降级保存至: {os.path.abspath(fallback)}")
         return fallback

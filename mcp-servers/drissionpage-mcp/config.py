@@ -21,7 +21,7 @@
 """
 import os
 
-PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 SCM_ADMIN_URL = os.environ.get("HL_SCM_URL", "https://demo19-scm.hoolinks.com/scm-static/scm-admin/scm-admin/#/")
 COOKIE_DOMAIN = os.environ.get("HL_COOKIE_DOMAIN", ".demo19-scm.hoolinks.com")

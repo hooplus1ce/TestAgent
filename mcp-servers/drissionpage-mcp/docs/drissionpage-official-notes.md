@@ -27,6 +27,6 @@
 ## 项目侧补充规则
 
 - VTable canvas 只能通过 MCP facade 访问；底层实例发现、坐标换算和编辑状态同步封装在 `vtable.py` 与 `js/`。
-- 弹窗/消息/通知统一由 `scan_floats` 或两段式观察器捕获。
+- 弹窗/浮层/消息/通知统一由观察器捕获：当前状态用 `observe_snapshot`，交互结果用 `observe_start -> action -> observe_wait` 或 `explore_action`。
 - 筛选区必须优先切到内联模式，并把字段名、操作符和值控件模式绑定返回。
 - 保存按钮操作前读取 class，区分普通按钮与 `ant-dropdown-trigger` 下拉按钮。

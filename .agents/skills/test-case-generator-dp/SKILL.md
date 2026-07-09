@@ -1,6 +1,6 @@
 ---
 name: test-case-generator-dp
-description: Generate WMS/MOM/ERP enterprise test cases from real browser exploration using the drission-ui MCP server, VTable/table scans, modal observation, network evidence, and JSON-to-Excel export. Use when asked to create or improve functional test cases for SCM/MOM/ERP/WMS pages.
+description: Generate WMS/MOM/ERP enterprise test cases from real browser exploration using the drissionpage-mcp server, VTable/table scans, modal observation, network evidence, and JSON-to-Excel export. Use when asked to create or improve functional test cases for SCM/MOM/ERP/WMS pages.
 ---
 
 # Test Case Generator DP for Codex
@@ -15,12 +15,12 @@ not inside a skill directory.
 
 Use the project Codex MCP configuration in `.codex/config.toml`.
 
-- `drission-ui` is the required browser automation server for SCM/MOM/ERP pages.
+- `drissionpage-mcp` is the required browser automation server for SCM/MOM/ERP pages.
 - Do not use Playwright MCP in this adapter. A future Playwright comparison
   version should be created as a separate adapter.
 
 Before generating test cases, confirm the active Codex session has loaded
-`drission-ui`. In the TUI use `/mcp`; from a shell use `codex mcp list`.
+`drissionpage-mcp`. In the TUI use `/mcp`; from a shell use `codex mcp list`.
 
 ## Reference Files
 
@@ -40,7 +40,7 @@ Read only the references needed for the requested area when the task is narrow.
 
 ## Workflow
 
-1. Connect with `drission-ui.connect`, then run `check_session`.
+1. Connect with `drissionpage-mcp.connect`, then run `check_session`.
 2. Enter the requested module with `enter_module(..., expand_filter=True)`.
 3. Collect page structure with `scan_page_elements`, `dom_tree`,
    `scan_filter_fields`, and `scan_table(kind="auto")`.
@@ -60,13 +60,13 @@ Read only the references needed for the requested area when the task is narrow.
 8. Store generated case JSON files in:
 
    ```text
-   test_cases/<MODULE_PINYIN>/
+   test_cases/<LEVEL1_PINYIN>_<MODULE_PINYIN>/
    ```
 
 9. Export Excel using the existing upstream exporter:
 
    ```bash
-   uv run python .claude/skills/test-case-generator-dp/scripts/generate_from_json.py test_cases/<MODULE_PINYIN>/*.json
+   uv run python .claude/skills/test-case-generator-dp/scripts/generate_from_json.py test_cases/<LEVEL1_PINYIN>_<MODULE_PINYIN>/*.json
    ```
 
 Use `uv run python`, not bare `python`, because this project environment does
@@ -86,7 +86,7 @@ not guarantee a `python` executable on PATH.
 
 ## Current Boundary
 
-This adapter intentionally keeps browser automation in `drission-ui` MCP and
+This adapter intentionally keeps browser automation in `drissionpage-mcp` MCP and
 test generation policy in the skill. The next architecture step should extract
 shared schemas and scripts into a neutral location such as `schemas/` and
 `tools/testcase/`, then let both Claude and Codex adapters reference that shared

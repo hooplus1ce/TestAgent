@@ -56,6 +56,7 @@ _READ_ONLY_TOOLS = {
     "list_contexts",
     "listen_wait",
     "listen_ws_wait",
+    "observe_snapshot",
     "scan_drawer",
     "scan_floats",
     "scan_form_fields",
@@ -886,9 +887,9 @@ def scan_form_fields(scope: str = "page", include_hidden: bool = False,
 @mcp.tool()
 @read_synchronized
 def scan_floats(only_visible: bool = True, include_table_data: bool = True) -> dict:
-    """扫描所有可见浮窗（modal/drawer/popover/tooltip/dropdown/message/notification）。
+    """扫描所有可见浮窗（modal/drawer/popover/tooltip/dropdown/calendar/message/notification）。
     单次 JS 注入完成。返回浮窗内所有操作按钮的位置（可点击关闭）、
-    关闭按钮的 CSS 定位符（可用于 click 工具）、内部表格结构和可选的全量行数据。
+    关闭按钮的 CSS 定位符（可用于 click 工具）、日历面板摘要、内部表格结构和可选的全量行数据。
     """
     return page_model.scan_floats(only_visible=only_visible,
                                   include_table_data=include_table_data)
@@ -1012,8 +1013,8 @@ def explore_action(action: str = "click", locator: str = None, x: float = None, 
     弹窗、toast、URL、Tab、网络首包等状态流转证据。
     """
     effective_signals = signals or (
-        ["modal", "notification", "message", "tab", "url", "network"]
-        if listen_targets else ["modal", "notification", "message", "tab", "url"]
+        ["overlay", "notification", "message", "tab", "url", "network"]
+        if listen_targets else ["overlay", "notification", "message", "tab", "url"]
     )
     before = None
     if capture_before:
@@ -1824,28 +1825,32 @@ def close_modal() -> dict:
 
 @write_synchronized
 def observe_post_click(timeout: float = 10, signals: list = None,
-                       listen_targets: str = None, poll_interval: float = 0.12) -> dict:
+                       listen_targets: str = None, poll_interval: float = 0.12,
+                       include_snapshot: bool = True) -> dict:
     """点击后统一观察器：并发监听 DOM 弹窗/通知/消息 + URL 跳转 + Tab 变化 + 网络响应，
     任一信号命中立即返回（first-signal-wins）。DOM 走 MutationObserver 事件驱动，非固定 sleep 轮询。
     点击后默认调用本工具，替代多次串行 detect_modal/dom_overview/get_active_frame。
 
     Args:
         timeout: 最长观察秒数（默认 10）。信号命中立即提前返回。
-        signals: 监听信号类型列表，默认 ['modal','notification','message','tab','url']。
-                 可选：'modal'/'notification'/'message'/'tab'/'url'/'network'。
+        signals: 监听信号类型列表，默认 ['overlay','notification','message','tab','url']。
+                 可选：'overlay'/'modal'/'drawer'/'dropdown'/'calendar'/
+                 'notification'/'message'/'tab'/'url'/'network'。
         listen_targets: 网络监听 URL 特征（逗号分隔）；仅 signals 含 'network' 时生效。
         poll_interval: Python 侧读缓冲间隔秒数（默认 0.12）；DOM 实际由 MutationObserver 即时触发。
+        include_snapshot: 返回时附带当前浮层快照 snapshot_after，默认 True。
 
     Returns:
-        命中：{type, scope?, payload?, elapsedMs, ...信号专属字段}
-        未命中：{type:'none', elapsedMs, watched:[...]}
+        命中：{type, scope?, payload?, elapsedMs, snapshot_after, ...信号专属字段}
+        未命中：{type:'none', elapsedMs, watched:[...], snapshot_after}
         type ∈ interactive/confirm/notification/message/tab_change/url_change/network/none
 
     典型用法：保存成功 toast（顶层 .ant-message-notice，~3s 消失）会被 message 信号即时捕获，
     解决 detect_modal 历史漏抓顶层短寿命 toast 的问题。
     """
     return observe.observe_post_click(timeout=timeout, signals=signals,
-                                      listen_targets=listen_targets, poll_interval=poll_interval)
+                                      listen_targets=listen_targets, poll_interval=poll_interval,
+                                      include_snapshot=include_snapshot)
 
 
 @mcp.tool()
@@ -1856,8 +1861,9 @@ def observe_start(signals: list[str] = None, listen_targets: str = None) -> dict
     可靠捕获短寿命 toast（如保存成功 ~3s）。必须配对调用 observe_wait() 读取信号并清理。
 
     Args:
-        signals: 监听信号类型列表，默认 ['modal','notification','message','tab','url']。
-                 可选：'modal'/'notification'/'message'/'tab'/'url'/'network'。
+        signals: 监听信号类型列表，默认 ['overlay','notification','message','tab','url']。
+                 可选：'overlay'/'modal'/'drawer'/'dropdown'/'calendar'/
+                 'notification'/'message'/'tab'/'url'/'network'。
         listen_targets: 网络监听 URL 特征（逗号分隔）；仅 signals 含 'network' 时生效。
 
     Returns:
@@ -1873,19 +1879,34 @@ def observe_start(signals: list[str] = None, listen_targets: str = None) -> dict
 
 @mcp.tool()
 @write_synchronized
-def observe_wait(timeout: float = 8, poll_interval: float = 0.12) -> dict:
+def observe_wait(timeout: float = 8, poll_interval: float = 0.12,
+                 include_snapshot: bool = True) -> dict:
     """两段式观察器·等待：轮询 observe_start 安装的 observer，任一信号命中立即返回（first-signal-wins），
     随后清理 observer + listener。须在 observe_start 之后、点击之后调用。
 
     Args:
         timeout: 最长等待秒数（默认 8）。
         poll_interval: Python 侧读缓冲间隔秒数（默认 0.12）；DOM 由 MutationObserver 即时触发。
+        include_snapshot: 返回时附带当前浮层快照 snapshot_after，默认 True。
 
     Returns:
-        命中：{type, scope?, payload?, elapsedMs, ...信号专属字段}
-        未命中：{type:'none', elapsedMs, watched:[...]}
+        命中：{type, scope?, payload?, elapsedMs, snapshot_after, ...信号专属字段}
+        未命中：{type:'none', elapsedMs, watched:[...], snapshot_after}
     """
-    return observe.observe_wait(timeout=timeout, poll_interval=poll_interval)
+    return observe.observe_wait(timeout=timeout, poll_interval=poll_interval,
+                                include_snapshot=include_snapshot)
+
+
+@mcp.tool()
+@read_synchronized
+def observe_snapshot(only_visible: bool = True, include_table_data: bool = False) -> dict:
+    """统一观察器快照：读取当前可见浮层/弹窗/抽屉/dropdown/calendar/toast。
+
+    这是手工检查当前浮层状态的推荐入口；legacy scan_floats/scan_modal/scan_drawer 保留内部兼容，
+    但不再作为默认公开工具暴露。
+    """
+    return observe.observe_snapshot(only_visible=only_visible,
+                                    include_table_data=include_table_data)
 
 
 @read_synchronized

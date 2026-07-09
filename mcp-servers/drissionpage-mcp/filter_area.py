@@ -15,15 +15,7 @@ _lock = browser_session._lock
 
 
 def expand_filter_area(tab=None):
-    """展开筛选区：优先切换为内联模式，并点击展开显示所有筛选字段。
-
-    流程:
-      0. 若已是内联模式且已展开 → 直接返回
-      1. 点击 anticon-bars 打开“内联模式/弹窗模式”菜单，优先切换到“内联模式”
-      2. 内联模式下若仍折叠 → 点击「展开▼」
-
-    重要：不能在弹窗模式下直接点击「展开▼」，否则会触发“高级搜索”弹窗。
-    """
+    """展开筛选区：优先切换为内联模式，并点击展开显示所有筛选字段。"""
     with _lock:
         tab = tab or browser_session.get_tab()
         fr = browser_session.get_active_frame(tab)
@@ -36,29 +28,57 @@ def expand_filter_area(tab=None):
                 pass
 
             def _state():
-                res = fr.run_js(r"""
-                    var q=document.querySelector('.page-query');
-                    if(!q)return JSON.stringify({hasQuery:false});
-                    function visible(el){
-                        if(!el)return false;
-                        var s=getComputedStyle(el);
-                        return s.display!=='none' && s.visibility!=='hidden' && el.offsetWidth>0 && el.offsetHeight>0;
-                    }
-                    var btns=[].slice.call(q.querySelectorAll('button'));
-                    var expand=btns.find(function(b){return visible(b)&&b.textContent.replace(/\s+/g,'').indexOf('展开')>=0;});
-                    var collapse=btns.find(function(b){return visible(b)&&b.textContent.replace(/\s+/g,'').indexOf('收起')>=0;});
-                    var bars=btns.find(function(b){return visible(b)&&b.querySelector('i.anticon-bars');});
-                    var remaining=q.querySelector('.legions-pro-quick-filter-remaining');
-                    return JSON.stringify({
-                        hasQuery:true,
-                        hasExpand:!!expand,
-                        hasCollapse:!!collapse,
-                        hasBars:!!bars,
-                        hasRemaining:!!remaining,
-                        fieldText:q.textContent.trim().slice(0,120)
-                    });
-                """)
-                return json.loads(res) if isinstance(res, str) else (res or {})
+                query = browser_session.ele_with_fallback(
+                    fr,
+                    'css:.page-query',
+                    'xpath://div[contains(@class, "page-query")]',
+                    timeout=1.0
+                )
+                if not query:
+                    return {"hasQuery": False}
+                
+                btns = browser_session.eles_with_fallback(
+                    query,
+                    'css:button',
+                    'xpath:.//button'
+                )
+                
+                expand = None
+                collapse = None
+                bars = None
+                
+                for b in btns:
+                    if b.states.is_displayed:
+                        text = (b.text or "").replace(" ", "")
+                        if "展开" in text:
+                            expand = b
+                        elif "收起" in text:
+                            collapse = b
+                        else:
+                            bars_icon = browser_session.ele_with_fallback(
+                                b,
+                                'css:i.anticon-bars',
+                                'xpath:.//i[contains(@class, "anticon-bars")]',
+                                timeout=0.1
+                            )
+                            if bars_icon:
+                                bars = b
+                                
+                remaining = browser_session.ele_with_fallback(
+                    query,
+                    'css:.legions-pro-quick-filter-remaining',
+                    'xpath:.//*[contains(@class, "legions-pro-quick-filter-remaining")]',
+                    timeout=0.1
+                )
+                
+                return {
+                    "hasQuery": True,
+                    "hasExpand": expand is not None,
+                    "hasCollapse": collapse is not None,
+                    "hasBars": bars is not None,
+                    "hasRemaining": remaining is not None,
+                    "fieldText": (query.text or "").strip()[:120]
+                }
 
             st = _state()
             if st.get('hasRemaining') and st.get('hasCollapse'):
@@ -66,37 +86,67 @@ def expand_filter_area(tab=None):
 
             # Step 1: 优先切换到内联模式，避免点击「展开」触发高级搜索弹窗。
             if st.get('hasBars'):
-                fr.run_js(r"""
-                    var q=document.querySelector('.page-query');
-                    function visible(el){
-                        if(!el)return false;
-                        var s=getComputedStyle(el);
-                        return s.display!=='none' && s.visibility!=='hidden' && el.offsetWidth>0 && el.offsetHeight>0;
-                    }
-                    var btn=[].slice.call(q.querySelectorAll('button')).find(function(b){return visible(b)&&b.querySelector('i.anticon-bars');});
-                    if(btn)btn.click();
-                """)
+                query = browser_session.ele_with_fallback(
+                    fr,
+                    'css:.page-query',
+                    'xpath://div[contains(@class, "page-query")]'
+                )
+                if query:
+                    btns = browser_session.eles_with_fallback(query, 'css:button', 'xpath:.//button')
+                    bars_btn = None
+                    for b in btns:
+                        if b.states.is_displayed:
+                            if browser_session.ele_with_fallback(
+                                b,
+                                'css:i.anticon-bars',
+                                'xpath:.//i[contains(@class, "anticon-bars")]',
+                                timeout=0.1
+                            ):
+                                bars_btn = b
+                                break
+                    if bars_btn:
+                        bars_btn.click()
+                        
                 try:
                     fr.wait.ele_displayed('c:.ant-dropdown:not(.ant-dropdown-hidden)', timeout=3)
                 except Exception:
                     pass
 
-                mode_res = fr.run_js(r"""
-                    var menus=[].slice.call(document.querySelectorAll('.ant-dropdown:not(.ant-dropdown-hidden)'));
-                    var menu=menus.find(function(m){return m.textContent.indexOf('内联模式')>=0 && m.textContent.indexOf('弹窗模式')>=0;});
-                    if(!menu)return JSON.stringify({ok:false, reason:'mode menu not found'});
-                    var items=[].slice.call(menu.querySelectorAll('.ant-dropdown-menu-item'));
-                    var inline=items.find(function(i){return i.textContent.trim().indexOf('内联模式')>=0;});
-                    var selected=items.find(function(i){return i.className.indexOf('ant-dropdown-menu-item-selected')>=0;});
-                    var selectedText=selected?selected.textContent.trim():'';
-                    if(inline && selectedText.indexOf('内联模式')<0){inline.click();return JSON.stringify({ok:true, switched:true});}
-                    document.body.click();
-                    return JSON.stringify({ok:true, switched:false, selected:selectedText});
-                """)
-                try:
-                    mode_res = json.loads(mode_res) if isinstance(mode_res, str) else mode_res
-                except Exception:
-                    mode_res = {}
+                dropdowns = browser_session.eles_with_fallback(
+                    fr,
+                    'css:.ant-dropdown:not(.ant-dropdown-hidden)',
+                    'xpath://*[contains(@class, "ant-dropdown") and not(contains(@class, "ant-dropdown-hidden"))]'
+                )
+                
+                menu = None
+                for m in dropdowns:
+                    if m.states.is_displayed:
+                        text = m.text or ""
+                        if '内联模式' in text and '弹窗模式' in text:
+                            menu = m
+                            break
+                
+                if menu:
+                    items = browser_session.eles_with_fallback(
+                        menu,
+                        'css:.ant-dropdown-menu-item',
+                        'xpath:.//*[contains(@class, "ant-dropdown-menu-item")]'
+                    )
+                    inline_item = None
+                    selected_item = None
+                    for item in items:
+                        item_text = (item.text or "").strip()
+                        if '内联模式' in item_text:
+                            inline_item = item
+                        if 'ant-dropdown-menu-item-selected' in (item.attrs.get('class') or ""):
+                            selected_item = item
+                    
+                    selected_text = (selected_item.text or "").strip() if selected_item else ""
+                    if inline_item and '内联模式' not in selected_text:
+                        inline_item.click()
+                    else:
+                        fr.click()
+                        
                 try:
                     fr.wait.ele_hidden('c:.ant-dropdown:not(.ant-dropdown-hidden)', timeout=3)
                 except Exception:
@@ -108,16 +158,21 @@ def expand_filter_area(tab=None):
 
             # Step 2: 内联模式下展开剩余筛选项。
             if st.get('hasExpand'):
-                fr.run_js(r"""
-                    var q=document.querySelector('.page-query');
-                    function visible(el){
-                        if(!el)return false;
-                        var s=getComputedStyle(el);
-                        return s.display!=='none' && s.visibility!=='hidden' && el.offsetWidth>0 && el.offsetHeight>0;
-                    }
-                    var btn=[].slice.call(q.querySelectorAll('button')).find(function(b){return visible(b)&&b.textContent.replace(/\s+/g,'').indexOf('展开')>=0;});
-                    if(btn)btn.click();
-                """)
+                query = browser_session.ele_with_fallback(
+                    fr,
+                    'css:.page-query',
+                    'xpath://div[contains(@class, "page-query")]'
+                )
+                if query:
+                    btns = browser_session.eles_with_fallback(query, 'css:button', 'xpath:.//button')
+                    expand_btn = None
+                    for b in btns:
+                        if b.states.is_displayed and '展开' in (b.text or "").replace(" ", ""):
+                            expand_btn = b
+                            break
+                    if expand_btn:
+                        expand_btn.click()
+                        
                 try:
                     fr.wait.ele_displayed('text:收起', timeout=3)
                 except Exception:
@@ -369,59 +424,71 @@ def _close_visible_dropdowns(fr, timeout=0.5):
 def _collect_dropdown_options(fr, col_idx, sel_idx):
     """读取某字段列内某个 select 的下拉选项：打开 → 智能等待 → 读取。
 
-    先轻量关闭残留下拉（只发 Escape 不等动画），避免上一个字段的
-    下拉浮层干扰位置评分导致读到错误的选项。
-
     col_idx 是字段列索引；sel_idx: 0=字段名、1=操作符、2=值选择器。
     """
-    # 轻量关闭残留下拉：只发 Escape 不等动画
-    fr.run_js("document.activeElement&&document.activeElement.blur&&document.activeElement.blur();"
-              "document.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',code:'Escape',keyCode:27,which:27,bubbles:true}));")
-    time.sleep(0.1)
-    open_js = (
-        "var cols=document.querySelectorAll('.legions-pro-quick-filter-row > div[class*=\"ant-col-\"]');"
-        "var sel=cols[%d]?cols[%d].querySelectorAll('.ant-select')[%d]:null;"
-        "if(sel){var cb=sel.querySelector('[role=\"combobox\"]')||sel.querySelector('.ant-select-selection');"
-        "if(cb){var r=cb.getBoundingClientRect();cb.dispatchEvent(new MouseEvent('mousedown',{bubbles:true}));cb.click();"
-        "return JSON.stringify({ok:true,left:r.left,top:r.top,width:r.width,height:r.height});}}"
-        "return JSON.stringify({ok:false});"
-    ) % (col_idx, col_idx, sel_idx)
-    opened = fr.run_js(open_js)
     try:
-        opened = json.loads(opened) if isinstance(opened, str) else (opened or {})
-    except Exception:
-        opened = {"ok": False}
-    if not opened.get("ok"):
-        return []
-
-    try:
-        fr.wait.ele_displayed('c:.ant-select-dropdown:not(.ant-select-dropdown-hidden)', timeout=1)
-        fr.wait.ele_displayed('c:.ant-select-dropdown:not(.ant-select-dropdown-hidden) .ant-select-dropdown-menu-item', timeout=0.8)
+        fr.actions.key_down('Escape').key_up('Escape')
     except Exception:
         pass
-
-    read_js = r"""
-        var target = OPENED;
-        function visible(el){
-            var s=getComputedStyle(el);
-            return s.display!=='none' && s.visibility!=='hidden' && el.offsetWidth>0 && el.offsetHeight>0;
-        }
-        var dropdowns=[].slice.call(document.querySelectorAll('.ant-select-dropdown:not(.ant-select-dropdown-hidden)')).filter(visible);
-        var scored=dropdowns.map(function(d){
-            var rect=d.getBoundingClientRect();
-            var score=Math.abs(rect.left-target.left)+Math.abs(rect.top-target.top);
-            return {el:d,score:score};
-        }).sort(function(a,b){return a.score-b.score;});
-        var dropdown=scored.length?scored[0].el:null;
-        if(!dropdown)return JSON.stringify([]);
-        var items=[].slice.call(dropdown.querySelectorAll('.ant-select-item,li,.ant-select-item-option'));
-        var opts=[];
-        items.forEach(function(it){opts.push((it.textContent||'').trim());});
-        return JSON.stringify(opts);
-    """.replace('OPENED', json.dumps(opened))
+    time.sleep(0.1)
 
     try:
-        res = fr.run_js(read_js)
-        return json.loads(res) if isinstance(res, str) else (res or [])
-    except Exception:
+        cols = browser_session.eles_with_fallback(
+            fr,
+            'css:.legions-pro-quick-filter-row > div[class*="ant-col-"]',
+            'xpath://div[contains(@class, "legions-pro-quick-filter-row")]/div[contains(@class, "ant-col-")]'
+        )
+        if col_idx >= len(cols):
+            return []
+        col = cols[col_idx]
+        selects = browser_session.eles_with_fallback(col, 'css:.ant-select', 'xpath:.//*[contains(@class, "ant-select")]')
+        if sel_idx >= len(selects):
+            return []
+        sel = selects[sel_idx]
+
+        opener = browser_session.ele_with_fallback(
+            sel,
+            'css:[role="combobox"], .ant-select-selection, .ant-select-selector',
+            'xpath:.//*[@role="combobox"] | .//*[contains(@class, "ant-select-selection")] | .//*[contains(@class, "ant-select-selector")]',
+            timeout=0.5
+        ) or sel
+        
+        target_mid = opener.rect.viewport_midpoint
+        opener.click()
+
+        try:
+            fr.wait.ele_displayed('c:.ant-select-dropdown:not(.ant-select-dropdown-hidden)', timeout=1)
+            fr.wait.ele_displayed('c:.ant-select-dropdown:not(.ant-select-dropdown-hidden) .ant-select-dropdown-menu-item', timeout=0.8)
+        except Exception:
+            pass
+
+        dropdowns = browser_session.eles_with_fallback(
+            fr,
+            'css:.ant-select-dropdown:not(.ant-select-dropdown-hidden)',
+            'xpath://*[contains(@class, "ant-select-dropdown") and not(contains(@class, "ant-select-dropdown-hidden"))]'
+        )
+        active_dropdowns = [d for d in dropdowns if d.states.is_displayed]
+        if not active_dropdowns:
+            return []
+
+        closest_dropdown = None
+        min_dist = float('inf')
+        for d in active_dropdowns:
+            d_mid = d.rect.viewport_midpoint
+            dist = abs(d_mid[0] - target_mid[0]) + abs(d_mid[1] - target_mid[1])
+            if dist < min_dist:
+                min_dist = dist
+                closest_dropdown = d
+
+        if not closest_dropdown:
+            return []
+
+        items = browser_session.eles_with_fallback(
+            closest_dropdown,
+            'css:.ant-select-item, li, .ant-select-item-option',
+            'xpath:.//*[contains(@class, "ant-select-item") or local-name()="li" or contains(@class, "ant-select-item-option")]'
+        )
+        return [(it.text or "").strip() for it in items]
+    except Exception as e:
+        logger.debug("_collect_dropdown_options 失败: %s", e)
         return []

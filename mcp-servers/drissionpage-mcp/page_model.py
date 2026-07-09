@@ -5,6 +5,7 @@ locking and exposes a stable public surface.  Keep the logic here reusable so
 aggregate tools do not call decorated MCP functions and deadlock the server RW
 lock.
 """
+
 import json
 import os
 import time
@@ -53,7 +54,6 @@ def _run_json(target, js: str, default):
         return {"ok": False, "reason": str(e)}
 
 
-
 def get_element_center(el):
     """获取元素在顶层视口的几何中心坐标。
 
@@ -68,8 +68,7 @@ def get_element_center(el):
     """
     try:
         mp = el.rect.viewport_midpoint
-        return {"cx": round(float(mp[0]), 1),
-                "cy": round(float(mp[1]), 1)}
+        return {"cx": round(float(mp[0]), 1), "cy": round(float(mp[1]), 1)}
     except Exception:
         return None
 
@@ -90,6 +89,7 @@ def get_element_coords(xpath: str, index: int = 1, timeout: float = 5):
          "tag": str, "text": str, "xpath": str} | {"ok": False, "reason": str}
     """
     from browser_session import get_tab, get_active_frame
+
     try:
         tab = get_tab()
         fr = get_active_frame(tab)
@@ -316,7 +316,9 @@ function duScanButtons(root, maxItems){
 """
 
 
-def scan_toolbar_actions(scope: str = "page", in_frame: bool = True, max_items: int = 120) -> dict:
+def scan_toolbar_actions(
+    scope: str = "page", in_frame: bool = True, max_items: int = 120
+) -> dict:
     """Scan visible page actions with disabled state and dropdown hints."""
     _, _, target = _target(in_frame=in_frame)
     scope = (scope or "page").lower()
@@ -325,17 +327,26 @@ def scan_toolbar_actions(scope: str = "page", in_frame: bool = True, max_items: 
         "page": ["toolbar", "page", "table"],
         "all": None,
     }.get(scope, ["toolbar", "page", "table"])
-    js = _COMMON_JS + """
+    js = (
+        _COMMON_JS
+        + """
 var actions = duScanButtons(document.body, MAX_ITEMS);
 var allowed = ALLOWED;
 if (allowed) actions = actions.filter(function(a){ return allowed.indexOf(a.area) >= 0; });
 return JSON.stringify({ok:true, scope:SCOPE, total:actions.length, actions:actions.slice(0, MAX_ITEMS)});
-""".replace("MAX_ITEMS", str(max_items)).replace("SCOPE", json.dumps(scope)).replace(
-        "ALLOWED", "null" if allowed is None else json.dumps(allowed, ensure_ascii=False)
+"""
+        .replace("MAX_ITEMS", str(max_items))
+        .replace("SCOPE", json.dumps(scope))
+        .replace(
+            "ALLOWED",
+            "null" if allowed is None else json.dumps(allowed, ensure_ascii=False),
+        )
     )
     data = _run_json(target, js, {"ok": False, "reason": "scan failed"})
     if isinstance(data, dict):
-        data["target"] = "iframe" if target is not browser_session.get_tab_ro() else "top"
+        data["target"] = (
+            "iframe" if target is not browser_session.get_tab_ro() else "top"
+        )
         for action in data.get("actions", []) or []:
             xpath = action.get("xpath")
             if not xpath:
@@ -366,8 +377,12 @@ return JSON.stringify({ok:true, scope:SCOPE, total:actions.length, actions:actio
     return data
 
 
-def scan_form_fields(scope: str = "page", include_hidden: bool = False,
-                     in_frame: bool = True, max_fields: int = 200) -> dict:
+def scan_form_fields(
+    scope: str = "page",
+    include_hidden: bool = False,
+    in_frame: bool = True,
+    max_fields: int = 200,
+) -> dict:
     """Scan form-like controls outside or inside overlays."""
     _, _, target = _target(in_frame=in_frame)
     selector_map = {
@@ -378,7 +393,9 @@ def scan_form_fields(scope: str = "page", include_hidden: bool = False,
         "all": "body",
     }
     selector = selector_map.get((scope or "page").lower(), scope or "body")
-    js = _COMMON_JS + """
+    js = (
+        _COMMON_JS
+        + """
 var roots = [].slice.call(document.querySelectorAll(SELECTOR));
 if (!roots.length) roots = [document.body];
 var fields = [];
@@ -386,9 +403,12 @@ for (var i = 0; i < roots.length && fields.length < MAX_FIELDS; i++) {
   fields = fields.concat(duScanFields(roots[i], INCLUDE_HIDDEN, MAX_FIELDS - fields.length));
 }
 return JSON.stringify({ok:true, scope:SCOPE, total:fields.length, fields:fields.slice(0, MAX_FIELDS)});
-""".replace("SELECTOR", json.dumps(selector)).replace("SCOPE", json.dumps(scope)).replace(
-        "MAX_FIELDS", str(max_fields)
-    ).replace("INCLUDE_HIDDEN", "true" if include_hidden else "false")
+"""
+        .replace("SELECTOR", json.dumps(selector))
+        .replace("SCOPE", json.dumps(scope))
+        .replace("MAX_FIELDS", str(max_fields))
+        .replace("INCLUDE_HIDDEN", "true" if include_hidden else "false")
+    )
     return _run_json(target, js, {"ok": False, "reason": "scan failed"})
 
 
@@ -400,7 +420,9 @@ def _scan_overlay(kind: str, max_items: int = 20) -> dict:
     overlays = []
     errors = []
     for scope, target in target_list:
-        js = _COMMON_JS + """
+        js = (
+            _COMMON_JS
+            + """
 var nodes = [].slice.call(document.querySelectorAll(OVERLAY_SELECTOR)).filter(duVisible);
 var out = [];
 for (var i = 0; i < nodes.length && out.length < MAX_ITEMS; i++) {
@@ -420,9 +442,12 @@ for (var i = 0; i < nodes.length && out.length < MAX_ITEMS; i++) {
   });
 }
 return JSON.stringify({ok:true, overlays:out});
-""".replace("OVERLAY_SELECTOR", json.dumps(overlay_selector)).replace(
-            "TITLE_SELECTOR", json.dumps(title_selector)
-        ).replace("BODY_SELECTOR", json.dumps(body_selector)).replace("MAX_ITEMS", str(max_items))
+"""
+            .replace("OVERLAY_SELECTOR", json.dumps(overlay_selector))
+            .replace("TITLE_SELECTOR", json.dumps(title_selector))
+            .replace("BODY_SELECTOR", json.dumps(body_selector))
+            .replace("MAX_ITEMS", str(max_items))
+        )
         data = _run_json(target, js, {"ok": False, "reason": "scan failed"})
         if data.get("ok"):
             for item in data.get("overlays", []):
@@ -441,15 +466,11 @@ def scan_modal(max_items: int = 20) -> dict:
     return _scan_overlay("modal", max_items=max_items)
 
 
-
-
-
-
 def scan_floats(only_visible: bool = True, include_table_data: bool = True) -> dict:
-    """扫描所有可见浮窗（modal/drawer/popover/tooltip/dropdown/message/notification）。
+    """扫描所有可见浮窗（modal/drawer/popover/tooltip/dropdown/calendar/message/notification）。
 
     单次 JS 注入完成。返回浮窗内所有操作按钮的位置（可点击）、
-    关闭按钮的 CSS 定位符（可供 click 工具使用）、以及内部表格结构。
+    关闭按钮的 CSS 定位符（可供 click 工具使用）、日历面板摘要以及内部表格结构。
 
     Args:
         only_visible: 过滤不可见元素
@@ -459,6 +480,7 @@ def scan_floats(only_visible: bool = True, include_table_data: bool = True) -> d
         {ok, count, floats: [{title, type, text, rect, scope,
             buttons: [{text, rect, selectorHint, disabled, ...}],
             closeButton: {selectorHint, rect} | null,
+            calendar: {mode, panels, selectedDates, cells, ...} | null,
             tableCount, tables: [{index, kind, headers, rowCount,
                                   data: [[str]]?}]}]}
     """
@@ -468,13 +490,102 @@ def scan_floats(only_visible: bool = True, include_table_data: bool = True) -> d
     all_floats = []
     errors = []
     for scope, target in target_list:
-        js = _COMMON_JS + """
-var nodeList = [].slice.call(document.querySelectorAll(
+        js = (
+            _COMMON_JS
+            + """
+var rawNodeList = [].slice.call(document.querySelectorAll(
   '.ant-modal, .ant-drawer, .ant-popover, .ant-tooltip, '
-  + '.ant-dropdown'
+  + '.ant-dropdown, .ant-calendar-picker-container, .ant-calendar'
 ));
+function duIsCalendarNode(el) {
+  var cls = el.className || '';
+  return /\bant-calendar-picker-container\b/.test(cls) || /\bant-calendar\b/.test(cls);
+}
+function duCalendarRoot(el) {
+  if (!el) return null;
+  var cls = el.className || '';
+  if (/\bant-calendar\b/.test(cls)) return el;
+  return el.querySelector('.ant-calendar') || el;
+}
+function duCalendarActive(el) {
+  // SCM 的 ant-calendar 打开/关闭由 DOM 挂载决定；不要用 display:none 作为唯一依据。
+  return !!(el && el.isConnected);
+}
+function duKeepFloatNode(el) {
+  if (duIsCalendarNode(el)) return duCalendarActive(el);
+  return !ONLY_VISIBLE || duVisible(el);
+}
+function duCalendarPanel(panel, side) {
+  if (!panel) return null;
+  var ye = panel.querySelector('.ant-calendar-year-select');
+  var me = panel.querySelector('.ant-calendar-month-select');
+  var title = [duCleanText(ye ? ye.textContent : ''), duCleanText(me ? me.textContent : '')]
+    .filter(Boolean).join('');
+  return {
+    side: side,
+    yearText: duCleanText(ye ? ye.textContent : ''),
+    monthText: duCleanText(me ? me.textContent : ''),
+    title: title
+  };
+}
+function duScanCalendar(el) {
+  var root = duCalendarRoot(el);
+  if (!root) return null;
+  var cls = root.className || '';
+  var isRange = /\bant-calendar-range\b/.test(cls) ||
+    !!root.querySelector('.ant-calendar-range-left,.ant-calendar-range-right');
+  var panels = [];
+  if (isRange) {
+    var left = duCalendarPanel(root.querySelector('.ant-calendar-range-left'), 'left');
+    var right = duCalendarPanel(root.querySelector('.ant-calendar-range-right'), 'right');
+    if (left) panels.push(left);
+    if (right) panels.push(right);
+  } else {
+    var single = duCalendarPanel(root, 'single');
+    if (single) panels.push(single);
+  }
+  var cells = [];
+  var selectedDates = [];
+  var cellNodes = root.querySelectorAll('td[title] .ant-calendar-date');
+  for (var ci = 0; ci < cellNodes.length && cells.length < 120; ci++) {
+    var cell = cellNodes[ci];
+    var td = cell.closest('td');
+    if (!td || !td.isConnected) continue;
+    var tdCls = td.className || '';
+    var title = td.getAttribute('title') || cell.getAttribute('title') || '';
+    var selected = /\bant-calendar-selected-date\b|\bant-calendar-selected-start-date\b|\bant-calendar-selected-end-date\b/.test(tdCls);
+    if (selected && title) selectedDates.push(title);
+    cells.push({
+      title: title,
+      text: duCleanText(cell.textContent),
+      disabled: /\bant-calendar-disabled-cell\b/.test(tdCls) || duDisabled(cell),
+      selected: selected,
+      today: /\bant-calendar-today\b/.test(tdCls),
+      inView: !(/\bant-calendar-last-month-cell\b|\bant-calendar-next-month-btn-day\b|\bant-calendar-next-month-cell\b/.test(tdCls)),
+      selectorHint: duCssHint(cell),
+      xpath: duXPath(cell),
+      center: frCenter(cell),
+      rect: frRect(cell)
+    });
+  }
+  return {
+    mode: isRange ? 'range' : 'single',
+    panels: panels,
+    selectedDates: selectedDates,
+    cellCount: cells.length,
+    cells: cells,
+    hasTimePicker: !!root.querySelector('.ant-calendar-time-picker,.ant-time-picker-panel'),
+    hasFooter: !!root.querySelector('.ant-calendar-footer')
+  };
+}
+var nodeList = [];
+rawNodeList.forEach(function(n){
+  if (!n || nodeList.indexOf(n) >= 0) return;
+  if (/\bant-calendar\b/.test(n.className || '') && n.closest('.ant-calendar-picker-container')) return;
+  nodeList.push(n);
+});
 var allWrappers = [].slice.call(document.querySelectorAll('.ant-table-wrapper'));
-var nodes = ONLY_VISIBLE ? nodeList.filter(duVisible) : nodeList;
+var nodes = nodeList.filter(duKeepFloatNode);
 // iframe 偏移：叠加到坐标使结果始终为 top-viewport 坐标
 var ifrOff = {left:0, top:0};
 var _ifrEl = window.frameElement;
@@ -491,9 +602,15 @@ for (var i = 0; i < nodes.length; i++) {
   else if (/\\bant-popover\\b/.test(cls)) kind = 'popover';
   else if (/\\bant-tooltip\\b/.test(cls)) kind = 'tooltip';
   else if (/\\bant-dropdown\\b/.test(cls)) kind = 'dropdown';
+  else if (duIsCalendarNode(n)) kind = 'calendar';
+  var calendar = kind === 'calendar' ? duScanCalendar(n) : null;
   // 标题提取
   var titleEl = n.querySelector('.ant-modal-title, .ant-drawer-title, .ant-modal-header');
   var title = titleEl ? duCleanText(titleEl.textContent) : '';
+  if (!title && calendar) {
+    var panelTitle = (calendar.panels || []).map(function(p){ return p.title; }).filter(Boolean).join(' - ');
+    title = (calendar.mode === 'range' ? '日期范围选择器' : '日期选择器') + (panelTitle ? ' ' + panelTitle : '');
+  }
   if (!title) {
     var raw = n.innerText || n.textContent || '';
     var parts = raw.split(/\\n/).map(function(s){ return s.trim(); }).filter(function(s){ return s.length > 0; });
@@ -616,12 +733,15 @@ for (var i = 0; i < nodes.length; i++) {
   out.push({
     title: title, type: kind, text: text.slice(0, 800),
     buttons: buttons, fields: fields, closeButton: closeButton,
+    calendar: calendar,
     center: frCenter(n), rect: frRect(n)
   });
 }
 return JSON.stringify({ok:true, floats:out});
 """.replace("ONLY_VISIBLE", "true" if only_visible else "false").replace(
-    "INCLUDE_TABLE_DATA", "true" if include_table_data else "false")
+                "INCLUDE_TABLE_DATA", "true" if include_table_data else "false"
+            )
+        )
         data = _run_json(target, js, {"ok": False, "reason": "scan_floats JS failed"})
         if data.get("ok"):
             for item in data.get("floats", []):
@@ -632,8 +752,11 @@ return JSON.stringify({ok:true, floats:out});
 
     # --- 短寿命 toast 检测（message/notification，点击后延迟 ~100ms 才渲染）---
     import observe
-    for detector, ttype in [(observe.detect_message, "message"),
-                             (observe.detect_notification, "notification")]:
+
+    for detector, ttype in [
+        (observe.detect_message, "message"),
+        (observe.detect_notification, "notification"),
+    ]:
         toast = detector(timeout=0.5)
         if toast.get("type") == ttype:
             all_floats.append({
@@ -649,12 +772,18 @@ return JSON.stringify({ok:true, floats:out});
                 "center": {"cx": 0, "cy": 0},
                 "rect": {"x": 0, "y": 0, "width": 0, "height": 0},
             })
-    result = {"ok": True, "count": len(all_floats), "floats": all_floats,
-              "has_active_frame": fr is not None, "frame_url": frame_url,
-              "active_tab": browser_session.get_active_tab_name()}
+    result = {
+        "ok": True,
+        "count": len(all_floats),
+        "floats": all_floats,
+        "has_active_frame": fr is not None,
+        "frame_url": frame_url,
+        "active_tab": browser_session.get_active_tab_name(),
+    }
     if errors:
         result["errors"] = errors
     return result
+
 
 def scan_drawer(max_items: int = 20) -> dict:
     return _scan_overlay("drawer", max_items=max_items)
@@ -662,7 +791,9 @@ def scan_drawer(max_items: int = 20) -> dict:
 
 def scan_pagination(in_frame: bool = True) -> dict:
     _, _, target = _target(in_frame=in_frame)
-    js = _COMMON_JS + r"""
+    js = (
+        _COMMON_JS
+        + r"""
 var pages = [];
 var nodes = [].slice.call(document.querySelectorAll('.ant-pagination')).filter(duVisible);
 nodes.forEach(function(p, idx){
@@ -687,11 +818,17 @@ nodes.forEach(function(p, idx){
 });
 return JSON.stringify({ok:true, count:pages.length, paginations:pages});
 """
+    )
     return _run_json(target, js, {"ok": False, "reason": "scan failed"})
 
 
-def select_option(field_name: str, option_text: str, select_index: int = 0,
-                  scope: str = "auto", timeout: float = 5.0) -> dict:
+def select_option(
+    field_name: str,
+    option_text: str,
+    select_index: int = 0,
+    scope: str = "auto",
+    timeout: float = 5.0,
+) -> dict:
     """Select an Ant Design option by field label and visible option text."""
     if not option_text:
         return {"ok": False, "reason": "option_text is required"}
@@ -705,99 +842,108 @@ def select_option(field_name: str, option_text: str, select_index: int = 0,
     if not candidates:
         candidates.append(("top", tab))
 
-    open_js = _COMMON_JS + """
-var FIELD = FIELD_NAME;
-var SELECT_INDEX = SELECT_INDEX_VALUE;
-function findContainer(){
-  var roots = [].slice.call(document.querySelectorAll(
-    '.ant-form-item,.legions-pro-quick-filter-row > div[class*="ant-col-"],[class*="ant-col-"],body'
-  ));
-  if (!FIELD) {
-    return roots.find(function(r){ return r.querySelector && r.querySelector('.ant-select:not(.ant-select-disabled)'); }) || document.body;
-  }
-  return roots.find(function(r){
-    return r.querySelector && r.querySelector('.ant-select:not(.ant-select-disabled)') &&
-      duCleanText(r.textContent).indexOf(FIELD) >= 0;
-  });
-}
-var c = findContainer();
-if (!c) return JSON.stringify({ok:false, reason:'field not found: ' + FIELD});
-var selects = [].slice.call(c.querySelectorAll('.ant-select:not(.ant-select-disabled)'));
-if (!selects.length) return JSON.stringify({ok:false, reason:'select not found in field: ' + FIELD});
-var sel = selects[Math.min(SELECT_INDEX, selects.length - 1)];
-var opener = sel.querySelector('[role="combobox"],.ant-select-selection,.ant-select-selector') || sel;
-var r = opener.getBoundingClientRect();
-opener.dispatchEvent(new MouseEvent('mousedown', {bubbles:true, cancelable:true, view:window}));
-opener.dispatchEvent(new MouseEvent('mouseup', {bubbles:true, cancelable:true, view:window}));
-opener.click();
-return JSON.stringify({ok:true, field:FIELD, selectIndex:SELECT_INDEX, rect:{left:r.left, top:r.top, height:r.height, width:r.width}});
-""".replace("FIELD_NAME", json.dumps(field_name or "", ensure_ascii=False)).replace(
-        "SELECT_INDEX_VALUE", str(max(0, select_index))
-    )
-
-    last_open = None
-    used_scope = ""
     target = None
+    select_element = None
+    used_scope = ""
+
     for scope_name, candidate in candidates:
-        opened = _run_json(candidate, open_js, {"ok": False, "reason": "open failed"})
-        last_open = opened
-        if opened.get("ok"):
-            used_scope = scope_name
-            target = candidate
-            break
-    if target is None:
-        return last_open or {"ok": False, "reason": "select open failed"}
+        try:
+            if field_name:
+                container = candidate.ele(
+                    f"xpath://div[contains(@class, 'ant-form-item') or contains(@class, 'ant-col')]"
+                    f"[descendant::label[contains(text(), '{field_name}')]]",
+                    timeout=1.0
+                )
+                if not container:
+                    container = candidate.ele(f"text:{field_name}", timeout=1.0)
+                    if container:
+                        container = container.parent()
+            else:
+                container = candidate
+
+            if container:
+                selects = container.eles('css:.ant-select:not(.ant-select-disabled)')
+                if selects:
+                    select_element = selects[min(select_index, len(selects) - 1)]
+                    target = candidate
+                    used_scope = scope_name
+                    break
+        except Exception:
+            pass
+
+    if not select_element or not target:
+        return {"ok": False, "reason": f"select not found for field: {field_name}"}
 
     try:
-        target.wait.ele_displayed('c:.ant-select-dropdown:not(.ant-select-dropdown-hidden)', timeout=min(timeout, 2))
-    except Exception:
-        pass
+        # 打开下拉菜单
+        opener = select_element.ele('css:[role="combobox"], .ant-select-selection, .ant-select-selector', timeout=0.5) or select_element
+        opener.click()
+        
+        # 等待下拉菜单显示
+        dropdown = target.wait.ele_displayed(
+            "c:.ant-select-dropdown:not(.ant-select-dropdown-hidden)",
+            timeout=min(timeout, 2.0),
+            raise_err=False
+        )
+        if not dropdown:
+            return {"ok": False, "reason": "dropdown not visible after click"}
 
-    search_js = """
-var text = OPTION_TEXT;
-var input = document.querySelector('.ant-select-dropdown:not(.ant-select-dropdown-hidden) input,' +
-  '.ant-select-dropdown:not(.ant-select-dropdown-hidden) .ant-select-search__field');
-if (input) {
-  input.focus();
-  input.value = text;
-  input.dispatchEvent(new Event('input', {bubbles:true}));
-  input.dispatchEvent(new Event('change', {bubbles:true}));
-}
-return JSON.stringify({ok:true, hasSearch:!!input});
-""".replace("OPTION_TEXT", json.dumps(option_text, ensure_ascii=False))
-    _run_json(target, search_js, {"ok": True})
-    time.sleep(min(max(timeout, 0), 0.2))
+        # 如果有搜索输入框，输入过滤文本
+        search_input = dropdown.ele("css:input, .ant-select-search__field", timeout=0.5)
+        if search_input:
+            search_input.input(option_text)
+            time.sleep(0.3)
 
-    click_js = _COMMON_JS + """
-var OPTION = OPTION_TEXT;
-var drops = [].slice.call(document.querySelectorAll('.ant-select-dropdown:not(.ant-select-dropdown-hidden)')).filter(duVisible);
-var items = [];
-drops.forEach(function(d){
-  items = items.concat([].slice.call(d.querySelectorAll('.ant-select-dropdown-menu-item,.ant-select-item-option')).filter(duVisible));
-});
-var enabled = items.filter(function(it){
-  return it.className.indexOf('disabled') < 0 && it.getAttribute('aria-disabled') !== 'true';
-});
-var exact = enabled.find(function(it){ return duCleanText(it.textContent) === OPTION; });
-var match = exact || enabled.find(function(it){ return duCleanText(it.textContent).indexOf(OPTION) >= 0; });
-if (!match) {
-  return JSON.stringify({ok:false, reason:'option not found: ' + OPTION,
-    available: enabled.map(function(it){return duCleanText(it.textContent);}).filter(Boolean).slice(0, 50)});
-}
-var text = duCleanText(match.textContent);
-match.dispatchEvent(new MouseEvent('mousedown', {bubbles:true, cancelable:true, view:window}));
-match.dispatchEvent(new MouseEvent('mouseup', {bubbles:true, cancelable:true, view:window}));
-match.click();
-return JSON.stringify({ok:true, selected:text, exact:!!exact});
-""".replace("OPTION_TEXT", json.dumps(option_text, ensure_ascii=False))
-    result = _run_json(target, click_js, {"ok": False, "reason": "option click failed"})
-    if result.get("ok"):
-        result["scope"] = used_scope
-        result["field"] = field_name
-    return result
+        # 获取所有可见下拉框选项
+        dropdowns = target.eles("css:.ant-select-dropdown:not(.ant-select-dropdown-hidden)")
+        options = []
+        for d in dropdowns:
+            if d.states.is_displayed:
+                options.extend(d.eles("css:.ant-select-dropdown-menu-item, .ant-select-item-option"))
+
+        # 筛选有效项
+        enabled_options = []
+        for opt in options:
+            if opt.states.is_displayed and opt.states.is_enabled and opt.attrs.get("aria-disabled") != "true":
+                enabled_options.append(opt)
+
+        # 匹配文本（优先精确匹配，其次模糊匹配）
+        exact_match = None
+        partial_match = None
+        for opt in enabled_options:
+            text = (opt.text or "").strip()
+            if text == option_text:
+                exact_match = opt
+                break
+            elif option_text in text and partial_match is None:
+                partial_match = opt
+
+        match_opt = exact_match or partial_match
+        if not match_opt:
+            available = [(opt.text or "").strip() for opt in enabled_options if opt.text]
+            return {
+                "ok": False,
+                "reason": f"option not found: {option_text}",
+                "available": available[:50]
+            }
+
+        selected_text = (match_opt.text or "").strip()
+        match_opt.click()
+
+        return {
+            "ok": True,
+            "selected": selected_text,
+            "exact": exact_match is not None,
+            "scope": used_scope,
+            "field": field_name
+        }
+    except Exception as e:
+        return {"ok": False, "reason": f"select failed: {str(e)}"}
 
 
-def _read_vtable_rows(max_columns: int = 50, max_rows: int = 500, raw: bool = False) -> dict:
+def _read_vtable_rows(
+    max_columns: int = 50, max_rows: int = 500, raw: bool = False
+) -> dict:
     scan = vtable.scan_vtable_columns(max_columns)
     if not scan.get("ok"):
         return scan
@@ -809,7 +955,11 @@ def _read_vtable_rows(max_columns: int = 50, max_rows: int = 500, raw: bool = Fa
         if not title or title in seen:
             continue
         seen.add(title)
-        columns.append({"title": title, "col": col.get("col"), "bodyBehavior": col.get("bodyBehavior", "")})
+        columns.append({
+            "title": title,
+            "col": col.get("col"),
+            "bodyBehavior": col.get("bodyBehavior", ""),
+        })
 
     values_by_title = []
     row_count = 0
@@ -841,33 +991,37 @@ def _read_vtable_rows(max_columns: int = 50, max_rows: int = 500, raw: bool = Fa
 
 
 def _click_next_page(target, table_index: int = 0) -> dict:
-    js = r"""
-var TI = TABLE_INDEX;
-function visible(el){
-  if(!el) return false;
-  var s = getComputedStyle(el);
-  var r = el.getBoundingClientRect();
-  return s.display !== 'none' && s.visibility !== 'hidden' && r.width > 0 && r.height > 0;
-}
-var wrappers = [].slice.call(document.querySelectorAll('.ant-table-wrapper'));
-var root = wrappers[TI] || document;
-var next = root.querySelector('.ant-pagination-next');
-if (!next) return JSON.stringify({ok:false, reason:'no pagination next'});
-if (next.className.indexOf('ant-pagination-disabled') >= 0 || next.getAttribute('aria-disabled') === 'true') {
-  return JSON.stringify({ok:false, done:true, reason:'next disabled'});
-}
-var btn = next.querySelector('a,button') || next;
-btn.dispatchEvent(new MouseEvent('mousedown', {bubbles:true, cancelable:true, view:window}));
-btn.dispatchEvent(new MouseEvent('mouseup', {bubbles:true, cancelable:true, view:window}));
-btn.click();
-return JSON.stringify({ok:true});
-""".replace("TABLE_INDEX", str(table_index))
-    return _run_json(target, js, {"ok": False, "reason": "next click failed"})
+    try:
+        wrappers = target.eles("css:.ant-table-wrapper")
+        if table_index < len(wrappers):
+            root = wrappers[table_index]
+        else:
+            root = target
+
+        next_btn = root.ele("css:.ant-pagination-next", timeout=1.0)
+        if not next_btn:
+            return {"ok": False, "reason": "no pagination next"}
+
+        disabled = "ant-pagination-disabled" in (next_btn.attrs.get("class") or "") or next_btn.attrs.get("aria-disabled") == "true"
+        if disabled:
+            return {"ok": False, "done": True, "reason": "next disabled"}
+
+        btn = next_btn.ele("css:a, button", timeout=0.3) or next_btn
+        btn.click()
+        return {"ok": True}
+    except Exception as e:
+        return {"ok": False, "reason": f"next click failed: {str(e)}"}
 
 
-def get_all_table_data(kind: str = "auto", table_index: int = 0, max_pages: int = 1,
-                       max_rows: int = 1000, max_columns: int = 50,
-                       raw: bool = False, filename: str = None) -> dict:
+def get_all_table_data(
+    kind: str = "auto",
+    table_index: int = 0,
+    max_pages: int = 1,
+    max_rows: int = 1000,
+    max_columns: int = 50,
+    raw: bool = False,
+    filename: str = None,
+) -> dict:
     """Read table rows, optionally walking HTML pagination."""
     kind = (kind or "auto").lower()
     if kind not in {"auto", "html", "vtable"}:
@@ -896,7 +1050,9 @@ def get_all_table_data(kind: str = "auto", table_index: int = 0, max_pages: int 
     return result
 
 
-def _read_html_pages(table_index: int = 0, max_pages: int = 1, max_rows: int = 1000) -> dict:
+def _read_html_pages(
+    table_index: int = 0, max_pages: int = 1, max_rows: int = 1000
+) -> dict:
     tab, fr, target = _target(in_frame=True)
     headers = []
     rows = []
@@ -937,28 +1093,39 @@ def _read_html_pages(table_index: int = 0, max_pages: int = 1, max_rows: int = 1
 def click_html_row_selection(row: int = 0, table_index: int = 0) -> dict:
     """Click a row checkbox in an Ant Design HTML table."""
     _, _, target = _target(in_frame=True)
-    js = r"""
-var TI = TABLE_INDEX, ROW = ROW_INDEX;
-var wrapper = document.querySelectorAll('.ant-table-wrapper')[TI];
-if (!wrapper) return JSON.stringify({ok:false, reason:'table not found'});
-var rows = wrapper.querySelectorAll('tbody > tr.ant-table-row');
-if (!rows.length) rows = wrapper.querySelectorAll('tbody > tr');
-var tr = rows[ROW];
-if (!tr) return JSON.stringify({ok:false, reason:'row not found'});
-var cb = tr.querySelector('.ant-checkbox-wrapper,input[type="checkbox"],.ant-checkbox');
-if (!cb) return JSON.stringify({ok:false, reason:'row checkbox not found'});
-var target = cb.querySelector('input[type="checkbox"]') || cb;
-target.dispatchEvent(new MouseEvent('mousedown', {bubbles:true, cancelable:true, view:window}));
-target.dispatchEvent(new MouseEvent('mouseup', {bubbles:true, cancelable:true, view:window}));
-target.click();
-return JSON.stringify({ok:true, row:ROW, table_index:TI});
-""".replace("TABLE_INDEX", str(table_index)).replace("ROW_INDEX", str(row))
-    return _run_json(target, js, {"ok": False, "reason": "row selection click failed"})
+    wrappers = target.eles('css:.ant-table-wrapper')
+    if not wrappers or table_index >= len(wrappers):
+        return {"ok": False, "reason": "table not found"}
+    wrapper = wrappers[table_index]
+
+    rows = wrapper.eles('css:tbody > tr.ant-table-row')
+    if not rows:
+        rows = wrapper.eles('css:tbody > tr')
+    if not rows or row >= len(rows):
+        return {"ok": False, "reason": "row not found"}
+    tr = rows[row]
+
+    cb = tr.ele('css:.ant-checkbox-wrapper', timeout=0) or tr.ele('css:input[type="checkbox"]', timeout=0) or tr.ele('css:.ant-checkbox', timeout=0)
+    if not cb:
+        return {"ok": False, "reason": "row checkbox not found"}
+
+    target_ele = cb.ele('css:input[type="checkbox"]', timeout=0) or cb
+    try:
+        target_ele.click()
+    except Exception as e:
+        return {"ok": False, "reason": f"click failed: {e}"}
+
+    return {"ok": True, "row": row, "table_index": table_index}
 
 
-def capture_page_model(include_filters: bool = True, include_tables: bool = True,
-                       include_table_data: bool = True, max_table_rows: int = 80,
-                       max_elements: int = 120, filename: str = None) -> dict:
+def capture_page_model(
+    include_filters: bool = True,
+    include_tables: bool = True,
+    include_table_data: bool = True,
+    max_table_rows: int = 80,
+    max_elements: int = 120,
+    filename: str = None,
+) -> dict:
     """Capture a structured snapshot of the active business page."""
     tab = browser_session.get_tab()
     fr = browser_session.get_active_frame(tab)
@@ -1004,14 +1171,20 @@ def capture_page_model(include_filters: bool = True, include_tables: bool = True
                 model["tables"] = {"ok": True, "kind": "vtable", "scan": vt}
             else:
                 ht = html_table.scan_html_table()
-                model["tables"] = {"ok": ht.get("ok", False), "kind": "html", "scan": ht,
-                                   "vtable_reason": vt.get("reason", "")}
+                model["tables"] = {
+                    "ok": ht.get("ok", False),
+                    "kind": "html",
+                    "scan": ht,
+                    "vtable_reason": vt.get("reason", ""),
+                }
         except Exception as e:
             model["tables"] = {"ok": False, "reason": str(e)}
 
     if include_table_data:
         try:
-            model["table_data"] = get_all_table_data(kind="auto", max_pages=1, max_rows=max_table_rows)
+            model["table_data"] = get_all_table_data(
+                kind="auto", max_pages=1, max_rows=max_table_rows
+            )
         except Exception as e:
             model["table_data"] = {"ok": False, "reason": str(e)}
 

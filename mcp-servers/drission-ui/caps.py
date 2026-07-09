@@ -31,7 +31,7 @@ CAP_GROUPS = {
         # 页面理解
         "scan_page_elements", "find_elements", "find_batch", "dom_tree",
         "capture_page_model", "scan_toolbar_actions", "scan_form_fields",
-        "scan_modal", "scan_drawer", "scan_pagination", "scan_floats",
+        "observe_snapshot", "scan_pagination",
         # 调试
         "screenshot", "close_modal", "get_element_coords",
         # 新增：浏览器管理（借鉴 Playwright MCP）
@@ -57,7 +57,7 @@ CAP_GROUPS = {
     ],
     "observe": [
         # 观察器
-        "observe_start", "observe_wait", "explore_action",
+        "observe_snapshot", "observe_start", "observe_wait", "explore_action",
     ],
     "network": [
         # 网络监听
@@ -98,8 +98,6 @@ def is_tool_enabled(tool_name: str) -> bool:
     """检查工具是否在启用的分组中"""
     if tool_name == "browser_list_caps":
         return True
-    if "all" in ENABLED_CAPS or ENABLED_CAPS == set(CAP_GROUPS.keys()):
-        return True
     for cap, tools in CAP_GROUPS.items():
         if cap in ENABLED_CAPS and tool_name in tools:
             return True
@@ -131,6 +129,7 @@ _INTERNAL_TOOLS = {
     "get_column_values", "get_cell_rect", "scroll_to_cell", "click_cell",
     "resize_column", "detect_modal", "detect_notification",
     "detect_message", "detect_url_change", "detect_tab_change",
+    "scan_modal", "scan_drawer", "scan_floats",
     "scan_html_table", "get_html_table_values", "click_html_table_cell",
     "hover_html_table_cell", "get_html_table_data",
 }

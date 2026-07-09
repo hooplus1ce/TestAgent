@@ -30,7 +30,18 @@ logger = logging.getLogger("drission-ui")
 _SEL_MODAL = ".ant-modal-content"
 _SEL_NOTIFICATION = ".ant-notification-notice"
 _SEL_MESSAGE = ".ant-message-notice"
-_ALL_SELS = [_SEL_MODAL, _SEL_NOTIFICATION, _SEL_MESSAGE]
+_ALL_SELS = [
+    _SEL_MODAL,
+    ".ant-drawer",
+    ".ant-popover",
+    ".ant-tooltip",
+    ".ant-dropdown",
+    ".ant-select-dropdown",
+    ".ant-calendar-picker-container",
+    ".ant-calendar",
+    _SEL_NOTIFICATION,
+    _SEL_MESSAGE,
+]
 
 # ---- MutationObserver 注入脚本（在 target.document 内安装；含初始扫描，捕获已存在的信号）----
 # 注意：必须用顶层 return（不能用 IIFE），否则 DrissionPage run_js 拿不到返回值
@@ -38,32 +49,111 @@ _INSTALL_OBSERVER_JS = r"""
 if (window.__du_obs) { try{ window.__du_obs.disconnect(); }catch(e){} }
 window.__du_signals = [];
 window.__du_t0 = Date.now();
-var SELS = ['.ant-modal-content','.ant-notification-notice','.ant-message-notice'];
+var SELS = [
+  '.ant-modal-content',
+  '.ant-drawer',
+  '.ant-popover',
+  '.ant-tooltip',
+  '.ant-dropdown',
+  '.ant-select-dropdown',
+  '.ant-calendar-picker-container',
+  '.ant-calendar',
+  '.ant-notification-notice',
+  '.ant-message-notice'
+];
 var scope = (window.top === window) ? 'top' : 'iframe';
+function cleanText(t){ return (t || '').replace(/\s+/g, ' ').trim(); }
+function rectOf(el){
+  var r = el.getBoundingClientRect();
+  return {
+    x: Math.round(r.left * 10) / 10,
+    y: Math.round(r.top * 10) / 10,
+    width: Math.round(r.width * 10) / 10,
+    height: Math.round(r.height * 10) / 10
+  };
+}
+function buttonTexts(el){
+  return [].slice.call(el.querySelectorAll('button,.ant-btn,[role="button"],a[href]'))
+    .map(function(b){ return cleanText(b.textContent || b.getAttribute('aria-label') || b.getAttribute('title') || ''); })
+    .filter(Boolean)
+    .slice(0, 20);
+}
+function optionTexts(el){
+  return [].slice.call(el.querySelectorAll(
+    '.ant-dropdown-menu-item,.ant-select-dropdown-menu-item,.ant-select-item-option,li,[role="option"]'
+  )).map(function(i){ return cleanText(i.textContent); }).filter(Boolean).slice(0, 50);
+}
+function isCalendarNode(el){
+  var cls = el.className || ''; if (typeof cls !== 'string') cls = '';
+  return cls.indexOf('ant-calendar-picker-container') >= 0 || cls.indexOf('ant-calendar') >= 0;
+}
 function classify(el){
   var cls = el.className || ''; if (typeof cls !== 'string') cls = '';
   if (cls.indexOf('ant-modal-content') >= 0) {
     var isConfirm = !!el.querySelector('.ant-confirm-body');
     var title = el.querySelector('.ant-modal-title');
     var body = el.querySelector('.ant-modal-body');
-    var btns = [].slice.call(el.querySelectorAll('.ant-btn')).map(function(b){return (b.textContent||'').trim();}).filter(Boolean);
+    var btns = buttonTexts(el);
     return {type: isConfirm ? 'confirm' : 'interactive', scope: scope,
-            title: title ? (title.textContent||'').trim() : '',
-            content: body ? (body.textContent||'').trim().slice(0,200) : '',
-            buttons: btns, hasClose: !!el.querySelector('.ant-modal-close')};
+            title: title ? cleanText(title.textContent) : '',
+            content: body ? cleanText(body.textContent).slice(0,200) : '',
+            buttons: btns, hasClose: !!el.querySelector('.ant-modal-close'),
+            rect: rectOf(el)};
+  }
+  if (cls.indexOf('ant-drawer') >= 0) {
+    var dt = el.querySelector('.ant-drawer-title');
+    var db = el.querySelector('.ant-drawer-body');
+    return {type:'drawer', scope:scope, title: dt ? cleanText(dt.textContent) : '',
+            content: db ? cleanText(db.textContent).slice(0,200) : '',
+            buttons: buttonTexts(el), hasClose: !!el.querySelector('.ant-drawer-close'),
+            rect: rectOf(el)};
+  }
+  if (cls.indexOf('ant-calendar-picker-container') >= 0 || cls.indexOf('ant-calendar') >= 0) {
+    var root = cls.indexOf('ant-calendar') >= 0 ? el : (el.querySelector('.ant-calendar') || el);
+    var isRange = (root.className || '').indexOf('ant-calendar-range') >= 0 ||
+      !!root.querySelector('.ant-calendar-range-left,.ant-calendar-range-right');
+    var ye = root.querySelector('.ant-calendar-year-select');
+    var me = root.querySelector('.ant-calendar-month-select');
+    var cells = [].slice.call(root.querySelectorAll('td[title] .ant-calendar-date')).map(function(c){
+      var td = c.closest('td');
+      return {title: td ? (td.getAttribute('title') || '') : '', text: cleanText(c.textContent)};
+    }).filter(function(c){ return c.title || c.text; }).slice(0, 80);
+    return {type:'calendar', scope:scope, mode:isRange ? 'range' : 'single',
+            title: [cleanText(ye ? ye.textContent : ''), cleanText(me ? me.textContent : '')].filter(Boolean).join(''),
+            cellCount: cells.length, cells: cells, rect: rectOf(el)};
+  }
+  if (cls.indexOf('ant-select-dropdown') >= 0) {
+    return {type:'select-dropdown', scope:scope, options: optionTexts(el), rect: rectOf(el)};
+  }
+  if (cls.indexOf('ant-dropdown') >= 0) {
+    return {type:'dropdown', scope:scope, options: optionTexts(el), rect: rectOf(el)};
+  }
+  if (cls.indexOf('ant-popover') >= 0) {
+    var pt = el.querySelector('.ant-popover-title');
+    var pc = el.querySelector('.ant-popover-inner-content');
+    return {type:'popover', scope:scope, title: pt ? cleanText(pt.textContent) : '',
+            content: pc ? cleanText(pc.textContent).slice(0,200) : cleanText(el.textContent).slice(0,200),
+            buttons: buttonTexts(el), rect: rectOf(el)};
+  }
+  if (cls.indexOf('ant-tooltip') >= 0) {
+    var ti = el.querySelector('.ant-tooltip-inner');
+    return {type:'tooltip', scope:scope, content: ti ? cleanText(ti.textContent).slice(0,200) : cleanText(el.textContent).slice(0,200),
+            rect: rectOf(el)};
   }
   if (cls.indexOf('ant-notification-notice') >= 0) {
     var m = el.querySelector('.ant-notification-notice-message');
     var d = el.querySelector('.ant-notification-notice-description');
     return {type:'notification', scope:scope,
-            message: ((m ? m.textContent : '') + (d ? (' ' + (d.textContent||'')) : '')).trim()};
+            message: cleanText((m ? m.textContent : '') + (d ? (' ' + (d.textContent||'')) : '')),
+            rect: rectOf(el)};
   }
   if (cls.indexOf('ant-message-notice') >= 0) {
     var c = el.querySelector('.ant-message-notice-content');
     var kind = '';
     var cc = el.querySelector('[class*="ant-message-"]');
     if (cc) { var mm = (cc.className||'').match(/ant-message-(success|info|warning|error|loading)/); if (mm) kind = mm[1]; }
-    return {type:'message', scope:scope, kind:kind, message: c ? (c.textContent||'').trim() : ''};
+    return {type:'message', scope:scope, kind:kind, message: c ? cleanText(c.textContent) : '',
+            rect: rectOf(el)};
   }
   return null;
 }
@@ -80,15 +170,20 @@ function isVis(el){
   var r = el.getBoundingClientRect();
   return r.width > 0 && r.height > 0;
 }
+function isActiveSignal(el){
+  // 本系统 ant-calendar 打开/关闭由 DOM 挂载决定，不以 display:none 作为唯一依据。
+  if (isCalendarNode(el)) return !!(el && el.isConnected);
+  return isVis(el);
+}
 function signalFromNode(n){
   if (!n || n.nodeType !== 1) return null;
   for (var k=0;k<SELS.length;k++){
-    if (n.matches && n.matches(SELS[k]) && isVis(n)) return classify(n);
+    if (n.matches && n.matches(SELS[k]) && isActiveSignal(n)) return classify(n);
   }
   if (n.querySelector) {
     for (var k=0;k<SELS.length;k++){
       var e = n.querySelector(SELS[k]);
-      if (e && isVis(e)) return classify(e);
+      if (e && isActiveSignal(e)) return classify(e);
     }
   }
   return null;
@@ -97,7 +192,7 @@ function signalFromNode(n){
 for (var i=0;i<SELS.length;i++){
   var els = document.querySelectorAll(SELS[i]);
   for (var j=0;j<els.length;j++){
-    if (!isVis(els[j])) continue;
+    if (!isActiveSignal(els[j])) continue;
     var s0 = classify(els[j]); if (s0) { s0.elapsedMs = 0; window.__du_signals.push(s0); break; }
   }
   if (window.__du_signals.length) break;
@@ -173,12 +268,28 @@ _session_lock = threading.Lock()
 def _build_session(signals, listen_targets, timeout_for_net=None):
     """安装 MutationObserver + 启动网络监听，写入 _session。返回 session dict。"""
     if signals is None:
-        signals = ["modal", "notification", "message", "tab", "url"]
+        signals = ["overlay", "notification", "message", "tab", "url"]
     sigset = set(s.lower() for s in signals)
 
     dom_types = set()
+    overlay_types = {
+        "interactive", "confirm", "drawer", "popover", "tooltip",
+        "dropdown", "select-dropdown", "calendar",
+    }
+    if "overlay" in sigset:
+        dom_types |= overlay_types
     if "modal" in sigset:
         dom_types |= {"interactive", "confirm"}
+    if "drawer" in sigset:
+        dom_types.add("drawer")
+    if "popover" in sigset:
+        dom_types.add("popover")
+    if "tooltip" in sigset:
+        dom_types.add("tooltip")
+    if "dropdown" in sigset:
+        dom_types |= {"dropdown", "select-dropdown"}
+    if "calendar" in sigset:
+        dom_types.add("calendar")
     if "notification" in sigset:
         dom_types.add("notification")
     if "message" in sigset:
@@ -316,6 +427,53 @@ def _poll_once(sess, now):
     return None
 
 
+def observe_snapshot(only_visible: bool = True, include_table_data: bool = False) -> dict:
+    """统一观察器快照：复用结构化浮层扫描能力，作为当前 UI 状态的唯一推荐读取入口。
+
+    返回 overlays 字段，覆盖 modal/drawer/popover/tooltip/dropdown/calendar/message/notification。
+    scan_floats 继续作为内部兼容实现保留，但外部模型应优先调用本工具。
+    """
+    try:
+        import page_model
+
+        data = page_model.scan_floats(
+            only_visible=only_visible,
+            include_table_data=include_table_data,
+        )
+        overlays = data.get("floats", []) if isinstance(data, dict) else []
+        return {
+            "ok": bool(data.get("ok", False)) if isinstance(data, dict) else False,
+            "type": "snapshot",
+            "count": len(overlays),
+            "overlays": overlays,
+            "page": {
+                "active_tab": data.get("active_tab", "") if isinstance(data, dict) else "",
+                "has_active_frame": data.get("has_active_frame", False) if isinstance(data, dict) else False,
+                "frame_url": data.get("frame_url", "") if isinstance(data, dict) else "",
+            },
+            "source": "scan_floats",
+        }
+    except Exception as e:
+        logger.debug("observe_snapshot 失败: %s", e)
+        return {"ok": False, "type": "snapshot", "count": 0, "overlays": [], "reason": str(e)}
+
+
+def _attach_snapshot(result: dict, include_snapshot: bool, include_table_data: bool = False) -> dict:
+    if not include_snapshot:
+        return result
+    try:
+        result["snapshot_after"] = observe_snapshot(include_table_data=include_table_data)
+    except Exception as e:
+        result["snapshot_after"] = {
+            "ok": False,
+            "type": "snapshot",
+            "count": 0,
+            "overlays": [],
+            "reason": str(e),
+        }
+    return result
+
+
 def observe_start(signals=None, listen_targets=None) -> dict:
     """两段式观察器·启动：**点击前**调用，安装 MutationObserver + 网络监听，立即返回。
     observer 在点击前就已监听，消除「点击→观察」调用间隙（agent 思考时间可能 > toast 寿命），
@@ -324,8 +482,9 @@ def observe_start(signals=None, listen_targets=None) -> dict:
     必须配对调用 observe_wait() 读取信号并清理（否则 observer 泄漏）。
 
     Args:
-        signals: 监听信号类型列表，默认 ['modal','notification','message','tab','url']。
-                 可选：'modal'/'notification'/'message'/'tab'/'url'/'network'。
+        signals: 监听信号类型列表，默认 ['overlay','notification','message','tab','url']。
+                 可选：'overlay'/'modal'/'drawer'/'dropdown'/'calendar'/
+                 'notification'/'message'/'tab'/'url'/'network'。
         listen_targets: 网络监听 URL 特征（逗号分隔）；仅 signals 含 'network' 时生效。
 
     Returns:
@@ -341,32 +500,40 @@ def observe_start(signals=None, listen_targets=None) -> dict:
             "base_url": sess["base_url"], "base_tab_count": sess["base_tab_count"]}
 
 
-def observe_wait(timeout: float = 8.0, poll_interval: float = 0.12) -> dict:
+def observe_wait(timeout: float = 8.0, poll_interval: float = 0.12,
+                 include_snapshot: bool = True) -> dict:
     """两段式观察器·等待：轮询 observe_start 安装的 observer，任一信号命中立即返回（first-signal-wins），
     随后清理 observer + listener。
 
     Args:
         timeout: 最长等待秒数（默认 8）。
         poll_interval: Python 侧读缓冲间隔秒数（默认 0.12）；DOM 由 MutationObserver 即时触发。
+        include_snapshot: 返回时附带当前浮层快照 snapshot_after，默认 True。
 
     Returns:
-        命中：{type, scope?, payload?, elapsedMs, ...信号专属字段}
-        未命中：{type:'none', elapsedMs, watched:[...]}
-        无活跃 session：{type:'none', reason:'no active observe session'}
+        命中：{type, scope?, payload?, elapsedMs, snapshot_after, ...信号专属字段}
+        未命中：{type:'none', elapsedMs, watched:[...], snapshot_after}
+        无活跃 session：{type:'none', reason:'no active observe session', snapshot_after}
     """
     with _session_lock:
         sess = dict(_session)
     if not sess.get("active"):
-        return {"type": "none", "reason": "no active observe session; call observe_start first"}
+        return _attach_snapshot(
+            {"type": "none", "reason": "no active observe session; call observe_start first"},
+            include_snapshot,
+        )
     deadline = time.time() + timeout
     try:
         while time.time() < deadline:
             sig = _poll_once(sess, time.time())
             if sig:
-                return sig
+                return _attach_snapshot(sig, include_snapshot)
             time.sleep(poll_interval)
-        return {"type": "none", "elapsedMs": int((time.time() - sess["start"]) * 1000),
-                "watched": sorted(sess["sigset"])}
+        return _attach_snapshot(
+            {"type": "none", "elapsedMs": int((time.time() - sess["start"]) * 1000),
+             "watched": sorted(sess["sigset"])},
+            include_snapshot,
+        )
     finally:
         with _session_lock:
             _teardown_session(sess)
@@ -374,7 +541,7 @@ def observe_wait(timeout: float = 8.0, poll_interval: float = 0.12) -> dict:
 
 
 def observe_post_click(timeout: float = 10.0, signals=None, listen_targets=None,
-                       poll_interval: float = 0.12) -> dict:
+                       poll_interval: float = 0.12, include_snapshot: bool = True) -> dict:
     """点击后统一观察器（便捷封装）：observe_start + observe_wait 一次调用。
     适用于点击已发生、或不需要在点击间隙观察的场景。
 
@@ -384,13 +551,14 @@ def observe_post_click(timeout: float = 10.0, signals=None, listen_targets=None,
 
     Args:
         timeout: 最长观察秒数（默认 10）。信号命中会立即提前返回。
-        signals: 监听信号类型列表，默认 ['modal','notification','message','tab','url']。
+        signals: 监听信号类型列表，默认 ['overlay','notification','message','tab','url']。
         listen_targets: 网络监听 URL 特征（逗号分隔）；仅 signals 含 'network' 时生效。
         poll_interval: 轮询间隔秒数（默认 0.12）。
+        include_snapshot: 返回时附带当前浮层快照 snapshot_after，默认 True。
 
     Returns:
-        命中：{type, scope?, payload?, elapsedMs, ...信号专属字段}
-        未命中：{type:'none', elapsedMs, watched:[...]}
+        命中：{type, scope?, payload?, elapsedMs, snapshot_after, ...信号专属字段}
+        未命中：{type:'none', elapsedMs, watched:[...], snapshot_after}
     """
     sess = _build_session(signals, listen_targets, timeout_for_net=timeout)
     with _session_lock:
@@ -401,10 +569,13 @@ def observe_post_click(timeout: float = 10.0, signals=None, listen_targets=None,
         while time.time() < deadline:
             sig = _poll_once(sess, time.time())
             if sig:
-                return sig
+                return _attach_snapshot(sig, include_snapshot)
             time.sleep(poll_interval)
-        return {"type": "none", "elapsedMs": int((time.time() - sess["start"]) * 1000),
-                "watched": sorted(sess["sigset"])}
+        return _attach_snapshot(
+            {"type": "none", "elapsedMs": int((time.time() - sess["start"]) * 1000),
+             "watched": sorted(sess["sigset"])},
+            include_snapshot,
+        )
     finally:
         with _session_lock:
             _teardown_session(sess)

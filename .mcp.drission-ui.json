@@ -2,7 +2,10 @@
   "mcpServers": {
     "drission-ui": {
       "command": "uv",
-      "args": ["run", "python", "drission_ui_mcp.py"],
+      "args": [
+        "run",
+        "drission-ui-mcp"
+      ],
       "env": {
         "DRISSION_UI_CAPS": "all"
       }

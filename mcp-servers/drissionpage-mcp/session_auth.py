@@ -173,13 +173,20 @@ def login_ocr():
 def check_session():
     """检测 top 层是否出现登录过期确认弹窗。返回 {expired: bool, detail}。"""
     tab = browser_session.get_tab()
-    res = tab.run_js(
-        "var m=document.querySelector('.ant-modal-content');"
-        "if(m&&m.offsetParent!==null&&m.querySelector('.ant-confirm-body-wrapper')){"
-        "var t=m.querySelector('.ant-confirm-body')||m;"
-        "return JSON.stringify({expired:true,detail:t.textContent.trim().slice(0,120)});"
-        "}return JSON.stringify({expired:false});"
+    confirm_wrapper = browser_session.ele_with_fallback(
+        tab,
+        'css:.ant-modal-content .ant-confirm-body-wrapper',
+        'xpath://*[contains(@class, "ant-modal-content")]//*[contains(@class, "ant-confirm-body-wrapper")]',
+        timeout=0.5
     )
-    if isinstance(res, str):
-        return json.loads(res)
+    if confirm_wrapper and confirm_wrapper.states.is_displayed:
+        m = confirm_wrapper.parent(2)
+        if m:
+            t = browser_session.ele_with_fallback(
+                m,
+                'css:.ant-confirm-body',
+                'xpath:.//*[contains(@class, "ant-confirm-body")]',
+                timeout=0.1
+            ) or m
+            return {"expired": True, "detail": (t.text or "").strip()[:120]}
     return {"expired": False}

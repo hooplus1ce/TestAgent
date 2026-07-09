@@ -20,7 +20,7 @@
 
 - VTable 必须通过表格 facade 操作：`scan_table`、`click_table_cell`、`get_table_values`，调用侧不手写 VTable raw JS。
 - VTable 下拉优先识别 `.virtual-option` / virtual 类选项，再降级到普通 option 或 Ant Design。
-- 弹窗交互先观察/扫描：点击前后使用 `scan_floats` 或 `observe_start -> action -> observe_wait`。
+- 弹窗/浮层交互统一走观察器：当前状态用 `observe_snapshot`，交互前后用 `observe_start -> action -> observe_wait`，优先使用封装好的 `explore_action`。
 - 筛选区优先内联模式，字段扫描必须返回字段、操作符和值控件模式。
 - 保存类按钮区分普通按钮和 `ant-dropdown-trigger` 下拉按钮。
 - `run_js` 一律顶层 `return`；需要 scope 精确判断时用 `target.run_js(document.querySelector(...))`，避免 `tab.ele()` 递归 iframe 导致误判。

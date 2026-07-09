@@ -5,7 +5,7 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "mcp-servers/drission-ui"))
 
-from server import mcp
+from server import mcp  # type: ignore
 
 
 def main():

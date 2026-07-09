@@ -1,6 +1,6 @@
 # VTable 交互探索规范
 
-本文件只描述 AI 在生成测试用例时应如何使用 `drission-ui` MCP 的 VTable 能力，不记录 VTable 内部 JS、React fiber、坐标换算或 DOM 选择器。底层实现属于 MCP 工具层。
+本文件只描述 AI 在生成测试用例时应如何使用 `drissionpage-mcp` MCP 的 VTable 能力，不记录 VTable 内部 JS、React fiber、坐标换算或 DOM 选择器。底层实现属于 MCP 工具层。
 
 ## 一、工具契约
 
@@ -49,7 +49,7 @@ AI 只依赖 MCP 返回的结构化结果：
 - 禁止为了生成更多用例而绕过真实 UI 行为直接修改前端状态。
 - 禁止把 VTable 内部 API 当成测试步骤或预期结果写入 Excel。
 
-若确实需要这些能力，先把能力沉淀到 `drission-ui` MCP 工具，再由 skill 通过稳定工具名调用。
+若确实需要这些能力，先把能力沉淀到 `drissionpage-mcp` MCP 工具，再由 skill 通过稳定工具名调用。
 
 ## 六、DFS 衍生规则
 

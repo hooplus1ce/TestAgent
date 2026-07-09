@@ -4,8 +4,7 @@
             "command": "uv",
             "args": [
                 "run",
-                "python",
-                "mcp-servers/drissionpage-mcp/server.py"
+                "drissionpage-mcp"
             ],
             "env": {
                 "DRISSIONPAGE_MCP_CAPS": "all"

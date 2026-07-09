@@ -446,10 +446,10 @@ def scan_modal(max_items: int = 20) -> dict:
 
 
 def scan_floats(only_visible: bool = True, include_table_data: bool = True) -> dict:
-    """扫描所有可见浮窗（modal/drawer/popover/tooltip/dropdown/message/notification）。
+    """扫描所有可见浮窗（modal/drawer/popover/tooltip/dropdown/calendar/message/notification）。
 
     单次 JS 注入完成。返回浮窗内所有操作按钮的位置（可点击）、
-    关闭按钮的 CSS 定位符（可供 click 工具使用）、以及内部表格结构。
+    关闭按钮的 CSS 定位符（可供 click 工具使用）、日历面板摘要以及内部表格结构。
 
     Args:
         only_visible: 过滤不可见元素
@@ -459,6 +459,7 @@ def scan_floats(only_visible: bool = True, include_table_data: bool = True) -> d
         {ok, count, floats: [{title, type, text, rect, scope,
             buttons: [{text, rect, selectorHint, disabled, ...}],
             closeButton: {selectorHint, rect} | null,
+            calendar: {mode, panels, selectedDates, cells, ...} | null,
             tableCount, tables: [{index, kind, headers, rowCount,
                                   data: [[str]]?}]}]}
     """
@@ -469,12 +470,99 @@ def scan_floats(only_visible: bool = True, include_table_data: bool = True) -> d
     errors = []
     for scope, target in target_list:
         js = _COMMON_JS + """
-var nodeList = [].slice.call(document.querySelectorAll(
+var rawNodeList = [].slice.call(document.querySelectorAll(
   '.ant-modal, .ant-drawer, .ant-popover, .ant-tooltip, '
-  + '.ant-dropdown'
+  + '.ant-dropdown, .ant-calendar-picker-container, .ant-calendar'
 ));
+function duIsCalendarNode(el) {
+  var cls = el.className || '';
+  return /\bant-calendar-picker-container\b/.test(cls) || /\bant-calendar\b/.test(cls);
+}
+function duCalendarRoot(el) {
+  if (!el) return null;
+  var cls = el.className || '';
+  if (/\bant-calendar\b/.test(cls)) return el;
+  return el.querySelector('.ant-calendar') || el;
+}
+function duCalendarActive(el) {
+  // SCM 的 ant-calendar 打开/关闭由 DOM 挂载决定；不要用 display:none 作为唯一依据。
+  return !!(el && el.isConnected);
+}
+function duKeepFloatNode(el) {
+  if (duIsCalendarNode(el)) return duCalendarActive(el);
+  return !ONLY_VISIBLE || duVisible(el);
+}
+function duCalendarPanel(panel, side) {
+  if (!panel) return null;
+  var ye = panel.querySelector('.ant-calendar-year-select');
+  var me = panel.querySelector('.ant-calendar-month-select');
+  var title = [duCleanText(ye ? ye.textContent : ''), duCleanText(me ? me.textContent : '')]
+    .filter(Boolean).join('');
+  return {
+    side: side,
+    yearText: duCleanText(ye ? ye.textContent : ''),
+    monthText: duCleanText(me ? me.textContent : ''),
+    title: title
+  };
+}
+function duScanCalendar(el) {
+  var root = duCalendarRoot(el);
+  if (!root) return null;
+  var cls = root.className || '';
+  var isRange = /\bant-calendar-range\b/.test(cls) ||
+    !!root.querySelector('.ant-calendar-range-left,.ant-calendar-range-right');
+  var panels = [];
+  if (isRange) {
+    var left = duCalendarPanel(root.querySelector('.ant-calendar-range-left'), 'left');
+    var right = duCalendarPanel(root.querySelector('.ant-calendar-range-right'), 'right');
+    if (left) panels.push(left);
+    if (right) panels.push(right);
+  } else {
+    var single = duCalendarPanel(root, 'single');
+    if (single) panels.push(single);
+  }
+  var cells = [];
+  var selectedDates = [];
+  var cellNodes = root.querySelectorAll('td[title] .ant-calendar-date');
+  for (var ci = 0; ci < cellNodes.length && cells.length < 120; ci++) {
+    var cell = cellNodes[ci];
+    var td = cell.closest('td');
+    if (!td || !td.isConnected) continue;
+    var tdCls = td.className || '';
+    var title = td.getAttribute('title') || cell.getAttribute('title') || '';
+    var selected = /\bant-calendar-selected-date\b|\bant-calendar-selected-start-date\b|\bant-calendar-selected-end-date\b/.test(tdCls);
+    if (selected && title) selectedDates.push(title);
+    cells.push({
+      title: title,
+      text: duCleanText(cell.textContent),
+      disabled: /\bant-calendar-disabled-cell\b/.test(tdCls) || duDisabled(cell),
+      selected: selected,
+      today: /\bant-calendar-today\b/.test(tdCls),
+      inView: !(/\bant-calendar-last-month-cell\b|\bant-calendar-next-month-btn-day\b|\bant-calendar-next-month-cell\b/.test(tdCls)),
+      selectorHint: duCssHint(cell),
+      xpath: duXPath(cell),
+      center: frCenter(cell),
+      rect: frRect(cell)
+    });
+  }
+  return {
+    mode: isRange ? 'range' : 'single',
+    panels: panels,
+    selectedDates: selectedDates,
+    cellCount: cells.length,
+    cells: cells,
+    hasTimePicker: !!root.querySelector('.ant-calendar-time-picker,.ant-time-picker-panel'),
+    hasFooter: !!root.querySelector('.ant-calendar-footer')
+  };
+}
+var nodeList = [];
+rawNodeList.forEach(function(n){
+  if (!n || nodeList.indexOf(n) >= 0) return;
+  if (/\bant-calendar\b/.test(n.className || '') && n.closest('.ant-calendar-picker-container')) return;
+  nodeList.push(n);
+});
 var allWrappers = [].slice.call(document.querySelectorAll('.ant-table-wrapper'));
-var nodes = ONLY_VISIBLE ? nodeList.filter(duVisible) : nodeList;
+var nodes = nodeList.filter(duKeepFloatNode);
 // iframe 偏移：叠加到坐标使结果始终为 top-viewport 坐标
 var ifrOff = {left:0, top:0};
 var _ifrEl = window.frameElement;
@@ -491,9 +579,15 @@ for (var i = 0; i < nodes.length; i++) {
   else if (/\\bant-popover\\b/.test(cls)) kind = 'popover';
   else if (/\\bant-tooltip\\b/.test(cls)) kind = 'tooltip';
   else if (/\\bant-dropdown\\b/.test(cls)) kind = 'dropdown';
+  else if (duIsCalendarNode(n)) kind = 'calendar';
+  var calendar = kind === 'calendar' ? duScanCalendar(n) : null;
   // 标题提取
   var titleEl = n.querySelector('.ant-modal-title, .ant-drawer-title, .ant-modal-header');
   var title = titleEl ? duCleanText(titleEl.textContent) : '';
+  if (!title && calendar) {
+    var panelTitle = (calendar.panels || []).map(function(p){ return p.title; }).filter(Boolean).join(' - ');
+    title = (calendar.mode === 'range' ? '日期范围选择器' : '日期选择器') + (panelTitle ? ' ' + panelTitle : '');
+  }
   if (!title) {
     var raw = n.innerText || n.textContent || '';
     var parts = raw.split(/\\n/).map(function(s){ return s.trim(); }).filter(function(s){ return s.length > 0; });
@@ -616,6 +710,7 @@ for (var i = 0; i < nodes.length; i++) {
   out.push({
     title: title, type: kind, text: text.slice(0, 800),
     buttons: buttons, fields: fields, closeButton: closeButton,
+    calendar: calendar,
     center: frCenter(n), rect: frRect(n)
   });
 }
