@@ -1,49 +1,9 @@
-# Project-scoped Codex configuration.
-# Codex loads this file only when the project is trusted.
 
 sandbox_mode = "danger-full-access"
 
-# MCP switch:
-# - Keep both service definitions in this file.
-# - Set exactly one of the following `enabled` values to true before starting Codex.
-# - Restart the Codex session after changing these flags.
-[mcp_servers.drission-ui]
-# Keep this shell-free so the same project config works from Windows PowerShell
-# and Linux bash. Codex starts project-scoped MCP servers from the repository
-# root, so no `cd`, command substitution, or platform-specific shell path is
-# needed here.
-command = "uv"
-args = ["run", "python", "drission_ui_mcp.py"]
-enabled = false
-required = false
-startup_timeout_sec = 30
-tool_timeout_sec = 120
-default_tools_approval_mode = "auto"
-env_vars = [
-  "HL_SCM_URL",
-  "HL_SCM_BASE_URL",
-  "HL_SCM_LOGIN_PAGE",
-  "HL_SCM_USERNAME",
-  "HL_SCM_USERPWD",
-  "HL_COOKIE_DOMAIN",
-  "HL_ACCESS_DOMAIN",
-  "HL_TARGET_HINT",
-  "HL_REMOTE_PORT",
-  "HL_SHOT_DIR",
-  "HL_CHROME_PATH",
-  "HL_EDGE_MODE",
-  "HL_PROXY",
-  "HL_HEADLESS",
-  "HL_DISABLE_PDF_PREVIEW",
-  "HL_REMOVE_TEST_TYPE",
-  "HL_REFRESH_NAV_TIMEOUT",
-  "HL_REFRESH_LOAD_TIMEOUT",
-  "HL_REFRESH_HTTP_TIMEOUT",
-]
-
 [mcp_servers.drissionpage-mcp]
 command = "uv"
-args = ["run", "python", "mcp-servers/drissionpage-mcp/server.py"]
+args = ["run", "python", "drissionpage_mcp.py"]
 enabled = true
 required = false
 startup_timeout_sec = 30
@@ -74,29 +34,6 @@ env_vars = [
 [mcp_servers.drissionpage-mcp.env]
 DRISSIONPAGE_MCP_CAPS = "all"
 
-[mcp_servers.drissionpage-mcp.tools.connect]
-approval_mode = "approve"
-
-[mcp_servers.drissionpage-mcp.tools.scan_page_elements]
-approval_mode = "approve"
-
-[mcp_servers.drissionpage-mcp.tools.scan_table]
-approval_mode = "approve"
-
-[mcp_servers.drissionpage-mcp.tools.explore_action]
-approval_mode = "approve"
-
-[mcp_servers.drissionpage-mcp.tools.click_xy]
-approval_mode = "approve"
-
-[mcp_servers.drissionpage-mcp.tools.screenshot]
-approval_mode = "approve"
-
-[mcp_servers.drissionpage-mcp.tools.input]
-approval_mode = "approve"
-
-[mcp_servers.drissionpage-mcp.tools.click]
-approval_mode = "approve"
 
 # [mcp_servers.drission-ui.env]
 # DRISSION_UI_CAPS = "core,vtable,filter,observe,network"

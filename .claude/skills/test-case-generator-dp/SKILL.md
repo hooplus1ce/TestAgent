@@ -1,6 +1,6 @@
 ---
 name: test-case-generator-dp
-description: 为 WMS/MOM/ERP 等企业系统迭代生成测试用例（DrissionPage MCP 版）。使用场景：用户要求生成某个模块的测试用例，或需要补全覆盖率缺口。通过 DrissionPage MCP 工具驱动浏览器真实点击、观察反馈、断言接口，再生成用例，确保覆盖真实交互而非臆测。
+description: 为 WMS/MOM/ERP 等企业系统迭代生成测试用例（DrissionPage MCP 版）。使用场景：用户要求生成某个模块的测试用例、补全覆盖率缺口，或要求“连接浏览器/打开待测页面/检查登录/刷新 cookie/获取当前 iframe”。通过 DrissionPage MCP 工具驱动浏览器真实点击、观察反馈、断言接口，再生成用例，确保覆盖真实交互而非臆测。
 ---
 
 # Test Case Generator Skill（DrissionPage MCP 版）
@@ -9,9 +9,9 @@ description: 为 WMS/MOM/ERP 等企业系统迭代生成测试用例（DrissionP
 
 浏览器自动化通过 **`drissionpage-mcp` 服务器**暴露的结构化工具实现。所有 VTable 脆弱 JS、坐标换算、iframe 穿越由工具自动处理，AI 只需编排调用顺序并消费结构化 JSON。
 
-> 开始前确认：① Chrome 已在 9222 端口启动并登录目标系统 ② `drissionpage-mcp` MCP 可用 ③ 准备好目标模块名
+> 开始前确认：① Chrome 已在 9222 端口启动 ② `drissionpage-mcp` MCP 可用 ③ 准备好待测页面 URL 或目标模块名
 
-然后直接说：**「生成 `<模块名>` 的测试用例」**。
+然后直接说：**「连接浏览器」** 或 **「生成 `<模块名>` 的测试用例」**。
 
 ---
 
@@ -23,14 +23,24 @@ description: 为 WMS/MOM/ERP 等企业系统迭代生成测试用例（DrissionP
 | `DEFAULT_AUTHOR` | `Hooplus1ce` | 默认编写人 |
 | `OUTPUT_DIR` | `.` | 输出目录 |
 | `DOMAIN` | 用户指定 | MOM / ERP / WMS（显式询问，不从 URL 推断） |
+| `TEST_PAGE_URL` | SCM Admin 入口 | 待测页面 URL；用户给 URL 时覆盖默认入口 |
 | `MODULE_NAME` | 用户指定 | 如 `生产管理_制造排产`，用于文件命名 |
 | `MODULE_LEVEL1` / `MODULE_LEVEL2` | 用户指定 | 一级/二级模块 |
 | `MODULE_PINYIN` | 用户指定 | 二级模块拼音缩写，如 `ZZPC` |
 
 ## 1. 系统接入与工具
 
-### 浏览器连接
-`connect(port=9222)` 接管用户已打开的 Chrome。**禁止**启动新浏览器或无头模式。连接后立即 `check_session()` 检测会话状态。
+### 浏览器连接入口
+当用户说“连接浏览器”、开始生成用例，或任何真实页面探索前，必须执行完整 Browser Ready Gate；不要只调用 `connect()` 后继续。
+
+1. 确定 `TEST_PAGE_URL`：用户给 URL 时使用该 URL；只给模块名时使用 SCM Admin 入口，稍后用 `enter_module(...)` 进入模块。
+2. 调用 `connect(port=9222, target_hint=TEST_PAGE_URL)` 接管用户已打开的 Chrome。**禁止**启动新浏览器或无头模式。
+3. 打开待测页面：若返回的 tab 列表已有 `TEST_PAGE_URL` 对应页面，`browser_tabs(action="select", index=...)` 切到该 tab；否则 `browser_tabs(action="new", url=TEST_PAGE_URL)` 打开。
+4. 调用 `check_session()` 检测当前登录是否失效。
+5. 若 `check_session()` 返回已过期，立即调用 `refresh_session()` 刷新 cookie；`refresh_session()` 可能导航回 SCM Admin，刷新后必须重新回到 `TEST_PAGE_URL` 或重新 `enter_module(...)`。
+6. 再次调用 `check_session()`。仍过期时停止探索并向用户报告，不生成正式用例。
+7. 登录有效后获取激活 iframe：调用 `get_active_frame()`。若只提供了模块名且当前尚无目标 iframe，先 `enter_module(MODULE_NAME, expand_filter=True)`，再调用 `get_active_frame()`。
+8. 只有 `get_active_frame()` 返回 `ok=true` 后才继续页面扫描，并记录返回的 `url` / `tab_name` 作为后续证据。
 
 ### Session 维持
 - 首次登录或会话过期：直接 `refresh_session()`（内部完成 OCR + HTTP 登录 + Cookie 注入 → 导航 SCM Admin），每次重新获取新 cookie，不再缓存
@@ -49,8 +59,8 @@ description: 为 WMS/MOM/ERP 等企业系统迭代生成测试用例（DrissionP
 ### Phase 1 — 需求采集
 
 1. 确认领域（显式询问用户）
-2. `connect()` → 立即 `check_session()`
-3. `enter_module("<模块名>", expand_filter=True)` 进入模块
+2. 执行“浏览器连接入口”完整 Browser Ready Gate，确保登录有效并拿到激活 iframe
+3. 如入口流程尚未进入目标模块，`enter_module("<模块名>", expand_filter=True)` 进入模块后再次 `get_active_frame()`
 4. 确保筛选区切换为**内联模式**（见“筛选区显示模式”）
 5. `scan_page_elements()` / `dom_tree()` 分析页面结构
 6. `scan_table(kind="auto")` 穷尽表格列定义与可交互信息
@@ -122,7 +132,7 @@ VTable 是 canvas 渲染，无真实 DOM 节点。所有点击走坐标，工具
 **表格交互统一使用 facade**：优先 `scan_table(kind="auto")`，点击用 `click_table_cell(...)`；VTable 列超出视口时工具内部自动滚动并换算坐标。
 
 ### iframe
-业务模块在 `[role=tabpanel][aria-hidden=false] iframe` 内。MCP 工具默认 `in_frame=True`，坐标换算自动完成。
+业务模块在 `[role=tabpanel][aria-hidden=false] iframe` 内。MCP 工具默认 `in_frame=True`，坐标换算自动完成。入口流程、模块切换、页签切换或 session 刷新后，都用 `get_active_frame()` 重新确认当前激活 iframe。
 
 ### 筛选区显示模式
 筛选区必须优先使用**内联模式**，不要让高级筛选以弹窗形式显示。
@@ -154,7 +164,7 @@ VTable 是 canvas 渲染，无真实 DOM 节点。所有点击走坐标，工具
 点击后如需捕获短寿命 toast（如「操作成功」），`scan_floats` 内部已集成 toast 检测，无需额外调用。
 仅在只需知道「有无弹窗」而不需要详细结构时使用 `observe_start`/`observe_wait`。
 
-VTable 列头筛选、单元格编辑器、虚拟下拉等特殊浮层必须通过 `drission-ui` 的 VTable facade 处理。若当前工具无法返回结构化结果，记录工具缺口并降级生成低级展示类用例，不在 skill 中内联 raw JS。
+VTable 列头筛选、单元格编辑器、虚拟下拉等特殊浮层必须通过 `drissionpage-mcp` 的 VTable facade 处理。若当前工具无法返回结构化结果，记录工具缺口并降级生成低级展示类用例，不在 skill 中内联 raw JS。
 
 ### 弹窗交互策略
 **与弹窗交互前 MUST 先用 `scan_floats` 获取弹窗结构化信息**，如需更详细 DOM 层级再用 `dom_tree`。
@@ -180,7 +190,7 @@ scan_floats → 确认弹窗状态变化（关闭/新内容/消息反馈）
 双击等多次点击通过 `click_xy(x, y, times=N)` 的 `times` 参数实现。
 
 ### 会话维持
-`check_session()` 检测过期 → 直接 `refresh_session()`（每次重新获取新 cookie，不再缓存）。
+`check_session()` 检测过期 → 直接 `refresh_session()`（每次重新获取新 cookie，不再缓存）→ 重新打开待测页/进入模块 → 再次 `check_session()` → `get_active_frame()`。
 
 ---
 
@@ -188,19 +198,19 @@ scan_floats → 确认弹窗状态变化（关闭/新内容/消息反馈）
 
 | 异常 | 处理 |
 |---|---|
-| MCP 服务器未注册 | 检查 `.mcp.json`；`claude mcp list` 应见 `drission-ui` |
+| MCP 服务器未注册 | 检查 `.mcp.json`；`claude mcp list` 应见 `drissionpage-mcp` |
 | 浏览器连接失败 | 检查 `http://localhost:9222/json`；确认 Chrome 以 9222 启动 |
 | `scan_table` 失败 | `get_active_frame()` 确认 iframe；仍失败按截图/DOM 降级生成低级用例 |
 | `enter_module` iframe 未就绪 | 重新调用 `enter_module`；检查菜单文本匹配 |
-| SCM 会话过期 | `check_session` → 直接 `refresh_session`（每次重新 OCR 登录） |
+| SCM 会话过期 | `check_session` → `refresh_session` → 重新打开待测页/进入模块 → 再次 `check_session` → `get_active_frame` |
 | openpyxl 未安装 | `uv add openpyxl` |
 | 需求信息不足 | 3 轮追问后生成骨架用例，备注 `[待确认]` |
 
 ## 5. 自检清单
 
-- [ ] `drission-ui` MCP 可用
+- [ ] `drissionpage-mcp` MCP 可用
 - [ ] 浏览器可连接（port 9222）
-- [ ] `connect` 成功 + `check_session` 通过
+- [ ] Browser Ready Gate 完成：`connect` 成功、待测页已打开、最终 `check_session` 通过、`get_active_frame` 返回 `ok=true`
 - [ ] 用户已确认变量配置
 - [ ] 输出目录有写入权限
 - [ ] 已完成 Phase 1.5 覆盖建模

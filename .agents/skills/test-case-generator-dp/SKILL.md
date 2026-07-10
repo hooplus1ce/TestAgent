@@ -1,6 +1,6 @@
 ---
 name: test-case-generator-dp
-description: Generate WMS/MOM/ERP enterprise test cases from real browser exploration using the drissionpage-mcp server, VTable/table scans, modal observation, network evidence, and JSON-to-Excel export. Use when asked to create or improve functional test cases for SCM/MOM/ERP/WMS pages.
+description: Generate WMS/MOM/ERP enterprise test cases from real browser exploration using the drissionpage-mcp server, VTable/table scans, modal observation, network evidence, and JSON-to-Excel export. Use when asked to create or improve functional test cases for SCM/MOM/ERP/WMS pages, or when the user asks to connect the browser, open the page under test, check login/session state, refresh cookies, or get the active iframe.
 ---
 
 # Test Case Generator DP for Codex
@@ -28,20 +28,22 @@ Before running a full generation workflow, read the relevant upstream reference
 files from `.claude/skills/test-case-generator-dp/`:
 
 1. `SKILL.md`
-2. `references/field-spec.md`
-3. `references/quality-rubric.md`
-4. `references/coverage-model.md`
-5. `references/filter-validation.md`
-6. `references/modal-types.md`
-7. `references/vtable-interaction.md`
-8. `探索式增量生成工作流程.md`
+2. `references/scm-access.md`
+3. `references/field-spec.md`
+4. `references/quality-rubric.md`
+5. `references/coverage-model.md`
+6. `references/filter-validation.md`
+7. `references/modal-types.md`
+8. `references/vtable-interaction.md`
+9. `探索式增量生成工作流程.md`
 
 Read only the references needed for the requested area when the task is narrow.
 
 ## Workflow
 
-1. Connect with `drissionpage-mcp.connect`, then run `check_session`.
-2. Enter the requested module with `enter_module(..., expand_filter=True)`.
+1. Run the Browser Ready Gate whenever the user says "connect browser" or before real page exploration:
+   `connect(port=9222, target_hint=<TEST_PAGE_URL>)` -> open/select the page under test with `browser_tabs` -> `check_session` -> if expired, `refresh_session` -> return to the page/module -> final `check_session` -> `get_active_frame`. Stop if the final session check still reports expiration or if no active iframe is available.
+2. Enter the requested module with `enter_module(..., expand_filter=True)` when the ready gate did not already land on the target module, then run `get_active_frame` again.
 3. Collect page structure with `scan_page_elements`, `dom_tree`,
    `scan_filter_fields`, and `scan_table(kind="auto")`.
 4. Build a coverage model before generating cases: asset inventory, testable
