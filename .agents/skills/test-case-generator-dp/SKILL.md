@@ -59,6 +59,11 @@ Read only the references needed for the requested area when the task is narrow.
    observe_start(...) -> action -> observe_wait(...)
    ```
 
+   Use `scan_floats` / `observe_snapshot` for visible VTable overlays too:
+   column filter menus, toolbar tooltips, and column-setting menus are exposed
+   as structured overlays; hidden VTable overlay DOM should not be treated as
+   visible behavior.
+
 6. For interface assertions, prefer `listen_start` / `listen_wait` or
    `observe_start(signals=[...,"network"], listen_targets="gateway")`.
 7. Generate only cases supported by observed page behavior, table data, modal

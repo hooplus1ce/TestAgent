@@ -474,7 +474,7 @@ css:.ant-modal >> tag:button       # 弹窗内的按钮
 | `connect` 失败 | 检查 Chrome 是否以 9222 启动：`curl http://127.0.0.1:9222/json/version`；设 `NO_PROXY=127.0.0.1` |
 | `scan_table` 失败 | `get_active_frame()` 确认 iframe；当前页可能非 VTable 页面。按 `references/vtable-interaction.md` 降级：截图 + 仅生成展示类用例 |
 | `get_table_values` 返回 null | 列标题不匹配——当前模块可能无此列。先 `scan_table` 看真实列标题 |
-| `observe_start/observe_wait` 返回 none 但预期有弹窗 | 先确认动作前已调用 `observe_start`。VTable 列头筛选弹窗 `.vtable-filter-menu` 已纳入 observer 和 `observe_snapshot`，只在 `display` 非 `none` 且可见时返回 |
+| `observe_start/observe_wait` 返回 none 但预期有弹窗 | 先确认动作前已调用 `observe_start`。VTable 列头筛选 `.vtable-filter-menu`、工具栏提示 `.vtable__bubble-tooltip-element`、列设置菜单 `.vtable__menu-element` 已纳入 observer 和 `observe_snapshot`；默认只返回可见态，`display:none` 或 `--hidden` 残留 DOM 会被过滤 |
 | 会话过期 | `check_session` → `refresh_session` → 失败则 `refresh_session` |
 | MCP 工具在会话中不可见 | `.mcp.json` 变更后需**重启 Claude Code 会话**才加载 |
 | openpyxl 未安装 | `uv add openpyxl` |

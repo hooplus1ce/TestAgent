@@ -38,6 +38,8 @@ _ALL_SELS = [
     ".ant-dropdown",
     ".ant-select-dropdown",
     ".vtable-filter-menu",
+    ".vtable__bubble-tooltip-element",
+    ".vtable__menu-element",
     ".ant-calendar-picker-container",
     ".ant-calendar",
     _SEL_NOTIFICATION,
@@ -58,6 +60,8 @@ var SELS = [
   '.ant-dropdown',
   '.ant-select-dropdown',
   '.vtable-filter-menu',
+  '.vtable__bubble-tooltip-element',
+  '.vtable__menu-element',
   '.ant-calendar-picker-container',
   '.ant-calendar',
   '.ant-notification-notice',
@@ -137,6 +141,51 @@ function vtableFilterPayload(el){
     rect: rectOf(el)
   };
 }
+function vtableOverlayKind(el){
+  var cls = el.className || ''; if (typeof cls !== 'string') cls = '';
+  if (cls.indexOf('vtable__bubble-tooltip-element') >= 0) return 'vtable-tooltip';
+  if (cls.indexOf('vtable__menu-element') >= 0) return 'vtable-menu';
+  return '';
+}
+function vtableOverlayState(el){
+  var cls = el.className || ''; if (typeof cls !== 'string') cls = '';
+  if (cls.indexOf('--hidden') >= 0) return 'hidden';
+  if (cls.indexOf('--shown') >= 0) return 'shown';
+  return isVis(el) ? 'visible' : 'hidden';
+}
+function vtableOverlayPayload(el){
+  var style = window.getComputedStyle(el);
+  var kind = vtableOverlayKind(el) || 'vtable-overlay';
+  var text = cleanText(el.innerText || el.textContent);
+  var options = [];
+  var seen = {};
+  [].slice.call(el.querySelectorAll(
+    '.vtable__menu-item,.vtable__menu-item-text,[role="menuitem"],li,button,a[href]'
+  )).forEach(function(item){
+    var itemText = cleanText(item.innerText || item.textContent || item.getAttribute('title') || '');
+    if (!itemText || seen[itemText]) return;
+    seen[itemText] = true;
+    options.push(itemText);
+  });
+  options = options.slice(0, 50);
+  var title = kind === 'vtable-tooltip'
+    ? (text || 'VTable工具提示')
+    : (options[0] || text || 'VTable菜单');
+  return {
+    type:kind,
+    scope:scope,
+    title:title,
+    content:text.slice(0,200),
+    text:text.slice(0,200),
+    state:vtableOverlayState(el),
+    display:style.display,
+    visibility:style.visibility,
+    opacity:style.opacity,
+    options:options,
+    buttons:buttonTexts(el),
+    rect:rectOf(el)
+  };
+}
 function isCalendarNode(el){
   var cls = el.className || ''; if (typeof cls !== 'string') cls = '';
   return cls.indexOf('ant-calendar-picker-container') >= 0 || cls.indexOf('ant-calendar') >= 0;
@@ -145,10 +194,24 @@ function isVTableFilterNode(el){
   var cls = el.className || ''; if (typeof cls !== 'string') cls = '';
   return cls.indexOf('vtable-filter-menu') >= 0;
 }
+function isVTableOverlayNode(el){
+  return !!vtableOverlayKind(el);
+}
+function isVTableOverlayActive(el){
+  var cls = el.className || ''; if (typeof cls !== 'string') cls = '';
+  if (cls.indexOf('vtable__bubble-tooltip-element--hidden') >= 0 ||
+      cls.indexOf('vtable__menu-element--hidden') >= 0) {
+    return false;
+  }
+  return isVis(el);
+}
 function classify(el){
   var cls = el.className || ''; if (typeof cls !== 'string') cls = '';
   if (cls.indexOf('vtable-filter-menu') >= 0) {
     return vtableFilterPayload(el);
+  }
+  if (isVTableOverlayNode(el)) {
+    return vtableOverlayPayload(el);
   }
   if (cls.indexOf('ant-modal-content') >= 0) {
     var isConfirm = !!el.querySelector('.ant-confirm-body');
@@ -236,6 +299,8 @@ function isActiveSignal(el){
   if (isCalendarNode(el)) return !!(el && el.isConnected);
   // VTable 列头筛选菜单会残留在 DOM 中并通过 display:block/none 切换。
   if (isVTableFilterNode(el)) return isVis(el);
+  // VTable 工具栏 tooltip / 列设置菜单会以 --hidden/--shown class 常驻 DOM。
+  if (isVTableOverlayNode(el)) return isVTableOverlayActive(el);
   return isVis(el);
 }
 function signalFromNode(n){
@@ -337,7 +402,8 @@ def _build_session(signals, listen_targets, timeout_for_net=None):
     dom_types = set()
     overlay_types = {
         "interactive", "confirm", "drawer", "popover", "tooltip",
-        "dropdown", "select-dropdown", "vtable-filter-menu", "calendar",
+        "dropdown", "select-dropdown", "vtable-filter-menu",
+        "vtable-tooltip", "vtable-menu", "calendar",
     }
     if "overlay" in sigset:
         dom_types |= overlay_types
@@ -548,7 +614,7 @@ def observe_start(signals=None, listen_targets=None) -> dict:
 
     Args:
         signals: 监听信号类型列表，默认 ['overlay','notification','message','tab','url']。
-                 可选：'overlay'/'modal'/'drawer'/'dropdown'/'vtable-filter-menu'/'calendar'/
+                 可选：'overlay'/'modal'/'drawer'/'dropdown'/'vtable-filter-menu'/'vtable-tooltip'/'vtable-menu'/'calendar'/
                  'notification'/'message'/'tab'/'url'/'network'。
         listen_targets: 网络监听 URL 特征（逗号分隔）；仅 signals 含 'network' 时生效。
 
@@ -617,7 +683,7 @@ def observe_post_click(timeout: float = 10.0, signals=None, listen_targets=None,
     Args:
         timeout: 最长观察秒数（默认 10）。信号命中会立即提前返回。
         signals: 监听信号类型列表，默认 ['overlay','notification','message','tab','url']。
-                 可选：'overlay'/'modal'/'drawer'/'dropdown'/'vtable-filter-menu'/'calendar'/
+                 可选：'overlay'/'modal'/'drawer'/'dropdown'/'vtable-filter-menu'/'vtable-tooltip'/'vtable-menu'/'calendar'/
                  'notification'/'message'/'tab'/'url'/'network'。
         listen_targets: 网络监听 URL 特征（逗号分隔）；仅 signals 含 'network' 时生效。
         poll_interval: 轮询间隔秒数（默认 0.12）。

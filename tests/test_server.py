@@ -727,11 +727,70 @@ def test_scan_floats_includes_visible_vtable_filter_menu_by_display_state():
     assert "display:block/none" in js
 
 
+def test_scan_floats_includes_visible_vtable_tooltip_and_menu_by_shown_class():
+    import page_model
+
+    captured_js = []
+
+    def fake_run_json(target, js, default):
+        captured_js.append(js)
+        return {
+            "ok": True,
+            "floats": [
+                {
+                    "type": "vtable-tooltip",
+                    "title": "工具栏",
+                    "vtableOverlay": {
+                        "kind": "vtable-tooltip",
+                        "state": "shown",
+                        "display": "block",
+                        "text": "工具栏",
+                        "options": [],
+                    },
+                },
+                {
+                    "type": "vtable-menu",
+                    "title": "列设置",
+                    "vtableOverlay": {
+                        "kind": "vtable-menu",
+                        "state": "shown",
+                        "display": "block",
+                        "text": "列设置",
+                        "options": ["列设置"],
+                    },
+                },
+            ],
+        }
+
+    with patch.object(page_model, "_targets", return_value=(object(), None, [("top", object())])), \
+         patch.object(page_model, "_run_json", side_effect=fake_run_json), \
+         patch.object(page_model.browser_session, "get_active_tab_name", return_value="active"), \
+         patch("observe.detect_message", return_value={}), \
+         patch("observe.detect_notification", return_value={}):
+        result = page_model.scan_floats()
+
+    assert result["count"] == 2
+    assert [item["type"] for item in result["floats"]] == ["vtable-tooltip", "vtable-menu"]
+    assert result["floats"][1]["vtableOverlay"]["options"] == ["列设置"]
+    js = captured_js[0]
+    assert ".vtable__bubble-tooltip-element" in js
+    assert ".vtable__menu-element" in js
+    assert "function duScanVTableOverlay" in js
+    assert "vtable__bubble-tooltip-element--hidden" in js
+    assert "vtable__menu-element--hidden" in js
+    assert "--shown" in js
+
+
 def test_observe_start_watches_vtable_filter_menu_as_overlay():
     import observe
 
     assert ".vtable-filter-menu" in observe._INSTALL_OBSERVER_JS
+    assert ".vtable__bubble-tooltip-element" in observe._INSTALL_OBSERVER_JS
+    assert ".vtable__menu-element" in observe._INSTALL_OBSERVER_JS
     assert "vtableFilterPayload" in observe._INSTALL_OBSERVER_JS
+    assert "vtableOverlayPayload" in observe._INSTALL_OBSERVER_JS
+    assert "vtable__bubble-tooltip-element--hidden" in observe._INSTALL_OBSERVER_JS
+    assert "vtable__menu-element--hidden" in observe._INSTALL_OBSERVER_JS
     assert "display" in observe._INSTALL_OBSERVER_JS
 
     fake_tab = SimpleNamespace(url="https://example.test/top")
@@ -749,6 +808,8 @@ def test_observe_start_watches_vtable_filter_menu_as_overlay():
 
         with observe._session_lock:
             assert "vtable-filter-menu" in observe._session["dom_types"]
+            assert "vtable-tooltip" in observe._session["dom_types"]
+            assert "vtable-menu" in observe._session["dom_types"]
     finally:
         with observe._session_lock:
             observe._session.clear()
@@ -762,15 +823,23 @@ sys.path.insert(0, 'mcp-servers/drissionpage-mcp')
 import observe
 import page_model
 
-source_consts = "\n".join(str(c) for c in page_model.scan_floats.__code__.co_consts)
+source_consts = page_model._COMMON_JS + "\n" + "\n".join(str(c) for c in page_model.scan_floats.__code__.co_consts)
 data = {
     "observer_selector": ".vtable-filter-menu" in observe._INSTALL_OBSERVER_JS,
+    "observer_tooltip_selector": ".vtable__bubble-tooltip-element" in observe._INSTALL_OBSERVER_JS,
+    "observer_menu_selector": ".vtable__menu-element" in observe._INSTALL_OBSERVER_JS,
     "observer_payload": "vtableFilterPayload" in observe._INSTALL_OBSERVER_JS,
+    "observer_overlay_payload": "vtableOverlayPayload" in observe._INSTALL_OBSERVER_JS,
+    "observer_hidden_filter": "vtable__menu-element--hidden" in observe._INSTALL_OBSERVER_JS,
     "display_payload": "display" in observe._INSTALL_OBSERVER_JS,
     "scan_selector": ".vtable-filter-menu" in source_consts,
+    "scan_tooltip_selector": ".vtable__bubble-tooltip-element" in source_consts,
+    "scan_menu_selector": ".vtable__menu-element" in source_consts,
 }
 data["scan_payload"] = "duScanVTableFilterMenu" in source_consts
+data["scan_overlay_payload"] = "duScanVTableOverlay" in source_consts
 data["scan_display"] = "display:block/none" in source_consts
+data["scan_hidden_filter"] = "vtable__bubble-tooltip-element--hidden" in source_consts
 print(json.dumps(data, ensure_ascii=False, sort_keys=True))
 """
     result = subprocess.run(
@@ -784,11 +853,19 @@ print(json.dumps(data, ensure_ascii=False, sort_keys=True))
 
     assert data == {
         "display_payload": True,
+        "observer_hidden_filter": True,
+        "observer_menu_selector": True,
+        "observer_overlay_payload": True,
         "observer_payload": True,
         "observer_selector": True,
+        "observer_tooltip_selector": True,
         "scan_display": True,
+        "scan_hidden_filter": True,
+        "scan_menu_selector": True,
+        "scan_overlay_payload": True,
         "scan_payload": True,
         "scan_selector": True,
+        "scan_tooltip_selector": True,
     }
 
 

@@ -887,7 +887,7 @@ def scan_form_fields(scope: str = "page", include_hidden: bool = False,
 @mcp.tool()
 @read_synchronized
 def scan_floats(only_visible: bool = True, include_table_data: bool = True) -> dict:
-    """扫描所有可见浮窗（modal/drawer/popover/tooltip/dropdown/calendar/message/notification）。
+    """扫描所有可见浮窗（modal/drawer/popover/tooltip/dropdown/calendar/message/notification/VTable 浮层）。
     单次 JS 注入完成。返回浮窗内所有操作按钮的位置（可点击关闭）、
     关闭按钮的 CSS 定位符（可用于 click 工具）、日历面板摘要、内部表格结构和可选的全量行数据。
     """
@@ -2343,7 +2343,7 @@ def observe_post_click(timeout: float = 10, signals: list = None,
     Args:
         timeout: 最长观察秒数（默认 10）。信号命中立即提前返回。
         signals: 监听信号类型列表，默认 ['overlay','notification','message','tab','url']。
-                 可选：'overlay'/'modal'/'drawer'/'dropdown'/'vtable-filter-menu'/'calendar'/
+                 可选：'overlay'/'modal'/'drawer'/'dropdown'/'vtable-filter-menu'/'vtable-tooltip'/'vtable-menu'/'calendar'/
                  'notification'/'message'/'tab'/'url'/'network'。
         listen_targets: 网络监听 URL 特征（逗号分隔）；仅 signals 含 'network' 时生效。
         poll_interval: Python 侧读缓冲间隔秒数（默认 0.12）；DOM 实际由 MutationObserver 即时触发。
@@ -2371,7 +2371,7 @@ def observe_start(signals: list[str] = None, listen_targets: str = None) -> dict
 
     Args:
         signals: 监听信号类型列表，默认 ['overlay','notification','message','tab','url']。
-                 可选：'overlay'/'modal'/'drawer'/'dropdown'/'vtable-filter-menu'/'calendar'/
+                 可选：'overlay'/'modal'/'drawer'/'dropdown'/'vtable-filter-menu'/'vtable-tooltip'/'vtable-menu'/'calendar'/
                  'notification'/'message'/'tab'/'url'/'network'。
         listen_targets: 网络监听 URL 特征（逗号分隔）；仅 signals 含 'network' 时生效。
 

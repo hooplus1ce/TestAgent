@@ -414,6 +414,50 @@ function duScanVTableFilterMenu(root){
       parseFloat(clearStyle.opacity || '1') < 1) : null
   };
 }
+function duVTableOverlayKind(root){
+  var cls = root.className || ''; if (typeof cls !== 'string') cls = '';
+  if (cls.indexOf('vtable__bubble-tooltip-element') >= 0) return 'vtable-tooltip';
+  if (cls.indexOf('vtable__menu-element') >= 0) return 'vtable-menu';
+  return '';
+}
+function duVTableOverlayState(root){
+  var cls = root.className || ''; if (typeof cls !== 'string') cls = '';
+  if (cls.indexOf('--hidden') >= 0) return 'hidden';
+  if (cls.indexOf('--shown') >= 0) return 'shown';
+  return duVisible(root) ? 'visible' : 'hidden';
+}
+function duVTableOverlayActive(root){
+  var cls = root.className || ''; if (typeof cls !== 'string') cls = '';
+  if (cls.indexOf('vtable__bubble-tooltip-element--hidden') >= 0 ||
+      cls.indexOf('vtable__menu-element--hidden') >= 0) {
+    return false;
+  }
+  return duVisible(root);
+}
+function duScanVTableOverlay(root){
+  var style = window.getComputedStyle(root);
+  var kind = duVTableOverlayKind(root) || 'vtable-overlay';
+  var text = duCleanText(root.innerText || root.textContent);
+  var options = [];
+  var seen = {};
+  [].slice.call(root.querySelectorAll(
+    '.vtable__menu-item,.vtable__menu-item-text,[role="menuitem"],li,button,a[href]'
+  )).forEach(function(item){
+    var itemText = duCleanText(item.innerText || item.textContent || item.getAttribute('title') || '');
+    if (!itemText || seen[itemText]) return;
+    seen[itemText] = true;
+    options.push(itemText);
+  });
+  return {
+    kind: kind,
+    state: duVTableOverlayState(root),
+    display: style.display,
+    visibility: style.visibility,
+    opacity: style.opacity,
+    text: text.slice(0, 200),
+    options: options.slice(0, 50)
+  };
+}
 """
 
 
@@ -547,7 +591,7 @@ def scan_modal(max_items: int = 20) -> dict:
 
 
 def scan_floats(only_visible: bool = True, include_table_data: bool = True) -> dict:
-    """扫描所有可见浮窗（modal/drawer/popover/tooltip/dropdown/calendar/message/notification）。
+    """扫描所有可见浮窗（modal/drawer/popover/tooltip/dropdown/calendar/message/notification/VTable 浮层）。
 
     单次 JS 注入完成。返回浮窗内所有操作按钮的位置（可点击）、
     关闭按钮的 CSS 定位符（可供 click 工具使用）、日历面板摘要以及内部表格结构。
@@ -573,7 +617,8 @@ def scan_floats(only_visible: bool = True, include_table_data: bool = True) -> d
         js = _COMMON_JS + """
 var rawNodeList = [].slice.call(document.querySelectorAll(
   '.ant-modal, .ant-drawer, .ant-popover, .ant-tooltip, '
-  + '.ant-dropdown, .vtable-filter-menu, .ant-calendar-picker-container, .ant-calendar'
+  + '.ant-dropdown, .vtable-filter-menu, .vtable__bubble-tooltip-element, '
+  + '.vtable__menu-element, .ant-calendar-picker-container, .ant-calendar'
 ));
 function duIsCalendarNode(el) {
   var cls = el.className || '';
@@ -597,9 +642,17 @@ function duVTableFilterActive(el) {
   // VTable 筛选菜单常驻 DOM，通过 display:block/none 表示打开/关闭。
   return duVisible(el);
 }
+function duIsVTableOverlayNode(el) {
+  return !!duVTableOverlayKind(el);
+}
+function duVTableOverlayVisible(el) {
+  // VTable tooltip/menu 常驻 DOM，通过 --hidden/--shown class 表示打开/关闭。
+  return duVTableOverlayActive(el);
+}
 function duKeepFloatNode(el) {
   if (duIsCalendarNode(el)) return duCalendarActive(el);
   if (duIsVTableFilterNode(el)) return !ONLY_VISIBLE || duVTableFilterActive(el);
+  if (duIsVTableOverlayNode(el)) return !ONLY_VISIBLE || duVTableOverlayVisible(el);
   return !ONLY_VISIBLE || duVisible(el);
 }
 function duCalendarPanel(panel, side) {
@@ -690,9 +743,12 @@ for (var i = 0; i < nodes.length; i++) {
   else if (/\\bant-tooltip\\b/.test(cls)) kind = 'tooltip';
   else if (/\\bant-dropdown\\b/.test(cls)) kind = 'dropdown';
   else if (/\\bvtable-filter-menu\\b/.test(cls)) kind = 'vtable-filter-menu';
+  else if (/\\bvtable__bubble-tooltip-element\\b/.test(cls)) kind = 'vtable-tooltip';
+  else if (/\\bvtable__menu-element\\b/.test(cls)) kind = 'vtable-menu';
   else if (duIsCalendarNode(n)) kind = 'calendar';
   var calendar = kind === 'calendar' ? duScanCalendar(n) : null;
   var vtableFilter = kind === 'vtable-filter-menu' ? duScanVTableFilterMenu(n) : null;
+  var vtableOverlay = (kind === 'vtable-tooltip' || kind === 'vtable-menu') ? duScanVTableOverlay(n) : null;
   // 标题提取
   var titleEl = n.querySelector('.ant-modal-title, .ant-drawer-title, .ant-modal-header');
   var title = titleEl ? duCleanText(titleEl.textContent) : '';
@@ -701,6 +757,11 @@ for (var i = 0; i < nodes.length; i++) {
     title = (calendar.mode === 'range' ? '日期范围选择器' : '日期选择器') + (panelTitle ? ' ' + panelTitle : '');
   }
   if (!title && vtableFilter) title = 'VTable列头筛选';
+  if (!title && vtableOverlay) {
+    title = vtableOverlay.kind === 'vtable-tooltip'
+      ? (vtableOverlay.text || 'VTable工具提示')
+      : ((vtableOverlay.options && vtableOverlay.options[0]) || vtableOverlay.text || 'VTable菜单');
+  }
   if (!title) {
     var raw = n.innerText || n.textContent || '';
     var parts = raw.split(/\\n/).map(function(s){ return s.trim(); }).filter(function(s){ return s.length > 0; });
@@ -823,7 +884,7 @@ for (var i = 0; i < nodes.length; i++) {
   out.push({
     title: title, type: kind, text: text.slice(0, 800),
     buttons: buttons, fields: fields, closeButton: closeButton,
-    calendar: calendar, vtableFilter: vtableFilter,
+    calendar: calendar, vtableFilter: vtableFilter, vtableOverlay: vtableOverlay,
     center: frCenter(n), rect: frRect(n)
   });
 }

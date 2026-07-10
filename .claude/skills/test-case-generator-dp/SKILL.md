@@ -159,12 +159,12 @@ VTable 是 canvas 渲染，无真实 DOM 节点。所有点击走坐标，工具
 ### 弹窗检测
 详见 `references/modal-types.md`。
 
-**优先使用 `scan_floats(only_visible=True, include_table_data=True)`** 进行综合浮窗检测，一次调用即可获取所有可见浮窗（模态框/抽屉/弹出框/消息/通知等）的结构化信息，包括标题、类型、中心坐标、关闭按钮、操作按钮、表单字段、表格数据。
+**优先使用 `scan_floats(only_visible=True, include_table_data=True)`** 进行综合浮窗检测，一次调用即可获取所有可见浮窗（模态框/抽屉/弹出框/消息/通知、VTable 列头筛选、工具栏提示、列设置菜单等）的结构化信息，包括标题、类型、中心坐标、关闭按钮、操作按钮、表单字段、表格数据。
 
 点击后如需捕获短寿命 toast（如「操作成功」），`scan_floats` 内部已集成 toast 检测，无需额外调用。
 仅在只需知道「有无弹窗」而不需要详细结构时使用 `observe_start`/`observe_wait`。
 
-VTable 列头筛选、单元格编辑器、虚拟下拉等特殊浮层必须通过 `drissionpage-mcp` 的 VTable facade 处理。若当前工具无法返回结构化结果，记录工具缺口并降级生成低级展示类用例，不在 skill 中内联 raw JS。
+VTable 列头筛选、工具栏提示、列设置菜单由 `scan_floats` / `observe_snapshot` 返回；单元格编辑器、虚拟下拉等特殊浮层必须通过 `drissionpage-mcp` 的 VTable facade 处理。若当前工具无法返回结构化结果，记录工具缺口并降级生成低级展示类用例，不在 skill 中内联 raw JS。
 
 ### 弹窗交互策略
 **与弹窗交互前 MUST 先用 `scan_floats` 获取弹窗结构化信息**，如需更详细 DOM 层级再用 `dom_tree`。

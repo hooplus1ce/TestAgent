@@ -34,6 +34,7 @@ AI 只依赖 MCP 返回的结构化结果：
 | 数据行单元格图标 | 先 `get_vtable_cell_icons`，再 `vtable_action(target="cell-icon", icon_name=... 或 icon_index=...)` | 行内查看/编辑/删除等图标动作及反馈 |
 | 状态标签颜色 | 使用 `get_vtable_cell_render_info` 读取 `fontColor`、`tagBackgroundColor`、`cellBackgroundColor` | 状态颜色、行背景、视觉规则 |
 | 列头排序/筛选 | 使用 `vtable_action(target="header-icon", icon_name=...)` 或 `click_table_cell(..., icon_name=...)` | 数据顺序变化、筛选条件生效、空结果 |
+| VTable 工具栏/列设置菜单 | 点击后用 `scan_floats` / `observe_snapshot` 读取 `vtable-tooltip`、`vtable-menu`、`vtable-filter-menu` | 只处理可见态浮层；隐藏态 DOM 残留不作为行为依据 |
 | 横向滚动 | 使用表格专项工具或 `scan_table` 返回的滚动能力 | 右侧列可见性、固定列状态、滚动后数据一致 |
 | 列宽调整 | 使用表格专项工具 | 宽度变化、内容展示、刷新后是否保持 |
 | 单元格编辑/虚拟下拉 | 使用 MCP 返回的编辑器/浮层结构化结果 | 可选值来源、保存校验、编辑后表格值与接口结果 |

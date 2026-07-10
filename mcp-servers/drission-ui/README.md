@@ -52,6 +52,8 @@ uv add DrissionPage "mcp[cli]>=1.28.1,<2" ddddocr httpx openpyxl
 
 重复工具已从 public MCP 列表移除：VTable/HTML 表格直连工具统一迁移到表格 facade；浮层/弹窗当前状态统一使用 `observe_snapshot`，点击后观察统一使用 `observe_start → action → observe_wait`。
 
+VTable 特殊浮层也由 observer / `observe_snapshot` 统一返回：`.vtable-filter-menu` 为 `vtable-filter-menu`，`.vtable__bubble-tooltip-element` 为 `vtable-tooltip`，`.vtable__menu-element` 为 `vtable-menu`。默认只返回可见浮层，`vtable__bubble-tooltip-element--hidden` / `vtable__menu-element--hidden` 这类 DOM 残留不会误报。
+
 ## 模块
 
 ```
