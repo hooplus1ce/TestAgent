@@ -32,6 +32,7 @@ _SIGNAL_PRIORITY = {
     "confirm": 0,
     "interactive": 0,
     "drawer": 0,
+    "vtable-filter-menu": 0,
     "url_change": 1,
     "tab_change": 1,
     "network": 2,
@@ -140,7 +141,7 @@ def _event_summary(event: dict) -> dict:
             value = event.get(key)
             if value not in (None, "", False):
                 out[key] = value
-    elif event.get("type") in ("calendar", "select-dropdown", "dropdown"):
+    elif event.get("type") in ("calendar", "select-dropdown", "dropdown", "vtable-filter-menu"):
         if payload.get("mode"):
             out["mode"] = payload.get("mode")
         if payload.get("cellCount") is not None:
@@ -148,6 +149,10 @@ def _event_summary(event: dict) -> dict:
         options = payload.get("options")
         if isinstance(options, list):
             out["optionCount"] = len(options)
+        if payload.get("activeTab"):
+            out["activeTab"] = payload.get("activeTab")
+        if payload.get("valueCount") is not None:
+            out["valueCount"] = payload.get("valueCount")
 
     return out
 
@@ -169,6 +174,7 @@ _ALL_SELS = [
     ".ant-tooltip",
     ".ant-dropdown",
     ".ant-select-dropdown",
+    ".vtable-filter-menu",
     ".ant-calendar-picker-container",
     ".ant-calendar",
     _SEL_NOTIFICATION,
@@ -188,6 +194,7 @@ var SELS = [
   '.ant-tooltip',
   '.ant-dropdown',
   '.ant-select-dropdown',
+  '.vtable-filter-menu',
   '.ant-calendar-picker-container',
   '.ant-calendar',
   '.ant-notification-notice',
@@ -215,12 +222,71 @@ function optionTexts(el){
     '.ant-dropdown-menu-item,.ant-select-dropdown-menu-item,.ant-select-item-option,li,[role="option"]'
   )).map(function(i){ return cleanText(i.textContent); }).filter(Boolean).slice(0, 50);
 }
+function vtableFilterPayload(el){
+  var activeTab = '';
+  var tabs = [].slice.call(el.querySelectorAll('button')).map(function(b){
+    var s = window.getComputedStyle(b);
+    var active = s.color === 'rgb(0, 123, 255)' || s.borderBottomColor === 'rgb(0, 123, 255)' ||
+      (b.style && b.style.borderBottomColor === 'rgb(0, 123, 255)');
+    var text = cleanText(b.textContent);
+    if (active && !activeTab) activeTab = text;
+    return {text:text, active:active};
+  }).filter(function(t){ return t.text; }).slice(0, 10);
+  var search = el.querySelector('input[type="text"][placeholder*="关键词"], input[type="search"]');
+  var valueRows = [].slice.call(el.querySelectorAll('input[type="checkbox"]')).map(function(cb){
+    var label = cb.closest('label');
+    var row = cb.closest('div');
+    var countEl = row ? row.querySelector('span') : null;
+    return {
+      text: cleanText(label ? label.textContent : cb.value),
+      value: cb.value || '',
+      checked: !!cb.checked,
+      count: countEl ? cleanText(countEl.textContent) : ''
+    };
+  }).filter(function(v){ return v.text || v.value; }).slice(0, 80);
+  var selects = [].slice.call(el.querySelectorAll('select')).map(function(sel){
+    return {
+      value: sel.value || '',
+      options: [].slice.call(sel.options || []).map(function(opt){
+        return {value: opt.value || '', text: cleanText(opt.textContent), selected: !!opt.selected};
+      }).slice(0, 30)
+    };
+  }).slice(0, 5);
+  var inputs = [].slice.call(el.querySelectorAll('input[type="text"]')).map(function(input){
+    return {placeholder: input.getAttribute('placeholder') || '', value: input.value || ''};
+  }).slice(0, 10);
+  var clear = el.querySelector('a');
+  var style = window.getComputedStyle(el);
+  return {
+    type:'vtable-filter-menu',
+    scope:scope,
+    title:'VTable列头筛选',
+    display: style.display,
+    activeTab: activeTab,
+    tabs: tabs,
+    search: search ? {placeholder: search.getAttribute('placeholder') || '', value: search.value || ''} : null,
+    values: valueRows,
+    valueCount: valueRows.filter(function(v){ return v.value; }).length,
+    condition: {selects: selects, inputs: inputs},
+    buttons: buttonTexts(el),
+    clearDisabled: clear ? (window.getComputedStyle(clear).pointerEvents === 'none' ||
+      parseFloat(window.getComputedStyle(clear).opacity || '1') < 1) : null,
+    rect: rectOf(el)
+  };
+}
 function isCalendarNode(el){
   var cls = el.className || ''; if (typeof cls !== 'string') cls = '';
   return cls.indexOf('ant-calendar-picker-container') >= 0 || cls.indexOf('ant-calendar') >= 0;
 }
+function isVTableFilterNode(el){
+  var cls = el.className || ''; if (typeof cls !== 'string') cls = '';
+  return cls.indexOf('vtable-filter-menu') >= 0;
+}
 function classify(el){
   var cls = el.className || ''; if (typeof cls !== 'string') cls = '';
+  if (cls.indexOf('vtable-filter-menu') >= 0) {
+    return vtableFilterPayload(el);
+  }
   if (cls.indexOf('ant-modal-content') >= 0) {
     var isConfirm = !!el.querySelector('.ant-confirm-body');
     var title = el.querySelector('.ant-modal-title');
@@ -305,6 +371,8 @@ function isVis(el){
 function isActiveSignal(el){
   // 本系统 ant-calendar 打开/关闭由 DOM 挂载决定，不以 display:none 作为唯一依据。
   if (isCalendarNode(el)) return !!(el && el.isConnected);
+  // VTable 列头筛选菜单会残留在 DOM 中并通过 display:block/none 切换。
+  if (isVTableFilterNode(el)) return isVis(el);
   return isVis(el);
 }
 function signalFromNode(n){
@@ -406,7 +474,7 @@ def _build_session(signals, listen_targets, timeout_for_net=None):
     dom_types = set()
     overlay_types = {
         "interactive", "confirm", "drawer", "popover", "tooltip",
-        "dropdown", "select-dropdown", "calendar",
+        "dropdown", "select-dropdown", "vtable-filter-menu", "calendar",
     }
     if "overlay" in sigset:
         dom_types |= overlay_types
@@ -419,7 +487,9 @@ def _build_session(signals, listen_targets, timeout_for_net=None):
     if "tooltip" in sigset:
         dom_types.add("tooltip")
     if "dropdown" in sigset:
-        dom_types |= {"dropdown", "select-dropdown"}
+        dom_types |= {"dropdown", "select-dropdown", "vtable-filter-menu"}
+    if "vtable-filter" in sigset or "vtable-filter-menu" in sigset:
+        dom_types.add("vtable-filter-menu")
     if "calendar" in sigset:
         dom_types.add("calendar")
     if "notification" in sigset:
@@ -622,7 +692,7 @@ def observe_start(signals=None, listen_targets=None) -> dict:
 
     Args:
         signals: 监听信号类型列表，默认 ['overlay','notification','message','tab','url']。
-                 可选：'overlay'/'modal'/'drawer'/'dropdown'/'calendar'/
+                 可选：'overlay'/'modal'/'drawer'/'dropdown'/'vtable-filter-menu'/'calendar'/
                  'notification'/'message'/'tab'/'url'/'network'。
         listen_targets: 网络监听 URL 特征（逗号分隔）；仅 signals 含 'network' 时生效。
 

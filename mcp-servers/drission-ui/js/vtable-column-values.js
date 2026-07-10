@@ -84,6 +84,229 @@ function getCellCenterViewport(col, row) {
   };
 }
 
+function _duRound(n) {
+  return Math.round(n * 10) / 10;
+}
+
+function _duSafeValue(value) {
+  if (value === undefined || value === null) return null;
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') return value;
+  try { return JSON.parse(JSON.stringify(value)); } catch (e) { return String(value); }
+}
+
+function _duBounds(node) {
+  var b = node && node.globalAABBBounds;
+  if (!b || typeof b.x1 !== 'number') return null;
+  var w = b.x2 - b.x1, h = b.y2 - b.y1;
+  return {
+    x1: _duRound(b.x1), y1: _duRound(b.y1),
+    x2: _duRound(b.x2), y2: _duRound(b.y2),
+    width: _duRound(w), height: _duRound(h),
+    area: _duRound(w * h),
+    centerX: _duRound((b.x1 + b.x2) / 2),
+    centerY: _duRound((b.y1 + b.y2) / 2)
+  };
+}
+
+function _duViewportOrigin() {
+  var ifrRect = window.frameElement ? window.frameElement.getBoundingClientRect() : { left: 0, top: 0 };
+  var vtEl = document.querySelector('.vtable') || document.querySelector('[class*="vtable"]');
+  var vtRect = vtEl ? vtEl.getBoundingClientRect() : { left: 0, top: 0 };
+  return { left: ifrRect.left + vtRect.left, top: ifrRect.top + vtRect.top };
+}
+
+function _duTextColor(attr) {
+  if (!attr) return null;
+  if (attr.fill || attr.color || attr.textFill || attr.fontColor) {
+    return attr.fill || attr.color || attr.textFill || attr.fontColor;
+  }
+  var cfg = attr.textConfig;
+  if (cfg && cfg.length) {
+    for (var i = 0; i < cfg.length; i++) {
+      if (cfg[i] && (cfg[i].fill || cfg[i].color)) return cfg[i].fill || cfg[i].color;
+    }
+  }
+  return null;
+}
+
+function _duIntersects(a, b) {
+  if (!a || !b) return false;
+  return !(a.x2 < b.x1 || a.x1 > b.x2 || a.y2 < b.y1 || a.y1 > b.y2);
+}
+
+function _duContainsPoint(b, x, y) {
+  return !!b && x >= b.x1 && x <= b.x2 && y >= b.y1 && y <= b.y2;
+}
+
+function getCellRenderInfo(col, row, detail) {
+  var t = window._vtable;
+  if (!t || !t.scenegraph || !t.scenegraph.getCell) return { ok: false, reason: 'no vtable scenegraph' };
+  var cell = t.scenegraph.getCell(col, row);
+  if (!cell) return { ok: false, reason: 'cell not rendered', col: col, row: row };
+
+  var cellBounds = _duBounds(cell);
+  var textNodes = [], bgNodes = [], allNodes = [];
+  function walk(node, depth) {
+    if (!node || depth > 10) return;
+    var attr = node.attribute || {};
+    var bounds = _duBounds(node);
+    var hasText = attr.text !== undefined && String(attr.text || '').trim() !== '';
+    var isText = node.type === 'text' || attr.text !== undefined;
+    var info = {
+      depth: depth,
+      type: node.type || '',
+      name: node.name || '',
+      text: attr.text === undefined ? null : String(attr.text),
+      textColor: _duSafeValue(isText ? _duTextColor(attr) : null),
+      fill: _duSafeValue(attr.fill),
+      background: _duSafeValue(attr.background || attr.backgroundColor),
+      stroke: _duSafeValue(attr.stroke),
+      fontSize: attr.fontSize || null,
+      fontWeight: attr.fontWeight || null,
+      bounds: bounds
+    };
+    allNodes.push(info);
+    if (isText && hasText) textNodes.push(info);
+
+    var bg = isText ? (attr.background || attr.backgroundColor) : (attr.background || attr.backgroundColor || attr.fill);
+    if (bg && bounds && bounds.area > 0) {
+      var copy = {};
+      for (var k in info) copy[k] = info[k];
+      copy.backgroundPaint = _duSafeValue(bg);
+      bgNodes.push(copy);
+    }
+
+    var children = node.children || [];
+    for (var i = 0; i < children.length; i++) walk(children[i], depth + 1);
+  }
+  walk(cell, 0);
+
+  var primaryText = textNodes[0] || null;
+  var textBounds = primaryText ? primaryText.bounds : null;
+  var cellBg = null, tagBg = null;
+  for (var i = 0; i < bgNodes.length; i++) {
+    var n = bgNodes[i];
+    var areaRatio = cellBounds && n.bounds ? n.bounds.area / cellBounds.area : null;
+    n.areaRatio = areaRatio === null ? null : Math.round(areaRatio * 1000) / 1000;
+    if (areaRatio !== null && areaRatio >= 0.75) {
+      if (!cellBg || Math.abs(1 - areaRatio) < Math.abs(1 - cellBg.areaRatio)) cellBg = n;
+    }
+    var textRelated = textBounds && (_duContainsPoint(n.bounds, textBounds.centerX, textBounds.centerY) || _duIntersects(n.bounds, textBounds));
+    if (areaRatio !== null && areaRatio > 0.03 && areaRatio < 0.75 && textRelated) {
+      if (!tagBg || n.bounds.area > tagBg.bounds.area) tagBg = n;
+    }
+  }
+  if (!cellBg) {
+    var ca = cell.attribute || {};
+    var paint = ca.background || ca.backgroundColor || ca.fill;
+    if (paint) cellBg = { backgroundPaint: _duSafeValue(paint), type: cell.type || '', name: cell.name || '', bounds: cellBounds, areaRatio: 1, stroke: _duSafeValue(ca.stroke) };
+  }
+  if (!tagBg && primaryText && primaryText.background) {
+    tagBg = {
+      backgroundPaint: primaryText.background,
+      type: primaryText.type,
+      name: primaryText.name,
+      bounds: primaryText.bounds,
+      areaRatio: primaryText.bounds && cellBounds ? Math.round((primaryText.bounds.area / cellBounds.area) * 1000) / 1000 : null
+    };
+  }
+
+  var result = {
+    ok: true,
+    col: col,
+    row: row,
+    value: (function () { try { return t.getCellValue ? t.getCellValue(col, row) : null; } catch (e) { return null; } })(),
+    cellType: (function () { try { return t.getCellType ? t.getCellType(col, row) : null; } catch (e) { return null; } })(),
+    text: primaryText ? primaryText.text : null,
+    fontColor: primaryText ? primaryText.textColor : null,
+    tagBackgroundColor: tagBg ? tagBg.backgroundPaint : null,
+    cellBackgroundColor: cellBg ? cellBg.backgroundPaint : null,
+    cellBorderColor: cellBg ? (cellBg.stroke || null) : _duSafeValue((cell.attribute || {}).stroke),
+    cellBounds: cellBounds,
+    tagBackgroundNode: tagBg ? { type: tagBg.type, name: tagBg.name, bounds: tagBg.bounds, areaRatio: tagBg.areaRatio, backgroundPaint: tagBg.backgroundPaint } : null,
+    cellBackgroundNode: cellBg ? { type: cellBg.type, name: cellBg.name, bounds: cellBg.bounds, areaRatio: cellBg.areaRatio, backgroundPaint: cellBg.backgroundPaint, stroke: cellBg.stroke || null } : null
+  };
+  if (detail === 'full') {
+    result.textNodes = textNodes;
+    result.backgroundNodes = bgNodes;
+    result.nodes = allNodes;
+  } else {
+    result.textNodes = textNodes.slice(0, 3);
+    result.backgroundNodes = bgNodes.slice(0, 5);
+    result.nodeCount = allNodes.length;
+  }
+  return result;
+}
+
+function getCellIconsViewport(col, row, iconName, detail) {
+  var t = window._vtable;
+  if (!t || !t.scenegraph || !t.scenegraph.getCell) return { ok: false, reason: 'no vtable scenegraph' };
+  var cell = t.scenegraph.getCell(col, row);
+  if (!cell) return { ok: false, reason: 'cell not rendered', col: col, row: row };
+  var origin = _duViewportOrigin();
+  var low = (iconName || '').toLowerCase();
+  var icons = [], all = [];
+  var MAX_COORD = 1e15;
+
+  function pushIcon(node, depth) {
+    var attr = node.attribute || {};
+    var bounds = _duBounds(node);
+    if (!bounds || Math.abs(bounds.x1) >= MAX_COORD || Math.abs(bounds.y1) >= MAX_COORD) return;
+    if (bounds.width <= 0 || bounds.width > 500 || bounds.height <= 0 || bounds.height > 500) return;
+    var type = node.type || '';
+    var name = node.name || '';
+    var isText = type === 'text' || attr.text !== undefined || name === 'text';
+    var hasIconIdentity = (!!name && name !== 'text') || type === 'image' || type === 'symbol' || type === 'icon' || type === 'path' || !!attr.symbolType || !!attr.image;
+    if (isText || !hasIconIdentity) return;
+    var text = [name, type, attr.symbolType || '', attr.id || '', attr.role || ''].join(' ').toLowerCase();
+    if (low && text.indexOf(low) === -1) return;
+    var icon = {
+      index: icons.length,
+      depth: depth,
+      name: name,
+      type: type,
+      symbolType: attr.symbolType || null,
+      width: bounds.width,
+      height: bounds.height,
+      centerX: bounds.centerX,
+      centerY: bounds.centerY,
+      viewportX: _duRound(origin.left + bounds.centerX),
+      viewportY: _duRound(origin.top + bounds.centerY),
+      bounds: bounds,
+      coordinate_space: 'top_viewport'
+    };
+    if (detail === 'full') {
+      icon.fill = _duSafeValue(attr.fill);
+      icon.background = _duSafeValue(attr.background || attr.backgroundColor);
+      icon.stroke = _duSafeValue(attr.stroke);
+      icon.attributeKeys = Object.keys(attr).slice(0, 30);
+    }
+    icons.push(icon);
+  }
+
+  function walk(node, depth) {
+    if (!node || depth > 10) return;
+    if (depth > 0) {
+      if (detail === 'full') {
+        all.push({ depth: depth, type: node.type || '', name: node.name || '', bounds: _duBounds(node), attributeKeys: Object.keys(node.attribute || {}).slice(0, 30) });
+      }
+      pushIcon(node, depth);
+    }
+    var children = node.children || [];
+    for (var i = 0; i < children.length; i++) walk(children[i], depth + 1);
+  }
+  walk(cell, 0);
+  return {
+    ok: true,
+    col: col,
+    row: row,
+    iconName: iconName || null,
+    count: icons.length,
+    icons: icons,
+    nodes: detail === 'full' ? all : undefined
+  };
+}
+
 // ---- 滚动到目标单元格（确保在视口内再取坐标）----
 function scrollToCell(col, row) {
   var t = window._vtable;

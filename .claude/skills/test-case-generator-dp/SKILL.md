@@ -99,12 +99,12 @@ description: 为 WMS/MOM/ERP 等企业系统迭代生成测试用例（DrissionP
 **核心原则**：不一次性生成全部用例，通过对话按用户指示逐步覆盖各区域。
 ```
 用户 → 指令（如「测一下批量排产按钮」）
-  Agent → 执行（scan_floats / click 或 click_table_cell / scan_floats / listen_wait）
+  Agent → 执行（scan_floats / click 或 vtable_action 或 click_table_cell / scan_floats / listen_wait）
   Agent → 汇报结果 + 询问下一步
 用户 → 继续或调整方向
 ```
 
-**每次 `click`/`click_table_cell`/`click_xy` 后 MUST 使用 `scan_floats()` 检测页面变化**，它能捕获所有类型的浮窗（含短寿命 toast）+ 表格数据变化 + 页签切换。
+**每次 `click`/`vtable_action`/`click_table_cell`/`click_xy` 后 MUST 使用 `scan_floats()` 检测页面变化**，它能捕获所有类型的浮窗（含短寿命 toast）+ 表格数据变化 + 页签切换。
 
 需要抓接口时单独使用 `listen_start` / `listen_wait` 做接口断言。
 只有在 `scan_floats` 返回结果不够明确（如需区分弹窗子类型）时才使用 `observe_start`/`observe_wait`。
@@ -129,7 +129,7 @@ description: 为 WMS/MOM/ERP 等企业系统迭代生成测试用例（DrissionP
 ### 坐标与 VTable
 VTable 是 canvas 渲染，无真实 DOM 节点。所有点击走坐标，工具自动处理 iframe 偏移和坐标换算。
 
-**表格交互统一使用 facade**：优先 `scan_table(kind="auto")`，点击用 `click_table_cell(...)`；VTable 列超出视口时工具内部自动滚动并换算坐标。
+**表格交互统一使用 facade**：优先 `scan_table(kind="auto")`；普通单元格点击用 `click_table_cell(...)`，VTable 专项 click/double_click/hover/drag 用 `vtable_action(...)`，其中数据行单元格图标使用 `target="cell-icon"` 并先通过 `get_vtable_cell_icons(...)` 确认候选图标。状态标签、字体色、单元格背景色断言使用 `get_vtable_cell_render_info(...)`。VTable 列超出视口时工具内部自动滚动并换算坐标。
 
 ### iframe
 业务模块在 `[role=tabpanel][aria-hidden=false] iframe` 内。MCP 工具默认 `in_frame=True`，坐标换算自动完成。入口流程、模块切换、页签切换或 session 刷新后，都用 `get_active_frame()` 重新确认当前激活 iframe。

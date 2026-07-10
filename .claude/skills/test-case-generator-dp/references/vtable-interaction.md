@@ -9,6 +9,9 @@ AI 只依赖 MCP 返回的结构化结果：
 | 能力 | 用途 | 要求 |
 |---|---|---|
 | `scan_table(kind="auto")` | 获取表格类型、列定义、可见数据、可交互列、列头图标 | 探索表格前必须先调用 |
+| `get_vtable_cell_render_info(...)` | 读取单元格文本、字体色、标签底色、单元格背景色/边框色 | 用于状态标签颜色、行背景、视觉样式断言 |
+| `get_vtable_cell_icons(...)` | 读取任意单元格内可能存在的数据行图标及顶层视口坐标 | 点击数据行图标前先调用，避免误点 |
+| `vtable_action(...)` | VTable 专项 click/double_click/hover/drag，支持 cell/header/header-icon/cell-icon | 工具内部滚动到可见、重算顶层视口坐标后再动作 |
 | `click_table_cell(...)` | 点击复选框、链接、按钮、列头图标或可编辑单元格 | iframe、滚动、坐标换算由工具处理 |
 | `get_table_values(...)` / `get_column_values(...)` | 读取用户可见数据 | 用于筛选、排序、编辑后的断言 |
 | `observe_start` / `observe_wait` | 捕获点击后的弹窗、消息、Tab、URL、接口变化 | 每次点击前后必须使用 |
@@ -28,7 +31,9 @@ AI 只依赖 MCP 返回的结构化结果：
 |---|---|---|
 | 行选择 | 使用 `click_table_cell` 点击复选框列 | 选中态变化、按钮启用/禁用、批量操作前置条件 |
 | 链接/按钮单元格 | 使用 `click_table_cell` 触发，再观察反馈 | 详情弹窗、页面跳转、消息提示、接口响应 |
-| 列头排序/筛选 | 使用 MCP 暴露的列头图标能力 | 数据顺序变化、筛选条件生效、空结果 |
+| 数据行单元格图标 | 先 `get_vtable_cell_icons`，再 `vtable_action(target="cell-icon", icon_name=... 或 icon_index=...)` | 行内查看/编辑/删除等图标动作及反馈 |
+| 状态标签颜色 | 使用 `get_vtable_cell_render_info` 读取 `fontColor`、`tagBackgroundColor`、`cellBackgroundColor` | 状态颜色、行背景、视觉规则 |
+| 列头排序/筛选 | 使用 `vtable_action(target="header-icon", icon_name=...)` 或 `click_table_cell(..., icon_name=...)` | 数据顺序变化、筛选条件生效、空结果 |
 | 横向滚动 | 使用表格专项工具或 `scan_table` 返回的滚动能力 | 右侧列可见性、固定列状态、滚动后数据一致 |
 | 列宽调整 | 使用表格专项工具 | 宽度变化、内容展示、刷新后是否保持 |
 | 单元格编辑/虚拟下拉 | 使用 MCP 返回的编辑器/浮层结构化结果 | 可选值来源、保存校验、编辑后表格值与接口结果 |

@@ -49,7 +49,8 @@ CAP_GROUPS = {
         # 统一表格 facade
         "scan_table", "get_table_values", "get_table_data",
         "get_all_table_data", "scan_action_availability_by_selection",
-        "click_table_cell", "hover_table_cell", "resize_table_column",
+        "get_vtable_cell_render_info", "get_vtable_cell_icons",
+        "vtable_action", "click_table_cell", "hover_table_cell", "resize_table_column",
     ],
     "filter": [
         # 筛选区

@@ -46,6 +46,10 @@ Read only the references needed for the requested area when the task is narrow.
 2. Enter the requested module with `enter_module(..., expand_filter=True)` when the ready gate did not already land on the target module, then run `get_active_frame` again.
 3. Collect page structure with `scan_page_elements`, `dom_tree`,
    `scan_filter_fields`, and `scan_table(kind="auto")`.
+   Use `vtable_action(...)` or `click_table_cell(...)` for VTable interactions;
+   use `get_vtable_cell_render_info(...)` for status tag/text/background color assertions
+   and `get_vtable_cell_icons(...)` before clicking data-row cell icons;
+   do not compute canvas coordinates in the skill.
 4. Build a coverage model before generating cases: asset inventory, testable
    functions, scenario matrix, and coverage statuses (`已验证`, `待验证`,
    `需用户确认`, `工具缺口`).

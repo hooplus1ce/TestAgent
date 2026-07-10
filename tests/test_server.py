@@ -48,6 +48,9 @@ EXPECTED_PUBLIC_TOOLS = {
     "get_table_values",
     "get_table_data",
     "get_all_table_data",
+    "get_vtable_cell_render_info",
+    "get_vtable_cell_icons",
+    "vtable_action",
     "click_table_cell",
     "hover_table_cell",
     "resize_table_column",
@@ -589,6 +592,9 @@ def test_table_facade_registered():
         "scan_table",
         "get_table_values",
         "get_table_data",
+        "get_vtable_cell_render_info",
+        "get_vtable_cell_icons",
+        "vtable_action",
         "click_table_cell",
         "hover_table_cell",
         "resize_table_column",
@@ -680,6 +686,110 @@ def test_scan_floats_includes_ant_calendar_by_dom_presence():
     assert "return !!(el && el.isConnected);" in js
     assert "var nodes = nodeList.filter(duKeepFloatNode);" in js
     assert "nodeList.filter(duVisible)" not in js
+
+
+def test_scan_floats_includes_visible_vtable_filter_menu_by_display_state():
+    import page_model
+
+    captured_js = []
+
+    def fake_run_json(target, js, default):
+        captured_js.append(js)
+        return {
+            "ok": True,
+            "floats": [{
+                "type": "vtable-filter-menu",
+                "title": "VTable列头筛选",
+                "vtableFilter": {
+                    "display": "block",
+                    "activeTab": "按值筛选",
+                    "valueCount": 8,
+                    "values": [{"value": "MO202607080010", "text": "MO202607080010", "count": "1"}],
+                },
+            }],
+        }
+
+    with patch.object(page_model, "_targets", return_value=(object(), None, [("top", object())])), \
+         patch.object(page_model, "_run_json", side_effect=fake_run_json), \
+         patch.object(page_model.browser_session, "get_active_tab_name", return_value="active"), \
+         patch("observe.detect_message", return_value={}), \
+         patch("observe.detect_notification", return_value={}):
+        result = page_model.scan_floats()
+
+    assert result["count"] == 1
+    assert result["floats"][0]["type"] == "vtable-filter-menu"
+    assert result["floats"][0]["vtableFilter"]["display"] == "block"
+    assert result["floats"][0]["vtableFilter"]["valueCount"] == 8
+    js = captured_js[0]
+    assert ".vtable-filter-menu" in js
+    assert "function duScanVTableFilterMenu" in js
+    assert "function duVTableFilterActive" in js
+    assert "display:block/none" in js
+
+
+def test_observe_start_watches_vtable_filter_menu_as_overlay():
+    import observe
+
+    assert ".vtable-filter-menu" in observe._INSTALL_OBSERVER_JS
+    assert "vtableFilterPayload" in observe._INSTALL_OBSERVER_JS
+    assert "display" in observe._INSTALL_OBSERVER_JS
+
+    fake_tab = SimpleNamespace(url="https://example.test/top")
+    fake_frame = SimpleNamespace(url="https://example.test/frame")
+
+    with observe._session_lock:
+        observe._session.clear()
+
+    try:
+        with patch.object(observe.browser_session, "get_tab", return_value=fake_tab), \
+             patch.object(observe.browser_session, "get_active_frame", return_value=fake_frame), \
+             patch.object(observe.browser_session, "tab_count", return_value=1), \
+             patch.object(observe, "_run_js_safe", return_value={"ok": True}):
+            observe.observe_start(signals=["overlay"])
+
+        with observe._session_lock:
+            assert "vtable-filter-menu" in observe._session["dom_types"]
+    finally:
+        with observe._session_lock:
+            observe._session.clear()
+
+
+def test_drissionpage_observer_and_snapshot_include_vtable_filter_menu():
+    script = r"""
+import json
+import sys
+sys.path.insert(0, 'mcp-servers/drissionpage-mcp')
+import observe
+import page_model
+
+source_consts = "\n".join(str(c) for c in page_model.scan_floats.__code__.co_consts)
+data = {
+    "observer_selector": ".vtable-filter-menu" in observe._INSTALL_OBSERVER_JS,
+    "observer_payload": "vtableFilterPayload" in observe._INSTALL_OBSERVER_JS,
+    "display_payload": "display" in observe._INSTALL_OBSERVER_JS,
+    "scan_selector": ".vtable-filter-menu" in source_consts,
+}
+data["scan_payload"] = "duScanVTableFilterMenu" in source_consts
+data["scan_display"] = "display:block/none" in source_consts
+print(json.dumps(data, ensure_ascii=False, sort_keys=True))
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=os.path.dirname(os.path.dirname(__file__)),
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    data = json.loads(result.stdout)
+
+    assert data == {
+        "display_payload": True,
+        "observer_payload": True,
+        "observer_selector": True,
+        "scan_display": True,
+        "scan_payload": True,
+        "scan_selector": True,
+    }
 
 
 def test_observe_snapshot_wraps_scan_floats_as_unified_overlays():
@@ -774,6 +884,136 @@ def test_click_table_cell_routes_to_vtable_backend_by_col():
     with patch.object(server.vtable, "click_cell", return_value={"ok": True, "col": 2, "row": 1}) as click_cell:
         assert server.click_table_cell(row=1, col=2, kind="vtable") == {"ok": True, "col": 2, "row": 1, "kind": "vtable"}
         click_cell.assert_called_once_with(2, 1, None, True, 0.3, False)
+
+
+def test_vtable_action_routes_to_backend_by_column_title():
+    import server
+    with patch.object(server, "_find_vtable_col", return_value=(5, None)) as find_col, \
+         patch.object(server.vtable, "vtable_action", return_value={"ok": True, "action": "drag", "col": 5, "row": 2}) as action:
+        result = server.vtable_action(action="drag", row=2, column_title="计划开始",
+                                      drag_by_x=16, clean_overlays=False)
+
+    assert result == {"ok": True, "action": "drag", "col": 5, "row": 2, "kind": "vtable"}
+    find_col.assert_called_once_with("计划开始")
+    action.assert_called_once_with(
+        action="drag",
+        col=5,
+        row=2,
+        target="cell",
+        icon_name=None,
+        icon_index=None,
+        hover_first=True,
+        duration=0.3,
+        drag_to={"dx": 16},
+    )
+
+
+def test_get_vtable_cell_render_info_routes_to_backend_by_column_title():
+    import server
+    with patch.object(server, "_find_vtable_col", return_value=(24, None)) as find_col, \
+         patch.object(server.vtable, "get_cell_render_info", return_value={
+             "ok": True,
+             "text": "生产中",
+             "fontColor": "#000000",
+             "tagBackgroundColor": "rgba(2, 168, 84, 0.2)",
+         }) as get_info:
+        result = server.get_vtable_cell_render_info(row=2, column_title="生产状态", detail="full")
+
+    assert result["ok"] is True
+    assert result["kind"] == "vtable"
+    assert result["text"] == "生产中"
+    find_col.assert_called_once_with("生产状态")
+    get_info.assert_called_once_with(24, 2, detail="full")
+
+
+def test_get_vtable_cell_icons_routes_to_backend_by_col():
+    import server
+    with patch.object(server.vtable, "get_cell_icons", return_value={
+        "ok": True,
+        "icons": [{"index": 0, "name": "edit", "viewportX": 10, "viewportY": 20}],
+    }) as get_icons:
+        result = server.get_vtable_cell_icons(row=3, col=9, icon_name="edit")
+
+    assert result["ok"] is True
+    assert result["kind"] == "vtable"
+    assert result["icons"][0]["name"] == "edit"
+    get_icons.assert_called_once_with(9, 3, icon_name="edit", detail="summary")
+
+
+def test_vtable_action_passes_cell_icon_index_to_backend():
+    import server
+    with patch.object(server.vtable, "vtable_action", return_value={
+        "ok": True,
+        "target": "cell-icon",
+        "icon_index": 1,
+    }) as action:
+        result = server.vtable_action(action="click", row=4, col=8, target="cell-icon",
+                                      icon_index=1, clean_overlays=False)
+
+    assert result == {"ok": True, "target": "cell-icon", "icon_index": 1, "kind": "vtable"}
+    action.assert_called_once_with(
+        action="click",
+        col=8,
+        row=4,
+        target="cell-icon",
+        icon_name=None,
+        icon_index=1,
+        hover_first=True,
+        duration=0.3,
+        drag_to=None,
+    )
+
+
+def test_hover_table_cell_routes_to_vtable_action():
+    import server
+    with patch.object(server.vtable, "vtable_action", return_value={"ok": True, "action": "hover", "col": 2, "row": 1}) as action:
+        assert server.hover_table_cell(row=1, col=2, kind="vtable", duration=0.2) == {
+            "ok": True,
+            "action": "hover",
+            "col": 2,
+            "row": 1,
+            "kind": "vtable",
+        }
+        action.assert_called_once_with(action="hover", col=2, row=1, target="cell", duration=0.2)
+
+
+def test_drissionpage_vtable_action_tool_is_public_and_grouped():
+    script = r"""
+import asyncio
+import json
+import sys
+sys.path.insert(0, 'mcp-servers/drissionpage-mcp')
+import caps
+import server
+
+async def main():
+    tools = await server.mcp.list_tools()
+    names = {tool.name for tool in tools}
+    print(json.dumps({
+        "public": all(name in names for name in [
+            "vtable_action",
+            "get_vtable_cell_render_info",
+            "get_vtable_cell_icons",
+        ]),
+        "grouped": all(name in caps.CAP_GROUPS["vtable"] for name in [
+            "vtable_action",
+            "get_vtable_cell_render_info",
+            "get_vtable_cell_icons",
+        ]),
+    }, ensure_ascii=False, sort_keys=True))
+
+asyncio.run(main())
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=os.path.dirname(os.path.dirname(__file__)),
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    data = json.loads(result.stdout)
+
+    assert data == {"grouped": True, "public": True}
 
 
 def test_write_synchronized_serializes():

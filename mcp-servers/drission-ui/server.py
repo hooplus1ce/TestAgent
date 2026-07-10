@@ -1911,6 +1911,39 @@ def _find_vtable_col(column_title: str, max_col: int = 100):
     return None, "VTable 列未找到: %s" % column_title
 
 
+def _build_vtable_drag_to(drag_to_x=None, drag_to_y=None, drag_by_x=None, drag_by_y=None):
+    has_absolute = drag_to_x is not None or drag_to_y is not None
+    has_relative = drag_by_x is not None or drag_by_y is not None
+    if has_absolute and has_relative:
+        return None, "drag_to_x/drag_to_y 与 drag_by_x/drag_by_y 不能混用"
+    if has_absolute:
+        drag_to = {}
+        if drag_to_x is not None:
+            drag_to["x"] = drag_to_x
+        if drag_to_y is not None:
+            drag_to["y"] = drag_to_y
+        return drag_to, None
+    if has_relative:
+        drag_to = {}
+        if drag_by_x is not None:
+            drag_to["dx"] = drag_by_x
+        if drag_by_y is not None:
+            drag_to["dy"] = drag_by_y
+        return drag_to, None
+    return None, None
+
+
+def _resolve_vtable_action_col(col: int = None, column_title: str = None):
+    target_col = col
+    if target_col is None and column_title:
+        target_col, reason = _find_vtable_col(column_title)
+        if target_col is None:
+            return None, reason
+    if target_col is None:
+        return None, "VTable 动作需要 col 或 column_title"
+    return target_col, None
+
+
 def _scan_table_vtable(max_col: int) -> dict:
     return _tag_table_result("vtable", vtable.scan_vtable_columns(max_col))
 
@@ -2041,6 +2074,67 @@ def get_table_data(kind: str = "auto", table_index: int = 0, filename: str = Non
 
 
 @mcp.tool()
+@read_synchronized
+def get_vtable_cell_render_info(row: int, col: int = None, column_title: str = None,
+                                detail: str = "summary") -> dict:
+    """读取 VTable 单元格渲染信息：文本、字体色、标签底色、单元格背景色/边框色。"""
+    target_col, reason = _resolve_vtable_action_col(col=col, column_title=column_title)
+    if target_col is None:
+        return {"ok": False, "kind": "vtable", "reason": reason}
+    return _tag_table_result("vtable", vtable.get_cell_render_info(target_col, row, detail=detail))
+
+
+@mcp.tool()
+@read_synchronized
+def get_vtable_cell_icons(row: int, col: int = None, column_title: str = None,
+                          icon_name: str = None, detail: str = "summary") -> dict:
+    """读取任意 VTable 单元格内可能存在的图标，返回图标名称/类型和顶层视口坐标。"""
+    target_col, reason = _resolve_vtable_action_col(col=col, column_title=column_title)
+    if target_col is None:
+        return {"ok": False, "kind": "vtable", "reason": reason}
+    return _tag_table_result(
+        "vtable",
+        vtable.get_cell_icons(target_col, row, icon_name=icon_name, detail=detail),
+    )
+
+
+@mcp.tool()
+@write_synchronized
+def vtable_action(action: str = "click", row: int = 0, col: int = None,
+                  column_title: str = None, target: str = "cell",
+                  icon_name: str = None, icon_index: int = None,
+                  hover_first: bool = True,
+                  duration: float = 0.3, drag_to_x: float = None,
+                  drag_to_y: float = None, drag_by_x: float = None,
+                  drag_by_y: float = None, clean_overlays: bool = True) -> dict:
+    """VTable 专项指针动作。工具内部负责滚动到可见、重算顶层视口坐标，再执行 click/double_click/hover/drag。"""
+    action_key = (action or "click").strip().lower().replace("-", "_")
+    cleanup = None if action_key in {"hover", "move", "move_to", "mouseover", "mouse_over"} else _pre_click_cleanup(clean_overlays)
+    target_col, reason = _resolve_vtable_action_col(col=col, column_title=column_title)
+    if target_col is None:
+        return _attach_cleanup({"ok": False, "kind": "vtable", "reason": reason}, cleanup)
+    drag_to, reason = _build_vtable_drag_to(drag_to_x=drag_to_x, drag_to_y=drag_to_y,
+                                           drag_by_x=drag_by_x, drag_by_y=drag_by_y)
+    if reason:
+        return _attach_cleanup({"ok": False, "kind": "vtable", "reason": reason}, cleanup)
+    result = _tag_table_result(
+        "vtable",
+        vtable.vtable_action(
+            action=action,
+            col=target_col,
+            row=row,
+            target=target,
+            icon_name=icon_name,
+            icon_index=icon_index,
+            hover_first=hover_first,
+            duration=duration,
+            drag_to=drag_to,
+        ),
+    )
+    return _attach_cleanup(result, cleanup)
+
+
+@mcp.tool()
 @write_synchronized
 def click_table_cell(row: int, col: int = None, column_title: str = None, kind: str = "auto",
                      table_index: int = 0, icon_name: str = None, hover_first: bool = True,
@@ -2100,13 +2194,11 @@ def hover_table_cell(row: int, col: int = None, column_title: str = None, kind: 
                 return {"ok": False, "kind": "vtable", "reason": reason}
         if target_col is None:
             return {"ok": False, "kind": "vtable", "reason": "VTable 悬停需要 col 或 column_title"}
-        rect = vtable.get_cell_rect(target_col, row, scroll=True)
-        tagged = _tag_table_result("vtable", rect)
-        if not tagged.get("ok"):
-            return tagged
-        tab = browser_session.get_tab()
-        tab.actions.move_to((tagged["viewportX"], tagged["viewportY"]), duration=duration)
-        return tagged
+        return _tag_table_result(
+            "vtable",
+            vtable.vtable_action(action="hover", col=target_col, row=row,
+                                 target="cell", duration=duration),
+        )
 
     if kind == "vtable":
         return _hover_vtable()
@@ -2251,7 +2343,7 @@ def observe_post_click(timeout: float = 10, signals: list = None,
     Args:
         timeout: 最长观察秒数（默认 10）。信号命中立即提前返回。
         signals: 监听信号类型列表，默认 ['overlay','notification','message','tab','url']。
-                 可选：'overlay'/'modal'/'drawer'/'dropdown'/'calendar'/
+                 可选：'overlay'/'modal'/'drawer'/'dropdown'/'vtable-filter-menu'/'calendar'/
                  'notification'/'message'/'tab'/'url'/'network'。
         listen_targets: 网络监听 URL 特征（逗号分隔）；仅 signals 含 'network' 时生效。
         poll_interval: Python 侧读缓冲间隔秒数（默认 0.12）；DOM 实际由 MutationObserver 即时触发。
@@ -2279,7 +2371,7 @@ def observe_start(signals: list[str] = None, listen_targets: str = None) -> dict
 
     Args:
         signals: 监听信号类型列表，默认 ['overlay','notification','message','tab','url']。
-                 可选：'overlay'/'modal'/'drawer'/'dropdown'/'calendar'/
+                 可选：'overlay'/'modal'/'drawer'/'dropdown'/'vtable-filter-menu'/'calendar'/
                  'notification'/'message'/'tab'/'url'/'network'。
         listen_targets: 网络监听 URL 特征（逗号分隔）；仅 signals 含 'network' 时生效。
 

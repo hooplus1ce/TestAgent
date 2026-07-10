@@ -263,7 +263,7 @@ DrissionPage 4.2 中 `listen.start()` 只接收 URL 过滤条件；`method` / `r
 
 #### `run_js(script, in_frame=True)`
 **逃生舱**：执行任意 JS。`in_frame=True` 在活动 iframe 内执行。`script` 内可用 `return` 返回值（建议 `return JSON.stringify(...)`）。
-- **示例**：`run_js("return document.querySelector('.vtable-filter-menu')?.outerHTML")`
+- **示例**：`run_js("return document.title")`
 
 ### 4.4 表格 facade（VTable / HTML Table）
 
@@ -281,6 +281,17 @@ DrissionPage 4.2 中 `listen.start()` 只接收 URL 过滤条件；`method` / `r
 
 #### `get_table_data(kind="auto", table_index=0)`
 读取表格完整数据。HTML Table 支持完整表头和行数据；VTable 暂建议用 `get_table_values` 按列验证。
+
+#### `get_vtable_cell_render_info(row, col=None, column_title=None, detail="summary")`
+读取 VTable 单元格的渲染信息：文本、字体色 `fontColor`、标签底色 `tagBackgroundColor`、单元格背景色 `cellBackgroundColor`、边框色 `cellBorderColor`。用于状态标签颜色、行背景等视觉断言。
+
+#### `get_vtable_cell_icons(row, col=None, column_title=None, icon_name=None, detail="summary")`
+读取任意 VTable 单元格内可能存在的数据行图标，返回 `icons:[{index,name,type,viewportX,viewportY,...}]`。点击数据行图标前先调用该工具确认候选图标。
+
+#### `vtable_action(action="click", row=0, col=None, column_title=None, target="cell", icon_name=None, icon_index=None)`
+VTable 专项指针动作，支持 `click` / `double_click` / `hover` / `drag`。工具内部会先滚动目标到可见区域，再重新获取顶层视口坐标执行动作。
+- `target` 支持 `cell`、`header`、`header-icon`、`cell-icon`；列头筛选图标通常用 `target="header-icon", icon_name="filter"`，数据行图标用 `target="cell-icon"` 并传 `icon_name` 或 `icon_index`。
+- 拖拽可用 `drag_to_x/drag_to_y` 或 `drag_by_x/drag_by_y`，两组参数不要混用。
 
 #### `click_table_cell(row, col=None, column_title=None, kind="auto", icon_name=None, double_click=False)`
 统一点击表格单元格或 VTable 表头图标。
@@ -354,13 +365,13 @@ DrissionPage 4.2 中 `listen.start()` 只接收 URL 过滤条件；`method` / `r
 不一次性生成全部用例，按用户指示逐步覆盖各区域：
 ```
 用户 → 指令（如「测一下批量排产按钮」）
-  AI  → 执行（observe_start / click 或 click_table_cell / observe_wait / scan / listen_wait）→ 汇报 + 询问下一步
+  AI  → 执行（observe_start / click 或 vtable_action 或 click_table_cell / observe_wait / scan / listen_wait）→ 汇报 + 询问下一步
 用户 → 继续或调整方向
 ```
 
 **区域分解**：页签切换 / 筛选区 / 工具栏按钮 / VTable 表头 / VTable 行选择 / VTable 链接列 / 接口验证 / 页面级。
 
-**每次 `click`/`click_table_cell`/`click_xy` 前后 MUST 执行 `observe_start()` → action → `observe_wait()`**。
+**每次 `click`/`vtable_action`/`click_table_cell`/`click_xy` 前后 MUST 执行 `observe_start()` → action → `observe_wait()`**。
 
 **断点续传**：每完成一个区域调用 `load-exploration-state.py` 的 `save_state()`，重启技能时先 `load_state()` 续传。
 
@@ -463,7 +474,7 @@ css:.ant-modal >> tag:button       # 弹窗内的按钮
 | `connect` 失败 | 检查 Chrome 是否以 9222 启动：`curl http://127.0.0.1:9222/json/version`；设 `NO_PROXY=127.0.0.1` |
 | `scan_table` 失败 | `get_active_frame()` 确认 iframe；当前页可能非 VTable 页面。按 `references/vtable-interaction.md` 降级：截图 + 仅生成展示类用例 |
 | `get_table_values` 返回 null | 列标题不匹配——当前模块可能无此列。先 `scan_table` 看真实列标题 |
-| `observe_start/observe_wait` 返回 none 但预期有弹窗 | VTable 筛选弹窗是 `.vtable-filter-menu`（非 `.ant-dropdown`）。用 `run_js("return document.querySelector('.vtable-filter-menu')?.outerHTML")` 补充探测 |
+| `observe_start/observe_wait` 返回 none 但预期有弹窗 | 先确认动作前已调用 `observe_start`。VTable 列头筛选弹窗 `.vtable-filter-menu` 已纳入 observer 和 `observe_snapshot`，只在 `display` 非 `none` 且可见时返回 |
 | 会话过期 | `check_session` → `refresh_session` → 失败则 `refresh_session` |
 | MCP 工具在会话中不可见 | `.mcp.json` 变更后需**重启 Claude Code 会话**才加载 |
 | openpyxl 未安装 | `uv add openpyxl` |
@@ -513,7 +524,7 @@ PYTHONIOENCODING=utf-8 uv run python verify_live.py
 | 导航/frame | `enter_module` `get_active_frame` |
 | 页面理解 | `scan_page_elements` `dom_tree` `find_elements` `find_batch` |
 | 通用交互 | `click` `click_xy` `input` `insert_text` `hover` |
-| 表格 facade | `scan_table` `get_table_values` `get_table_data` `click_table_cell` `hover_table_cell` `resize_table_column` |
+| 表格 facade | `scan_table` `get_table_values` `get_table_data` `get_vtable_cell_render_info` `get_vtable_cell_icons` `vtable_action` `click_table_cell` `hover_table_cell` `resize_table_column` |
 | 筛选区 | `scan_filter_fields` `select_date_range` |
 | 观察/弹窗 | `observe_start` `observe_wait` `close_modal` |
 | 网络断言 | `listen_start` `listen_wait` `listen_stop` |

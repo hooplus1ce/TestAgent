@@ -44,7 +44,7 @@ uv add DrissionPage "mcp[cli]>=1.28.1,<2" ddddocr httpx openpyxl
 | 导航/frame | `enter_module` `get_active_frame` `browser_tabs` |
 | 页面理解 | `capture_page_model` `scan_page_elements` `scan_toolbar_actions` `scan_form_fields` `observe_snapshot` `scan_pagination` `dom_tree` `find_elements` `find_batch` |
 | 通用交互 | `click` `click_xy` `input` `insert_text` `hover` `browser_scroll` `browser_press_key` `browser_get_element_state` |
-| 表格 facade | `scan_table` `get_table_values` `get_table_data` `get_all_table_data` `click_table_cell` `hover_table_cell` `resize_table_column` `scan_action_availability_by_selection` |
+| 表格 facade | `scan_table` `get_table_values` `get_table_data` `get_all_table_data` `get_vtable_cell_render_info` `get_vtable_cell_icons` `vtable_action` `click_table_cell` `hover_table_cell` `resize_table_column` `scan_action_availability_by_selection` |
 | 筛选/下拉 | `scan_filter_fields` `select_date_range` `select_option` |
 | 观察/弹窗 | `observe_snapshot` `observe_start` `observe_wait` `explore_action` `close_modal` |
 | 网络断言 | `listen_start` `listen_wait` `listen_stop` `listen_ws_start` `listen_ws_wait` `network_record_start` `network_record_stop` `network_record_export` |
@@ -150,7 +150,7 @@ export DRISSION_UI_CAPS=all
 
 - 扫描/查询类工具标为 `readOnlyHint=true`。
 - `connect`、`screenshot`、`scan_table(filename=...)` 等会连接会话或写证据文件，但不直接修改业务数据，标为 `destructiveHint=false`。
-- `click`、`input`、`select_option`、`click_table_cell` 等真实 UI 操作按保守策略标为 `destructiveHint=true`。
+- `click`、`input`、`select_option`、`vtable_action`、`click_table_cell` 等真实 UI 操作按保守策略标为 `destructiveHint=true`。
 
 `mcp[cli]` 依赖固定为 `>=1.28.1,<2`：当前项目使用官方 Python SDK v1 的 `FastMCP` 接口；v2 仍处于预发布/迁移阶段，暂不让普通安装自动跨大版本升级。
 
@@ -209,7 +209,7 @@ capture_page_model(filename="WMS/采购入库/page-model.json")
 
 不要在 iframe 内用 `getBoundingClientRect()` 结果直接点击顶层视口；该结果只表示元素相对 iframe 当前视口的位置，缺少 iframe 自身在顶层页面里的偏移。
 
-`scan_table` / `click_table_cell` / `hover_table_cell` / `resize_table_column` 在 VTable 后端返回的 `viewportX/viewportY` 是**顶层视口坐标**，全部在 JS 端一次算好，Python 不再叠加 iframe 偏移：
+`scan_table` / `get_vtable_cell_icons` / `vtable_action` / `click_table_cell` / `hover_table_cell` / `resize_table_column` 在 VTable 后端返回的 `viewportX/viewportY` 是**顶层视口坐标**，全部在 JS 端一次算好，Python 不再叠加 iframe 偏移：
 
 ```
 顶层视口坐标 = window.frameElement.getBoundingClientRect().left + .vtable rect.left + scenegraph globalAABBBounds 中心
@@ -232,7 +232,7 @@ tab.listen.wait(count=5, timeout=10, fit_count=False)
 
 ## 点击前清理
 
-`click` / `click_xy` / `click_table_cell` 默认会在真正点击前清理上一操作残留的 Ant Design `notification` / `message`：
+`click` / `click_xy` / `vtable_action` / `click_table_cell` 默认会在真正点击前清理上一操作残留的 Ant Design `notification` / `message`：
 
 ```python
 click_xy(x=858.8, y=107.6)  # 默认 clean_overlays=True

@@ -1,0 +1,15 @@
+{
+    "mcpServers": {
+        "drissionpage-mcp": {
+            "command": "uv",
+            "args": [
+                "run",
+                "drissionpage-mcp"
+            ],
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "DRISSIONPAGE_MCP_CAPS": "all"
+            }
+        }
+    }
+}

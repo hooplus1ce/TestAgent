@@ -46,6 +46,7 @@
 | `explore_action.detail` 默认 `"summary"` | 日历只返回年/月/选中日期和单元格数，不返回每个格子的坐标/xpath |
 | `observe_snapshot.detail` 默认 `"summary"` | 同上，日历摘要模式 |
 | `scan_floats` 新增 `detail` 参数 | JS 层按 `"summary"` / `"full"` 控制日历单元格返回粒度 |
+| VTable 列头筛选菜单纳入 observer | `.vtable-filter-menu` 会作为 `vtable-filter-menu` 浮层返回，按 `display` 判断是否可见，并提取 tabs、勾选值、条件筛选控件和按钮 |
 
 **用法**：
 - 只需确认浮层有无 → `explore_action`（`signal.snapshot_after` 够用）
@@ -55,8 +56,10 @@
 
 ### 其他规则
 
-- VTable 必须通过表格 facade 操作：`scan_table`、`click_table_cell`、`get_table_values`，调用侧不手写 VTable raw JS。
+- VTable 必须通过表格 facade 操作：`scan_table`、`get_vtable_cell_render_info`、`get_vtable_cell_icons`、`vtable_action`、`click_table_cell`、`get_table_values`，调用侧不手写 VTable raw JS。
+- VTable 状态标签/字体/单元格背景等视觉断言使用 `get_vtable_cell_render_info`；数据行单元格内图标先用 `get_vtable_cell_icons` 探测，再用 `vtable_action(target="cell-icon", icon_name=... 或 icon_index=...)` 点击。
 - VTable 下拉优先识别 `.virtual-option` / virtual 类选项，再降级到普通 option 或 Ant Design。
+- VTable 列头筛选菜单由 observer / `observe_snapshot` 捕获，不再需要用 `run_js` 单独读取 `.vtable-filter-menu`。
 - 弹窗/浮层交互统一走观察器：当前状态用 `observe_snapshot`，交互前后用 `observe_start -> action -> observe_wait`，优先使用封装好的 `explore_action`。
 - 筛选区优先内联模式，字段扫描必须返回字段、操作符和值控件模式。
 - 保存类按钮区分普通按钮和 `ant-dropdown-trigger` 下拉按钮。

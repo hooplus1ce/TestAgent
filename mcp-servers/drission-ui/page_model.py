@@ -214,7 +214,7 @@ function duArea(el){
   if (el.closest('.ant-modal')) return 'modal';
   if (el.closest('.ant-drawer')) return 'drawer';
   if (el.closest('.ant-pagination')) return 'pagination';
-  if (el.closest('.ant-select-dropdown,.ant-dropdown')) return 'dropdown';
+  if (el.closest('.ant-select-dropdown,.ant-dropdown,.vtable-filter-menu')) return 'dropdown';
   if (el.closest('.page-query,.legions-pro-quick-filter')) return 'filter';
   if (el.closest('.ant-table-wrapper,.vtable,[class*="vtable"]')) return 'table';
   if (el.closest('[class*="toolbar"],.ant-card-extra,.ant-tabs-extra-content')) return 'toolbar';
@@ -344,6 +344,75 @@ function duScanButtons(root, maxItems){
     });
   }
   return out;
+}
+function duScanVTableFilterMenu(root){
+  var style = window.getComputedStyle(root);
+  var tabs = [].slice.call(root.querySelectorAll('button')).map(function(btn){
+    var s = window.getComputedStyle(btn);
+    var active = s.color === 'rgb(0, 123, 255)' || s.borderBottomColor === 'rgb(0, 123, 255)' ||
+      (btn.style && btn.style.borderBottomColor === 'rgb(0, 123, 255)');
+    return {
+      text: duCleanText(btn.textContent),
+      active: active,
+      rect: duRect(btn),
+      selectorHint: duCssHint(btn)
+    };
+  }).filter(function(tab){ return tab.text; }).slice(0, 10);
+  var activeTab = '';
+  for (var ti = 0; ti < tabs.length; ti++) {
+    if (tabs[ti].active) { activeTab = tabs[ti].text; break; }
+  }
+  var textInputs = [].slice.call(root.querySelectorAll('input[type="text"],input[type="search"]')).map(function(input){
+    return {
+      placeholder: input.getAttribute('placeholder') || '',
+      value: input.value || input.getAttribute('value') || '',
+      rect: duRect(input),
+      selectorHint: duCssHint(input)
+    };
+  }).slice(0, 20);
+  var values = [].slice.call(root.querySelectorAll('input[type="checkbox"]')).map(function(cb){
+    var label = cb.closest('label');
+    var row = cb.closest('div');
+    var countEl = row ? row.querySelector('span') : null;
+    return {
+      text: duCleanText(label ? label.textContent : cb.value),
+      value: cb.value || '',
+      checked: !!cb.checked,
+      count: countEl ? duCleanText(countEl.textContent) : '',
+      rect: duRect(cb),
+      selectorHint: duCssHint(cb)
+    };
+  }).filter(function(item){ return item.text || item.value; }).slice(0, 100);
+  var selects = [].slice.call(root.querySelectorAll('select')).map(function(sel){
+    return {
+      value: sel.value || '',
+      rect: duRect(sel),
+      selectorHint: duCssHint(sel),
+      options: [].slice.call(sel.options || []).map(function(opt){
+        return {
+          value: opt.value || '',
+          text: duCleanText(opt.textContent),
+          selected: !!opt.selected
+        };
+      }).slice(0, 60)
+    };
+  }).slice(0, 10);
+  var clear = root.querySelector('a');
+  var clearStyle = clear ? window.getComputedStyle(clear) : null;
+  return {
+    display: style.display,
+    activeTab: activeTab,
+    tabs: tabs,
+    search: textInputs.length ? textInputs[0] : null,
+    values: values,
+    valueCount: values.filter(function(item){ return item.value; }).length,
+    condition: {
+      selects: selects,
+      inputs: textInputs
+    },
+    clearDisabled: clear ? (clearStyle.pointerEvents === 'none' ||
+      parseFloat(clearStyle.opacity || '1') < 1) : null
+  };
 }
 """
 
@@ -504,7 +573,7 @@ def scan_floats(only_visible: bool = True, include_table_data: bool = True) -> d
         js = _COMMON_JS + """
 var rawNodeList = [].slice.call(document.querySelectorAll(
   '.ant-modal, .ant-drawer, .ant-popover, .ant-tooltip, '
-  + '.ant-dropdown, .ant-calendar-picker-container, .ant-calendar'
+  + '.ant-dropdown, .vtable-filter-menu, .ant-calendar-picker-container, .ant-calendar'
 ));
 function duIsCalendarNode(el) {
   var cls = el.className || '';
@@ -520,8 +589,17 @@ function duCalendarActive(el) {
   // SCM 的 ant-calendar 打开/关闭由 DOM 挂载决定；不要用 display:none 作为唯一依据。
   return !!(el && el.isConnected);
 }
+function duIsVTableFilterNode(el) {
+  var cls = el.className || '';
+  return /\bvtable-filter-menu\b/.test(cls);
+}
+function duVTableFilterActive(el) {
+  // VTable 筛选菜单常驻 DOM，通过 display:block/none 表示打开/关闭。
+  return duVisible(el);
+}
 function duKeepFloatNode(el) {
   if (duIsCalendarNode(el)) return duCalendarActive(el);
+  if (duIsVTableFilterNode(el)) return !ONLY_VISIBLE || duVTableFilterActive(el);
   return !ONLY_VISIBLE || duVisible(el);
 }
 function duCalendarPanel(panel, side) {
@@ -611,8 +689,10 @@ for (var i = 0; i < nodes.length; i++) {
   else if (/\\bant-popover\\b/.test(cls)) kind = 'popover';
   else if (/\\bant-tooltip\\b/.test(cls)) kind = 'tooltip';
   else if (/\\bant-dropdown\\b/.test(cls)) kind = 'dropdown';
+  else if (/\\bvtable-filter-menu\\b/.test(cls)) kind = 'vtable-filter-menu';
   else if (duIsCalendarNode(n)) kind = 'calendar';
   var calendar = kind === 'calendar' ? duScanCalendar(n) : null;
+  var vtableFilter = kind === 'vtable-filter-menu' ? duScanVTableFilterMenu(n) : null;
   // 标题提取
   var titleEl = n.querySelector('.ant-modal-title, .ant-drawer-title, .ant-modal-header');
   var title = titleEl ? duCleanText(titleEl.textContent) : '';
@@ -620,6 +700,7 @@ for (var i = 0; i < nodes.length; i++) {
     var panelTitle = (calendar.panels || []).map(function(p){ return p.title; }).filter(Boolean).join(' - ');
     title = (calendar.mode === 'range' ? '日期范围选择器' : '日期选择器') + (panelTitle ? ' ' + panelTitle : '');
   }
+  if (!title && vtableFilter) title = 'VTable列头筛选';
   if (!title) {
     var raw = n.innerText || n.textContent || '';
     var parts = raw.split(/\\n/).map(function(s){ return s.trim(); }).filter(function(s){ return s.length > 0; });
@@ -742,7 +823,7 @@ for (var i = 0; i < nodes.length; i++) {
   out.push({
     title: title, type: kind, text: text.slice(0, 800),
     buttons: buttons, fields: fields, closeButton: closeButton,
-    calendar: calendar,
+    calendar: calendar, vtableFilter: vtableFilter,
     center: frCenter(n), rect: frRect(n)
   });
 }

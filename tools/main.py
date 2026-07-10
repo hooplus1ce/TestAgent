@@ -147,8 +147,8 @@ def main():
     iframe.set.show_trail(True)
     tab.set.show_trail(True)
 
-
-    iframe.actions.move_to((1089, 444.6), duration=2).wait(0.15).click(times=1)
+    print(iframe.ele(".vtable").rect.location)
+    iframe.actions.move_to((262, 321), duration=2).wait(0.15).click(times=1)
 
     tab.set.show_trail(False)
     iframe.set.show_trail(False)
