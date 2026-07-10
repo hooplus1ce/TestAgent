@@ -89,5 +89,14 @@ approval_mode = "approve"
 [mcp_servers.drissionpage-mcp.tools.click_xy]
 approval_mode = "approve"
 
+[mcp_servers.drissionpage-mcp.tools.screenshot]
+approval_mode = "approve"
+
+[mcp_servers.drissionpage-mcp.tools.input]
+approval_mode = "approve"
+
+[mcp_servers.drissionpage-mcp.tools.click]
+approval_mode = "approve"
+
 # [mcp_servers.drission-ui.env]
 # DRISSION_UI_CAPS = "core,vtable,filter,observe,network"
