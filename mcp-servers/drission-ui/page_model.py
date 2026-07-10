@@ -180,6 +180,36 @@ function duXPath(el){
   }
   return '/' + parts.join('/');
 }
+function duXPathLiteral(value){
+  var text = String(value || '');
+  if (text.indexOf("'") < 0) return "'" + text + "'";
+  if (text.indexOf('"') < 0) return '"' + text + '"';
+  return "concat('" + text.split("'").join("', \"'\", '") + "')";
+}
+function duCompactText(value){
+  return String(value || '').replace(/\s+/g, '');
+}
+function duSemanticXPath(el, text){
+  if (!el || !el.tagName) return '';
+  var tag = el.tagName.toLowerCase();
+  var raw = duCleanText(text || el.getAttribute('aria-label') || el.getAttribute('title') ||
+    el.textContent || el.value || '');
+  var compact = duCompactText(raw);
+  var predicates = [];
+  var stableAttrs = ['data-testid', 'data-test', 'data-row-key', 'name', 'aria-label', 'title'];
+  for (var i = 0; i < stableAttrs.length; i++) {
+    var attr = stableAttrs[i];
+    var val = el.getAttribute(attr);
+    if (val) predicates.push('@' + attr + '=' + duXPathLiteral(val));
+  }
+  if (compact) {
+    predicates.push("translate(normalize-space(.), ' ', '')=" + duXPathLiteral(compact));
+  } else if (raw) {
+    predicates.push('normalize-space(.)=' + duXPathLiteral(raw));
+  }
+  if (!predicates.length) return duXPath(el);
+  return '//' + tag + '[' + predicates.join(' and ') + ']';
+}
 function duArea(el){
   if (el.closest('.ant-modal')) return 'modal';
   if (el.closest('.ant-drawer')) return 'drawer';
@@ -307,6 +337,8 @@ function duScanButtons(root, maxItems){
         el.className.indexOf('dropdown') >= 0),
       icons: icons,
       selectorHint: duCssHint(el),
+      semanticXPath: duSemanticXPath(el, txt),
+      xpathStrategy: txt ? 'tag+compact-text' : 'tag+stable-attributes',
       xpath: duXPath(el),
       rect: duRect(el)
     });
