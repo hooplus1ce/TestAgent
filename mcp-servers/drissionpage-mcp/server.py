@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import sys
 import time
 from datetime import datetime
@@ -363,9 +364,12 @@ def enter_module(menu_text: str, timeout: float = 8, expand_filter: bool = True)
             return {"ok": False, "reason": "menu not found"}
 
     try:
-        ele.click()
+        ele.wait.clickable(timeout=3, wait_stop=True, raise_err=False)
+        ele.click(by_js=False, wait_stop=True)
     except Exception:
-        # 无位置/大小，使用 DrissionPage 官方的原生 by_js=True 点击兜底
+        if _recipe_requires_native_actions():
+            return {"ok": False, "reason": "formal execution menu click failed without JS fallback"}
+        # 浏览器探索可使用 DrissionPage 的 by_js 回退；正式回放禁止该路径。
         try:
             ele.click(by_js=True)
         except Exception as e:
@@ -429,12 +433,16 @@ def reset_to_initial(module_text: str, timeout: float = 20) -> dict:
     )
     if close_btn:
         try:
-            close_btn.click()
+            close_btn.wait.clickable(timeout=3, wait_stop=True, raise_err=False)
+            close_btn.click(wait_stop=True)
         except Exception:
-            try:
-                close_btn.click(by_js=True)
-            except Exception:
-                pass
+            if not _recipe_requires_native_actions():
+                try:
+                    close_btn.click(by_js=True)
+                except Exception:
+                    pass
+            else:
+                logger.debug("native tab-close click failed during formal execution")
     # 智能等待：业务 iframe 从 DOM 消失即说明 tab 已关闭（最多 10s）；超时不阻断，交给后续 enter_module
     try:
         tab.wait.ele_deleted(config.ACTIVE_FRAME_LOC, timeout=10)
@@ -1143,9 +1151,9 @@ def _resolve_visible_action_target(target: dict, in_frame: bool) -> dict:
                         result["x"] = float(rect["x"]) + float(rect["width"]) / 2
                     if result["y"] is None and {"y", "height"} <= set(rect):
                         result["y"] = float(rect["y"]) + float(rect["height"]) / 2
-                    # Overlay DOM often retains hidden copies with identical text/XPath.
-                    # Fresh snapshot coordinates identify the currently visible instance.
-                    if result["x"] is not None and result["y"] is not None:
+                    # Prefer a stable element locator. Coordinate clicks are only
+                    # a fallback for overlays without a usable DOM locator.
+                    if not locator and result["x"] is not None and result["y"] is not None:
                         result["action"] = "click_xy"
                     return result
         return None
@@ -1193,6 +1201,27 @@ def _resolve_visible_action_target(target: dict, in_frame: bool) -> dict:
         return {"ok": False, "reason": "visible action not found: %s" % text}
 
     item = candidates[0]
+    semantic_xpath = item.get("semanticXPath")
+    structural_xpath = item.get("xpath")
+    selector_hint = item.get("selectorHint")
+    locator = (
+        _as_locator("xpath", semantic_xpath) if semantic_xpath else
+        _as_locator("css", selector_hint) if selector_hint else
+        _as_locator("xpath", structural_xpath) if structural_xpath else ""
+    )
+    if locator:
+        return {
+            "ok": True,
+            "action": "click",
+            "locator": locator,
+            "in_frame": in_frame,
+            "meta": {
+                "target_type": "action",
+                "text": item.get("text") or text,
+                "area": item.get("area") or toolbar_scope,
+                "matched": item,
+            },
+        }
     cx = item.get("cx") or item.get("viewportX")
     cy = item.get("cy") or item.get("viewportY")
     if cx is None or cy is None:
@@ -1268,6 +1297,19 @@ def _semantic_field_candidates(target, field_name: str, area: str, timeout: floa
         return []
 
 
+def _native_element_input(control, value: str, clear: bool, timeout: float) -> None:
+    """Use DrissionPage element input; the fallback only supports lightweight test doubles."""
+    waiter = getattr(control, "wait", None)
+    if waiter is not None:
+        waiter.clickable(timeout=timeout, wait_stop=True, raise_err=False)
+    try:
+        control.input(value, clear=clear, by_js=False)
+    except TypeError:
+        if clear:
+            control.clear()
+        control.input(value)
+
+
 @mcp.tool()
 @write_synchronized
 def set_field_value(field_name: str, value: str, in_frame: bool = True,
@@ -1330,10 +1372,8 @@ def set_field_value(field_name: str, value: str, in_frame: bool = True,
                 except Exception:
                     pass
                 try:
-                    if clear:
-                        control.clear()
                     text_value = "" if value is None else str(value)
-                    control.input(text_value)
+                    _native_element_input(control, text_value, clear, timeout)
                     try:
                         actual = control.property("value")
                     except Exception:
@@ -1356,6 +1396,53 @@ def set_field_value(field_name: str, value: str, in_frame: bool = True,
                 except Exception as exc:
                     return {"ok": False, "reason": "field input failed: %s" % exc,
                             "field_name": field_name, "scope": scope_name, "area": area}
+
+    # 回退：快速筛选区文本输入（legions-pro-quick-filter）
+    if 'filter' in areas:
+        try:
+            for scope_name, context in contexts:
+                # 在快速筛选区中找文本匹配的 select-value，再定位到值列输入框
+                qf = context.ele('css:.legions-pro-quick-filter', timeout=0.5)
+                if not qf:
+                    continue
+                label_lit = _xpath_literal(field_name)
+                text_el = qf.ele(
+                    'xpath:.//div[contains(@class, "ant-select-selection-selected-value")'
+                    ' and normalize-space(.)=%s]' % label_lit,
+                    timeout=0.3
+                )
+                if not text_el:
+                    continue
+                wrapper = text_el.ele(
+                    'xpath:ancestor::div[contains(@class, "ant-col-xs-24")]',
+                    timeout=0.3
+                )
+                if not wrapper:
+                    continue
+                cols = wrapper.eles('css:.ant-row > .ant-col-8')
+                if len(cols) < 3:
+                    continue
+                value_col = cols[2]
+                controls = [
+                    item for item in value_col.eles(control_locator, timeout=0.3)
+                    if _element_is_visible(item)
+                ]
+                if not controls:
+                    continue
+                control = controls[min(max(int(select_index or 0), 0), len(controls) - 1)]
+                text_value = "" if value is None else str(value)
+                _native_element_input(control, text_value, clear, timeout)
+                return {
+                    "ok": True,
+                    "action": "set_field_value",
+                    "field_name": field_name,
+                    "value": text_value,
+                    "scope": scope_name,
+                    "area": "filter",
+                }
+        except Exception:
+            pass
+
     return {"ok": False, "reason": "field not found: %s" % field_name,
             "scope": scope, "in_frame": in_frame}
 
@@ -1415,7 +1502,8 @@ def _click_field_raw(field_name: str, in_frame: bool = True, timeout: float = 5.
                     opener = None
                 opener = opener or control
                 try:
-                    opener.click()
+                    opener.wait.clickable(timeout=timeout, wait_stop=True, raise_err=False)
+                    opener.click(by_js=False, wait_stop=True)
                     cls = ""
                     try:
                         cls = control.attr("class") or ""
@@ -1653,29 +1741,14 @@ def _calendar_shown_ym(cal) -> tuple[int, int]:
     return year, month
 
 
-def _wait_calendar_ym_change(cal, previous: tuple[int, int], deadline: float) -> tuple[int, int]:
-    current = previous
-    while time.time() < deadline:
-        try:
-            current = _calendar_shown_ym(cal)
-        except Exception:
-            current = previous
-        if current != previous:
-            return current
-        time.sleep(0.05)
-    return current
-
-
-def _wait_field_value(target, field_name: str, expected: str,
-                      select_index: int, timeout: float) -> dict:
-    deadline = time.time() + max(timeout, 0)
-    last = {"ok": False, "reason": "field value not checked"}
-    while time.time() < deadline:
-        last = _field_snapshot(target, field_name, select_index=select_index)
-        if last.get("ok") and last.get("value") == expected:
-            return last
-        time.sleep(0.05)
-    return last
+def _wait_calendar_ym_change(cal, previous: tuple[int, int], timeout: float) -> tuple[int, int]:
+    """Wait with DrissionPage's element waiter, then read the calendar state once."""
+    try:
+        cal.wait.stop_moving(timeout=max(timeout, 0), raise_err=False)
+        current = _calendar_shown_ym(cal)
+        return current
+    except Exception:
+        return previous
 
 
 @mcp.tool()
@@ -1738,8 +1811,9 @@ def set_date(field_name: str, date: str, in_frame: bool = True,
                     "opened": opened, "navigations": navigations,
                     "elapsedMs": int((time.time() - started) * 1000)}
         before_ym = (cur_year, cur_month)
-        btn.click()
-        after_ym = _wait_calendar_ym_change(cal, before_ym, time.time() + 1.5)
+        btn.wait.clickable(timeout=1.5, wait_stop=True, raise_err=False)
+        btn.click(wait_stop=True)
+        after_ym = _wait_calendar_ym_change(cal, before_ym, 1.5)
         navigations.append({
             "direction": direction,
             "from": "%04d-%02d" % before_ym,
@@ -1768,9 +1842,10 @@ def set_date(field_name: str, date: str, in_frame: bool = True,
                 "action": "set_date", "field_name": field_name,
                 "opened": opened, "calendar": ready, "navigations": navigations,
                 "elapsedMs": int((time.time() - started) * 1000)}
-    cell.click()
-
-    after = _wait_field_value(target, field_name, normalized["dash"], select_index, timeout=2)
+    cell.wait.clickable(timeout=2, wait_stop=True, raise_err=False)
+    cell.click(wait_stop=True)
+    target.wait.ele_hidden("c:.ant-calendar-picker-container .ant-calendar", timeout=2, raise_err=False)
+    after = _field_snapshot(target, field_name, select_index=select_index)
     ok = after.get("ok") and after.get("value") == normalized["dash"]
     return {
         "ok": bool(ok),
@@ -2057,6 +2132,12 @@ def explore_action(action: str = "click", target: dict = None,
         modifiers = resolved["modifiers"]
         in_frame = resolved.get("in_frame", in_frame)
 
+    if _recipe_requires_native_actions() and action_name == "click_xy":
+        target_error = {
+            "ok": False,
+            "reason": "run_test_cases 禁止普通坐标点击；请提供可定位的 DOM 控件，VTable 请使用专用动作",
+        }
+
     observe_policy = _resolve_observe_policy(
         signals, listen_targets, expect, observe_mode, include_snapshot, detail,
         action_name, target_meta, timeout,
@@ -2075,6 +2156,7 @@ def explore_action(action: str = "click", target: dict = None,
         observe_start_result = observe.observe_start(
             signals=observe_policy["signals"],
             listen_targets=listen_targets,
+            native_wait=_recipe_requires_native_actions(),
         )
     action_result = {"ok": False, "reason": "action not executed"}
     cleanup = _pre_click_cleanup(clean_overlays)
@@ -2156,13 +2238,15 @@ def explore_action(action: str = "click", target: dict = None,
                       "events": []}
         elif not action_result.get("ok"):
             signal = observe.observe_wait(timeout=0, include_snapshot=False,
-                                          detail=observe_policy["detail"])
+                                          detail=observe_policy["detail"],
+                                          native_wait=_recipe_requires_native_actions())
             signal["skipped_reason"] = "action_failed"
         else:
             signal = observe.observe_wait(
                 timeout=observe_policy["timeout"],
                 include_snapshot=observe_policy["include_snapshot"],
                 detail=observe_policy["detail"],
+                native_wait=_recipe_requires_native_actions(),
             )
 
     after = None
@@ -2309,6 +2393,73 @@ def _resolve_artifact_path(filename: str | None, category: str, module_info: dic
     return path
 
 
+def _report_bundle_path(filename: str | None, module_info: dict | None,
+                        execution_file: str) -> tuple[str, str]:
+    """Return ``(report.md, bundle_dir)`` with every report asset kept locally."""
+    requested = str(filename or "").strip()
+    report_name = os.path.basename(requested) if requested else "test_report_%d.md" % int(time.time())
+    if not report_name.lower().endswith(".md"):
+        report_name += ".md"
+    if requested and (os.path.isabs(requested) or os.path.dirname(requested)):
+        direct = _resolve_artifact_path(requested, "", module_info, report_name)
+        bundle_dir = os.path.dirname(direct)
+        return direct, bundle_dir
+    run_name = os.path.splitext(os.path.basename(execution_file))[0]
+    bundle_dir = os.path.join(_artifact_root(), "test_results", "reports",
+                              _module_artifact_name(module_info), run_name)
+    os.makedirs(bundle_dir, exist_ok=True)
+    return os.path.join(bundle_dir, report_name), bundle_dir
+
+
+def _bundle_report_assets(execution: dict, execution_file: str, bundle_dir: str) -> dict:
+    """Copy execution JSON and referenced screenshots beside the Markdown report."""
+    bundled = json.loads(json.dumps(execution, ensure_ascii=False))
+    assets_dir = os.path.join(bundle_dir, "assets")
+    os.makedirs(assets_dir, exist_ok=True)
+    copied, missing, used_names = [], [], set()
+
+    def copy_ref(ref: dict) -> None:
+        screenshot = ref.get("screenshot") if isinstance(ref, dict) else None
+        if not screenshot:
+            return
+        source = os.path.abspath(str(screenshot))
+        if not os.path.isfile(source):
+            missing.append(str(screenshot))
+            return
+        source_name = os.path.basename(source)
+        source_stem, source_ext = os.path.splitext(source_name)
+        stem = _safe_artifact_segment(source_stem, "evidence")
+        ext = source_ext if re.fullmatch(r"\.[A-Za-z0-9]{1,10}", source_ext or "") else ".png"
+        base = stem + ext
+        candidate, index = base, 2
+        while candidate in used_names:
+            candidate = "%s_%d%s" % (stem, index, ext)
+            index += 1
+        used_names.add(candidate)
+        destination = os.path.join(assets_dir, candidate)
+        shutil.copy2(source, destination)
+        ref["source_screenshot"] = str(screenshot)
+        ref["screenshot"] = "assets/%s" % candidate
+        copied.append(ref["screenshot"])
+
+    for result in bundled.get("results", []):
+        if not isinstance(result, dict):
+            continue
+        for ref in result.get("evidence_refs", []):
+            if isinstance(ref, dict):
+                copy_ref(ref)
+    for defect in bundled.get("known_defects", []):
+        if isinstance(defect, dict):
+            for ref in defect.get("evidence_refs", []):
+                if isinstance(ref, dict):
+                    copy_ref(ref)
+    snapshot_path = os.path.join(bundle_dir, "execution.json")
+    with open(snapshot_path, "w", encoding="utf-8") as output:
+        json.dump(bundled, output, ensure_ascii=False, indent=2)
+    return {"execution": bundled, "execution_copy": snapshot_path,
+            "assets_dir": assets_dir, "copied": copied, "missing": missing}
+
+
 def _next_case_id_start(case_dir: str, exclude_path: str = None) -> dict:
     highest = {}
     if not os.path.isdir(case_dir):
@@ -2403,6 +2554,11 @@ def _reset_recipe_context() -> None:
     _recipe_context.values = {}
 
 
+def _recipe_requires_native_actions() -> bool:
+    """True only while ``run_test_cases`` is replaying a browser recipe."""
+    return bool(getattr(_recipe_context, "native_actions_only", False))
+
+
 def _recipe_ref_value(path: str):
     parts = str(path or "").strip(".").split(".")
     value = _recipe_values()
@@ -2426,8 +2582,35 @@ def _resolve_recipe_refs(value):
     return value
 
 
+def _recipe_element_click(locator: str, in_frame: bool = True, timeout: float = 5,
+                          double_click: bool = False) -> dict:
+    """Formal-replay click using only DrissionPage element APIs."""
+    element = browser_session.find(locator, in_frame=in_frame, timeout=timeout, wait_clickable=False)
+    if not element:
+        return {"ok": False, "reason": "元素未找到: %s" % locator}
+    try:
+        element.wait.clickable(timeout=timeout, wait_stop=True, raise_err=False)
+        if not element.states.is_clickable:
+            return {"ok": False, "reason": "元素不可点击: %s" % locator}
+        if double_click:
+            element.click.multi(times=2)
+        else:
+            element.click(by_js=False, wait_stop=True)
+        return {"ok": True, "locator": locator,
+                "method": "element.click.multi" if double_click else "element.click"}
+    except Exception as exc:
+        return {"ok": False, "locator": locator,
+                "reason": "DrissionPage 原生点击失败: %s" % exc}
+
+
+def _recipe_double_click(locator: str, in_frame: bool = True, timeout: float = 5) -> dict:
+    return _recipe_element_click(locator, in_frame=in_frame, timeout=timeout, double_click=True)
+
+
 def _run_recipe_action(action: str, args: dict) -> dict:
     actions = {
+        "click": _recipe_element_click,
+        "double_click": _recipe_double_click,
         "explore_action": explore_action,
         "set_field_value": set_field_value,
         "reset_to_initial": reset_to_initial,
@@ -2443,15 +2626,28 @@ def _run_recipe_action(action: str, args: dict) -> dict:
         "vtable_action": vtable_action,
         "click_table_cell": click_table_cell,
         "select_option": select_option,
+        "select_date_range": select_date_range,
+        "set_date": set_date,
+        "query_filter": _query_filter,
         "observe_snapshot": observe_snapshot,
         "browser_get_element_state": browser_get_element_state,
         "find_elements": find_elements,
+        "input": input,
+        "insert_text": insert_text,
     }
     runner = actions.get(action)
     if runner is None:
         return {"ok": False, "reason": "unsupported recipe action: %s" % action}
     recorded_args = dict(args or {})
     effective_args = dict(recorded_args)
+    if action == "explore_action" and effective_args.get("by_js") and _recipe_requires_native_actions():
+        return {"ok": False, "reason": "run_test_cases 禁止 by_js 点击；请使用 DrissionPage 原生元素或动作链"}
+    if action == "explore_action" and _recipe_requires_native_actions():
+        action_name = str(effective_args.get("action") or "").lower()
+        target_type = str((effective_args.get("target") or {}).get("type") or "").lower()
+        if action_name == "click_xy" or target_type in {"xy", "point", "coord", "coordinate"}:
+            return {"ok": False,
+                    "reason": "run_test_cases 禁止普通坐标点击；VTable 请使用 vtable_action 或 click_table_cell"}
     save_as = str(effective_args.pop("save_as", "") or "").strip()
     try:
         effective_args = _resolve_recipe_refs(effective_args)
@@ -2493,6 +2689,39 @@ def _run_recipe_action(action: str, args: dict) -> dict:
     if reference:
         result = dict(result)
         result["flow_step"] = reference
+    return result
+
+
+def _query_filter(timeout: float = 10, listen_targets: str = "gateway") -> dict:
+    """Submit filter conditions and wait for the resulting page request.
+
+    A successful click is not enough: the response must be a successful network
+    event. This is the synchronization boundary required before table assertions.
+    """
+    started = observe.observe_start(signals=["network"], listen_targets=listen_targets,
+                                    native_wait=_recipe_requires_native_actions())
+    if not started.get("ok"):
+        return {"ok": False, "reason": "无法开始查询网络监听", "observe_start": started}
+    click_result = filter_area.submit_filter_area()
+    observed = observe.observe_wait(timeout=timeout, include_snapshot=False, detail="summary",
+                                    native_wait=_recipe_requires_native_actions())
+    packet = observed.get("packet") or observed.get("payload") or {}
+    status = packet.get("status", observed.get("status")) if isinstance(packet, dict) else observed.get("status")
+    loading_complete = False
+    if bool(click_result.get("ok")) and observed.get("type") == "network" and status == 200:
+        frame = browser_session.get_active_frame()
+        loading_complete = bool(frame and vtable.is_loading_complete(frame))
+    ok = bool(click_result.get("ok")) and observed.get("type") == "network" and status == 200 and loading_complete
+    result = {
+        "ok": ok, "click": click_result, "network": observed,
+        "query_completed": ok, "loading_complete": loading_complete,
+    }
+    if not ok:
+        result["reason"] = click_result.get("reason") or (
+            "查询未在 %.1fs 内获得成功网络响应" % timeout if observed.get("type") != "network"
+            else "查询接口返回 HTTP %s" % status if status != 200
+            else "查询接口返回后 VTable 加载遮罩未完成消失"
+        )
     return result
 
 
@@ -2540,13 +2769,35 @@ def run_test_cases(case_file: str, filename: str = None) -> dict:
     cases = payload.get("test_cases", []) if isinstance(payload, dict) else []
     if not cases:
         return {"ok": False, "reason": "case file contains no test_cases"}
+    # Refuse to turn known stale-table patterns into a green result. Keep the
+    # affected cases in the execution artifact as skipped, with a repair reason.
+    trusted_cases = []
+    preflight_results = []
+    for case in cases:
+        reasons = test_execution.weak_recipe_reasons(case)
+        if reasons:
+            preflight_results.append({
+                "case_id": case.get("case_id"),
+                "case_title": case.get("case_title", ""),
+                "status": "skipped",
+                "reason": "执行配方可信度不足：" + "；".join(reasons),
+                "failure_type": "recipe_quality",
+                "steps": [],
+                "evidence_refs": [],
+            })
+        else:
+            trusted_cases.append(case)
     module_info = payload.get("module_info") or {}
     module_text = _execution_module_text(payload)
+    prior_native_actions = _recipe_requires_native_actions()
+    _recipe_context.native_actions_only = True
     ready_gate = _browser_ready_gate(module_text)
     if not ready_gate.get("ok"):
+        _recipe_context.native_actions_only = prior_native_actions
         return {"ok": False, "reason": "browser ready gate failed: %s" % ready_gate.get("reason", ""),
                 "ready_gate": ready_gate}
     if flow_evidence.is_active():
+        _recipe_context.native_actions_only = prior_native_actions
         return {"ok": False, "reason": "an evidence flow is already active; stop it before execution"}
 
     started_flow = flow_evidence.start(
@@ -2557,15 +2808,38 @@ def run_test_cases(case_file: str, filename: str = None) -> dict:
         cleanup_strategy="automation_recipe.cleanup + after_case overlay cleanup",
     )
     if not started_flow.get("ok"):
+        _recipe_context.native_actions_only = prior_native_actions
         return started_flow
 
     def before_case(_case):
         _reset_recipe_context()
         if not module_text:
             return {"ok": True, "skipped": True, "reason": "module reset unavailable"}
-        reset = _run_recipe_action("reset_to_initial", {"module_text": module_text})
+        # 仅重置筛选条件（点击重置按钮），不刷新 iframe，速度快且保留鼠标轨迹状态
+        try:
+            started = observe.observe_start(signals=["network"], listen_targets="gateway",
+                                            native_wait=True)
+            reset = filter_area.reset_filter_area()
+            observed = observe.observe_wait(timeout=10, include_snapshot=False, detail="summary",
+                                            native_wait=True)
+            packet = observed.get("packet") or observed.get("payload") or {}
+            status = packet.get("status", observed.get("status")) if isinstance(packet, dict) else observed.get("status")
+            frame = browser_session.get_active_frame()
+            loading_complete = bool(
+                reset.get("ok") and observed.get("type") == "network" and status == 200
+                and frame and vtable.is_loading_complete(frame)
+            )
+            if reset.get("ok") and not loading_complete:
+                reset = {"ok": False, "reason": "重置后的查询未完成", "reset": reset,
+                         "network": observed, "observe_start": started,
+                         "loading_complete": loading_complete}
+        except Exception as exc:
+            reset = {"ok": False, "reason": "reset_filter_area 失败: %s" % exc}
         if not reset.get("ok"):
-            return reset
+            logger.warning("reset_filter_area 失败，回退到 iframe 刷新: %s", reset.get("reason", ""))
+            reset = _run_recipe_action("reset_to_initial", {"module_text": module_text})
+            if not reset.get("ok"):
+                return reset
         frame = get_active_frame()
         if not frame.get("ok"):
             return frame
@@ -2582,14 +2856,21 @@ def run_test_cases(case_file: str, filename: str = None) -> dict:
     execution_flow = None
     try:
         execution = test_execution.execute_cases(
-            cases, _run_recipe_action, before_case=before_case, after_case=after_case,
+            trusted_cases, _run_recipe_action, before_case=before_case, after_case=after_case,
         )
     finally:
+        _recipe_context.native_actions_only = prior_native_actions
         execution_flow = flow_evidence.stop()
     execution["module_info"] = module_info
     execution["source_case_file"] = os.path.abspath(case_file)
     execution["ready_gate"] = ready_gate
     execution["evidence_flow"] = execution_flow
+    if preflight_results:
+        execution["results"] = preflight_results + execution["results"]
+        execution["recipe_quality_gate"] = {
+            "trusted": len(trusted_cases), "rejected": len(preflight_results),
+            "policy": "query_filter 网络同步 + 全量结果断言",
+        }
     if payload.get("coverage_summary") is not None:
         execution["coverage_summary"] = payload["coverage_summary"]
     if payload.get("coverage_matrix") is not None:
@@ -2651,19 +2932,24 @@ def generate_test_report(execution_file: str, coverage_file: str = None,
             current["known_defects"] = defects_payload
         else:
             current["known_defects"] = defects_payload.get("known_defects", [])
-    regression = test_reporting.compare_regression(current, baseline)
-    markdown = test_reporting.render_markdown(current, coverage_payload or current, regression)
     try:
-        path = _resolve_artifact_path(
-            filename, os.path.join("test_results", "reports"), execution.get("module_info") or {},
-            "test_report_%d.md" % int(time.time()),
+        path, bundle_dir = _report_bundle_path(
+            filename, execution.get("module_info") or {}, execution_file,
         )
     except ValueError as exc:
         return {"ok": False, "reason": str(exc)}
+    bundle = _bundle_report_assets(current, execution_file, bundle_dir)
+    regression = test_reporting.compare_regression(bundle["execution"], baseline)
+    markdown = test_reporting.render_markdown(
+        bundle["execution"], coverage_payload or bundle["execution"], regression,
+    )
     with open(path, "w", encoding="utf-8") as output:
         output.write(markdown)
     return {"ok": True, "saved_to": path, "regression": regression,
-            "coverage_summary": current.get("coverage_summary")}
+            "coverage_summary": current.get("coverage_summary"),
+            "bundle_dir": bundle_dir, "execution_copy": bundle["execution_copy"],
+            "assets_dir": bundle["assets_dir"], "copied_screenshots": len(bundle["copied"]),
+            "missing_screenshots": bundle["missing"]}
 
 
 @mcp.tool()
@@ -2724,7 +3010,12 @@ def scan_action_availability_by_selection(row: int = 0, col: int = 0,
         else:
             select_result = _tag_table_result("html", page_model.click_html_row_selection(row=row, table_index=table_index))
         select_result = _attach_cleanup(select_result, cleanup)
-        time.sleep(max(0, wait_after_click))
+        if select_result.get("ok"):
+            if select_result.get("kind") == "vtable":
+                vtable.wait_for_render_stable(timeout=max(float(wait_after_click or 0), 0.1))
+            else:
+                target = browser_session.get_active_frame() or browser_session.get_tab()
+                target.wait.doc_loaded(timeout=max(float(wait_after_click or 0), 0.1), raise_err=False)
     after = page_model.scan_toolbar_actions(scope="all", max_items=160)
     return {
         "ok": bool(before.get("ok") and after.get("ok")),
@@ -2885,10 +3176,13 @@ def get_frame(locator, timeout: float = 5) -> dict:
 
 def _resolve_and_click(locator: str, in_frame: bool = True, by_js: bool = False,
                        timeout: float = 5) -> dict:
-    """Resolve a locator, click it, and apply the standard click fallbacks."""
-    click_timeout = _short_click_timeout(timeout)
+    """Resolve a locator, click it using actions chain (move_to + click)."""
     raw_text = _extract_text_locator(locator)
     ele = None
+    native_only = _recipe_requires_native_actions()
+    if native_only and by_js:
+        return {"ok": False, "locator": locator,
+                "reason": "run_test_cases 禁止 by_js 点击"}
     if raw_text:
         for candidate in _clickable_text_locators(raw_text):
             ele = browser_session.find(candidate, in_frame=in_frame, timeout=min(timeout, 1.0),
@@ -2911,8 +3205,8 @@ def _resolve_and_click(locator: str, in_frame: bool = True, by_js: bool = False,
         if not ele:
             ele = browser_session.find(f"tx={raw_text}", in_frame=in_frame,
                                        timeout=timeout, wait_clickable=False)
-        # 4. JS 降级：textContent 去空格宽松匹配
-        if not ele:
+        # 4. JS 降级只供交互探索使用；正式回放必须可由 DrissionPage 定位。
+        if not ele and not native_only:
             res = _click_text_by_js(locator, in_frame=in_frame)
             if res and res.get("ok"):
                 return {"ok": True, "locator": locator, "fallback": "js-text"}
@@ -2923,10 +3217,19 @@ def _resolve_and_click(locator: str, in_frame: bool = True, by_js: bool = False,
     if not ele:
         return {"ok": False, "reason": "元素未找到: %s（等待 %.1fs）" % (locator, timeout)}
     try:
-        clicked = ele.click(by_js=by_js, timeout=click_timeout, wait_stop=False)
+        waiter = getattr(ele, "wait", None)
+        if waiter is not None:
+            waiter.clickable(timeout=timeout, wait_stop=True, raise_err=False)
+        clicked = ele.click(by_js=by_js, timeout=_short_click_timeout(timeout), wait_stop=False)
         if clicked is False:
             raise RuntimeError("DrissionPage click returned False")
     except Exception as e:
+        # Formal execution deliberately does not fall back from an element
+        # click to coordinates or JavaScript. VTable uses its dedicated facade.
+        if native_only:
+            return {"ok": False, "locator": locator,
+                    "reason": "DrissionPage 原生元素点击失败: %s" % e}
+
         # Fallback 1: Try coordinate-based click
         if not by_js:
             try:
@@ -2934,7 +3237,7 @@ def _resolve_and_click(locator: str, in_frame: bool = True, by_js: bool = False,
                 cx, cy = float(mp[0]), float(mp[1])
                 if cx > 0 and cy > 0:
                     logger.info(
-                        "Native click failed on %s, trying coordinate-click fallback at (%.1f, %.1f)",
+                        "Actions click failed on %s, trying coordinate-click fallback at (%.1f, %.1f)",
                         locator, cx, cy,
                     )
                     tab = browser_session.get_tab()
@@ -2949,8 +3252,9 @@ def _resolve_and_click(locator: str, in_frame: bool = True, by_js: bool = False,
             except Exception as coord_err:
                 logger.debug("Coordinate click fallback failed: %s", coord_err)
 
-        # Fallback 2: Try JS click directly on the found element
-        if not by_js:
+        # Fallback 2: Try JS click directly on the found element. Formal
+        # execution deliberately stops after native coordinate fallback.
+        if not by_js and not native_only:
             try:
                 logger.info("Coordinate click failed or skipped, trying direct JS click on %s", locator)
                 ele.click(by_js=True)
@@ -2963,8 +3267,8 @@ def _resolve_and_click(locator: str, in_frame: bool = True, by_js: bool = False,
             except Exception as js_err:
                 logger.debug("Direct JS click fallback failed: %s", js_err)
 
-        # Fallback 3: Try text search JS click
-        if not by_js:
+        # Fallback 3: Try text search JS click outside formal execution only.
+        if not by_js and not native_only:
             res = _click_text_by_js(locator, in_frame=in_frame)
             if res and res.get("ok"):
                 return {
@@ -3014,7 +3318,7 @@ def click_xy(x: float, y: float, hover_first: bool = True, duration: float = 0.3
     cleanup = _pre_click_cleanup(clean_overlays)
     tab = browser_session.get_tab()
     if times > 1:
-        tab.actions.move_to((x, y), duration=duration if hover_first else 0).wait(0.15).click(times=times)
+        tab.actions.move_to((x, y), duration=duration if hover_first else 0).click(times=times)
     else:
         tab.actions.move_to((x, y), duration=duration if hover_first else 0).click()
     return _attach_cleanup({"ok": True, "x": x, "y": y, "times": times}, cleanup)
@@ -3041,17 +3345,15 @@ def select_date_range(field_name: str, start_date: str, end_date: str) -> dict:
 @mcp.tool()
 @write_synchronized
 def input(locator: str, text: str, in_frame: bool = True, clear: bool = True, timeout: float = 5) -> dict:
-    """向输入框填入文本。clear=True 先清空。timeout 为查找超时秒数。"""
+    """向输入框填入文本（使用动作链 type 模拟键盘输入）。clear=True 先清空。timeout 为查找超时秒数。"""
     ele = browser_session.find(locator, in_frame=in_frame, timeout=timeout)
     if not ele:
         return {"ok": False, "reason": "元素未找到: %s（等待 %.1fs）" % (locator, timeout)}
-    if clear:
-        try:
-            ele.clear()
-        except Exception as e:
-            logger.warning("清空输入框失败: %s", e)
-    ele.input(text)
-    return {"ok": True, "locator": locator}
+    try:
+        _native_element_input(ele, text, clear, timeout)
+        return {"ok": True, "locator": locator, "method": "element.input"}
+    except Exception as exc:
+        return {"ok": False, "locator": locator, "reason": "DrissionPage input failed: %s" % exc}
 
 
 @mcp.tool()
@@ -3275,21 +3577,19 @@ def find_vtable_row(column_title: str, value: str, raw: bool = False,
     if match not in {"equals", "contains"}:
         return {"ok": False, "reason": "unsupported row match: %s" % match}
     expected = str(value or "").strip()
-    deadline = time.perf_counter() + max(float(timeout or 0), 0)
+    if timeout and float(timeout) > 0:
+        settled = vtable.wait_for_render_stable(timeout=float(timeout))
+        if not settled.get("ok"):
+            return settled
+    scanned = get_table_values(column_title=column_title, kind="vtable", raw=raw)
+    if not scanned.get("ok"):
+        return scanned
     matches = []
-    while True:
-        scanned = get_table_values(column_title=column_title, kind="vtable", raw=raw)
-        if not scanned.get("ok"):
-            return scanned
-        matches = []
-        for index, actual in enumerate(scanned.get("values") or []):
-            normalized = str(actual if actual is not None else "").strip()
-            if normalized == expected if match == "equals" else expected in normalized:
-                matches.append({"data_index": index, "row": index + max(int(header_rows), 0),
-                                "actual": actual})
-        if len(matches) == 1 or time.perf_counter() >= deadline:
-            break
-        time.sleep(0.1)
+    for index, actual in enumerate(scanned.get("values") or []):
+        normalized = str(actual if actual is not None else "").strip()
+        if normalized == expected if match == "equals" else expected in normalized:
+            matches.append({"data_index": index, "row": index + max(int(header_rows), 0),
+                            "actual": actual})
     if len(matches) != 1:
         return {
             "ok": False,
@@ -3325,20 +3625,18 @@ def count_vtable_rows(column_title: str, value: str, raw: bool = False,
     if match not in {"equals", "contains"}:
         return {"ok": False, "reason": "unsupported row match: %s" % match}
     expected = str(value or "").strip()
-    deadline = time.perf_counter() + max(float(timeout or 0), 0)
+    if timeout and float(timeout) > 0:
+        settled = vtable.wait_for_render_stable(timeout=float(timeout))
+        if not settled.get("ok"):
+            return settled
+    scanned = get_table_values(column_title=column_title, kind="vtable", raw=raw)
+    if not scanned.get("ok"):
+        return scanned
     matched_indexes = []
-    while True:
-        scanned = get_table_values(column_title=column_title, kind="vtable", raw=raw)
-        if not scanned.get("ok"):
-            return scanned
-        matched_indexes = []
-        for index, actual in enumerate(scanned.get("values") or []):
-            normalized = str(actual if actual is not None else "").strip()
-            if normalized == expected if match == "equals" else expected in normalized:
-                matched_indexes.append(index)
-        if expected_count is None or len(matched_indexes) == int(expected_count) or time.perf_counter() >= deadline:
-            break
-        time.sleep(0.1)
+    for index, actual in enumerate(scanned.get("values") or []):
+        normalized = str(actual if actual is not None else "").strip()
+        if normalized == expected if match == "equals" else expected in normalized:
+            matched_indexes.append(index)
     return {
         "ok": True, "kind": "vtable", "column_title": column_title,
         "value": value, "match": match, "match_count": len(matched_indexes),

@@ -1048,10 +1048,10 @@ def select_option(
                 container = candidate.ele(
                     f"xpath://div[contains(@class, 'ant-form-item') or contains(@class, 'ant-col')]"
                     f"[descendant::label[contains(text(), '{field_name}')]]",
-                    timeout=1.0
+                    timeout=0.5
                 )
                 if not container:
-                    container = candidate.ele(f"text:{field_name}", timeout=1.0)
+                    container = candidate.ele(f"text:{field_name}", timeout=0.5)
                     if container:
                         container = container.parent()
             else:
@@ -1067,6 +1067,30 @@ def select_option(
         except Exception:
             pass
 
+    # 回退：快速筛选区结构（legions-pro-quick-filter）
+    if not select_element or not target:
+        try:
+            for scope_name, candidate in candidates:
+                text_el = candidate.ele(f"text:{field_name}", timeout=0.3)
+                if text_el:
+                    wrapper = text_el.ele(
+                        'xpath:ancestor::div[contains(@class, "ant-col-xs-24")]',
+                        timeout=0.3
+                    )
+                    if wrapper:
+                        cols = wrapper.eles('css:.ant-row > .ant-col-8')
+                        target_col_idx = min(select_index + 2, len(cols) - 1) if select_index > 0 else 2
+                        if target_col_idx < len(cols):
+                            value_col = cols[target_col_idx]
+                            selects = value_col.eles('css:.ant-select:not(.ant-select-disabled)')
+                            if selects:
+                                select_element = selects[0]
+                                target = candidate
+                                used_scope = scope_name
+                                break
+        except Exception:
+            pass
+
     if not select_element or not target:
         return {"ok": False, "reason": f"select not found for field: {field_name}"}
 
@@ -1078,17 +1102,29 @@ def select_option(
         # 等待下拉菜单显示
         dropdown = target.wait.ele_displayed(
             "c:.ant-select-dropdown:not(.ant-select-dropdown-hidden)",
-            timeout=min(timeout, 2.0),
+            timeout=1.0,
             raise_err=False
         )
         if not dropdown:
             return {"ok": False, "reason": "dropdown not visible after click"}
 
-        # 如果有搜索输入框，输入过滤文本
-        search_input = dropdown.ele("css:input, .ant-select-search__field", timeout=0.5)
+        # 如果有搜索输入框，使用 DrissionPage 动作链输入过滤文本。
+        # 优先在 select 组件自身找搜索框（legions-pro-select 的搜索框在触发器内部）。
+        search_input = select_element.ele("css:.ant-select-search__field, input", timeout=0.5)
+        if not search_input:
+            search_input = dropdown.ele("css:input, .ant-select-search__field", timeout=0.5)
         if search_input:
-            search_input.input(option_text)
-            time.sleep(0.3)
+            try:
+                search_input.wait.clickable(timeout=min(timeout, 2.0), wait_stop=True, raise_err=False)
+                search_input.input(option_text, clear=True, by_js=False)
+            except Exception as exc:
+                return {"ok": False, "reason": f"dropdown search input failed: {exc}"}
+
+        # 等待过滤后的选项出现（最多 1s）
+        try:
+            target.wait.ele_displayed("c:.ant-select-dropdown-menu-item:not(.ant-select-dropdown-menu-item-disabled)", timeout=1.0)
+        except Exception:
+            pass
 
         # 获取所有可见下拉框选项
         dropdowns = target.eles("css:.ant-select-dropdown:not(.ant-select-dropdown-hidden)")

@@ -75,8 +75,10 @@
 3. 使用 `explore_action(...)` 执行业务动作。每步自动关联目标元素、页面反馈、网络请求/响应摘要、截图与耗时；敏感 Cookie、Token、密码和授权字段写入文件前会被脱敏。
 4. 使用 `flow_stop()` 保存证据包；破坏性流必须通过 `cleanup_from_sequence` 标出始终执行的清理段。再用 `generate_test_cases_from_flow(flow_file=...)` 生成覆盖矩阵和仅包含“已验证”场景的 19 字段用例候选。
 5. 多个真实业务流通过 `combine_test_case_files(...)` 去重合并。覆盖资产同时来自页面快照、真实操作和业务接口证据，账号轮询/心跳不会进入覆盖分母。
-6. 对包含显式 `automation_recipe` 的用例文件调用 `run_test_cases(case_file=...)`；运行期可用 `find_vtable_row`、`count_vtable_rows`、`get_vtable_row_values` 和 `$ref` 动态绑定业务行，避免依赖固定行号。
-7. 使用 `generate_test_report(...)` 生成包含需求、风险、页面/接口资产覆盖率的 Markdown 报告；`compare_regression_report(...)` 比较当前与历史结果，报告用例增删、状态变化、覆盖变化和超过 20% 的性能变化。
+6. 对包含显式 `automation_recipe` 的用例文件调用 `run_test_cases(case_file=...)`；筛选查询必须使用 `query_filter`，它会在点击查询前建立网络监听并等待成功响应。表格筛选结果使用 `get_table_values` 配合 `all_equals` 或 `all_each_contains` 断言全部行，不能用 `count_vtable_rows.match_count` 的 `truthy` 断言替代。运行期也可用 `find_vtable_row`、`count_vtable_rows`、`get_vtable_row_values` 和 `$ref` 动态绑定业务行，避免依赖固定行号。
+7. 使用 `generate_test_report(...)` 生成包含需求、风险、页面/接口资产覆盖率的 Markdown 报告；报告目录会同时包含 `report.md`、`execution.json` 和 `assets/` 截图副本，Markdown 使用相对路径链接。`compare_regression_report(...)` 比较当前与历史结果，报告用例增删、状态变化、覆盖变化和超过 20% 的性能变化。
+
+正式回放约束：`run_test_cases` 对普通 DOM 控件只允许 DrissionPage 元素 API（`element.click(by_js=False)`、`element.input(..., by_js=False)`、`element.click.multi(times=2)`）；`by_js` 和普通坐标点击会被拒绝。VTable/canvas 必须通过 `vtable_action` 或 `click_table_cell` 使用 DrissionPage 动作链。网络、页面与元素状态均使用 DrissionPage 的 `listen.wait()`、`wait.ele_displayed()`、`wait.ele_hidden()`、`wait.clickable()` 等被动等待器，不使用固定延时。
 
 配方不得隐式加入删除、提交、审批等破坏性操作，历史基线也不得由当前结果自动覆盖。已知缺陷复现使用 `xfailed`，不计为正常通过；无法覆盖“缺陷已修复”清理分支的破坏性复现只能保留为一次性证据，不进入正式可重复套件。
 

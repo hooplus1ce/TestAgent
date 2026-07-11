@@ -64,6 +64,28 @@ def test_js_args_special_chars():
     assert parsed == ["含'引号\"和\\斜杠"]
 
 
+def test_is_loading_complete_waits_for_loading_element_deletion():
+    import vtable
+
+    calls = []
+
+    class Wait:
+        def eles_loaded(self, locator, **kwargs):
+            calls.append(("eles_loaded", locator, kwargs))
+            return True
+
+        def ele_deleted(self, locator, **kwargs):
+            calls.append(("ele_deleted", locator, kwargs))
+            return True
+
+    frame = type("Frame", (), {"wait": Wait()})()
+    result = vtable.is_loading_complete(frame)
+
+    assert result is True
+    assert [item[0] for item in calls] == ["eles_loaded", "ele_deleted"]
+    assert all("vtable-loading" in item[1] for item in calls)
+
+
 def test_vtable_action_click_uses_visible_cell_coordinates():
     import vtable
     fake_tab = _FakeTab()

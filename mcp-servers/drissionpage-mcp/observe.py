@@ -535,7 +535,7 @@ _session = {}
 _session_lock = threading.Lock()
 
 
-def _build_session(signals, listen_targets, timeout_for_net=None):
+def _build_session(signals, listen_targets, timeout_for_net=None, native_wait: bool = False):
     """安装 MutationObserver + 启动网络监听，写入 _session。返回 session dict。"""
     if signals is None:
         signals = ["overlay", "notification", "message", "tab", "url"]
@@ -581,7 +581,8 @@ def _build_session(signals, listen_targets, timeout_for_net=None):
     if fr is not None:
         _run_js_safe(fr, _INSTALL_OBSERVER_JS)
 
-    # 网络监听（后台线程 wait，不阻塞 DOM 轮询）
+    # 网络监听。正式回放由 observe_wait() 直接调用 DrissionPage
+    # listen.wait()，避免 Python 轮询或后台线程竞争消费数据包。
     net_queue = queue.Queue()
     if watch_network:
         tg = listen_targets
@@ -594,21 +595,23 @@ def _build_session(signals, listen_targets, timeout_for_net=None):
             logger.debug("listen start 失败: %s", e)
             watch_network = False
 
-        net_timeout = timeout_for_net if timeout_for_net is not None else 120
-        def _net_waiter():
-            try:
-                pkt = tab.listen.wait(count=1, timeout=net_timeout)
-                if pkt:
-                    net_queue.put(pkt)
-            except Exception as e:
-                logger.debug("net waiter 失败: %s", e)
+        if not native_wait:
+            net_timeout = timeout_for_net if timeout_for_net is not None else 120
+            def _net_waiter():
+                try:
+                    pkt = tab.listen.wait(count=1, timeout=net_timeout)
+                    if pkt:
+                        net_queue.put(pkt)
+                except Exception as e:
+                    logger.debug("net waiter 失败: %s", e)
 
-        threading.Thread(target=_net_waiter, daemon=True).start()
+            threading.Thread(target=_net_waiter, daemon=True).start()
 
     new_sess = {
         "active": True,
         "tab": tab, "fr": fr, "sigset": sigset, "dom_types": dom_types,
         "watch_tab": watch_tab, "watch_url": watch_url, "watch_network": watch_network,
+        "native_wait": bool(native_wait),
         "base_url": base_url, "base_tab_count": base_tab_count,
         "net_queue": net_queue, "start": time.time(),
     }
@@ -747,7 +750,7 @@ def _attach_snapshot(result: dict, include_snapshot: bool, include_table_data: b
     return result
 
 
-def observe_start(signals=None, listen_targets=None) -> dict:
+def observe_start(signals=None, listen_targets=None, native_wait: bool = False) -> dict:
     """两段式观察器·启动：**点击前**调用，安装 MutationObserver + 网络监听，立即返回。
     observer 在点击前就已监听，消除「点击→观察」调用间隙（agent 思考时间可能 > toast 寿命），
     可靠捕获短寿命 toast（如保存成功 ~3s）。
@@ -763,13 +766,55 @@ def observe_start(signals=None, listen_targets=None) -> dict:
     Returns:
         {ok, session:'active', watched:[...], base_url, base_tab_count}
     """
-    sess = _build_session(signals, listen_targets)
+    sess = _build_session(signals, listen_targets, native_wait=native_wait)
     return {"ok": True, "session": "active", "watched": sorted(sess["sigset"]),
             "base_url": sess["base_url"], "base_tab_count": sess["base_tab_count"]}
 
 
+def _observe_wait_native(sess: dict, timeout: float, include_snapshot: bool,
+                         detail: str) -> dict:
+    """Wait through DrissionPage primitives only for formal recipe execution."""
+    try:
+        signal = _poll_once(sess, time.time())
+        if not signal:
+            if sess.get("watch_network"):
+                packet = sess["tab"].listen.wait(
+                    count=1, timeout=timeout, fit_count=False, raise_err=False,
+                )
+                if packet:
+                    sess["net_queue"].put(packet)
+            elif sess.get("dom_types"):
+                selector = "c:" + ",".join(_ALL_SELS)
+                targets = [target for target in (sess.get("fr"), sess.get("tab")) if target is not None]
+                target = targets[0] if targets else None
+                if target is not None:
+                    target.wait.ele_displayed(selector, timeout=timeout, raise_err=False)
+            elif sess.get("watch_url") and sess.get("fr") is not None:
+                sess["fr"].wait.url_change(sess.get("base_url", ""), timeout=timeout, raise_err=False)
+
+            signal = _poll_once(sess, time.time())
+
+        if signal:
+            events, summaries = _compact_events([signal])
+            result = dict(events[0])
+            result["events"] = summaries
+            result["event_count"] = len(events)
+        else:
+            result = {
+                "type": "none", "events": [],
+                "elapsedMs": int((time.time() - sess["start"]) * 1000),
+                "watched": sorted(sess["sigset"]),
+            }
+        return _attach_snapshot(result, include_snapshot, detail=detail)
+    finally:
+        with _session_lock:
+            _teardown_session(sess)
+            _session.clear()
+
+
 def observe_wait(timeout: float = 8.0, poll_interval: float = 0.12,
-                 include_snapshot: bool = True, detail: str = "summary") -> dict:
+                 include_snapshot: bool = True, detail: str = "summary",
+                 native_wait: bool = False) -> dict:
     """两段式观察器·等待: 轮询 observe_start 安装的 observer, 在短窗口内收集多个事件,
     按优先级选主事件返回, 避免 first-signal-wins 漏掉 .ant-message.
 
@@ -794,6 +839,10 @@ def observe_wait(timeout: float = 8.0, poll_interval: float = 0.12,
              "events": []},
             include_snapshot, detail=detail,
         )
+    use_native_wait = bool(native_wait or sess.get("native_wait"))
+    if use_native_wait:
+        return _observe_wait_native(sess, timeout, include_snapshot, detail)
+
     deadline = time.time() + timeout
     collect_deadline = None
     events = []

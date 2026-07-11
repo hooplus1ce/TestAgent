@@ -1,6 +1,8 @@
 """Focused tests for reproducible execution and trustworthy reporting."""
 from __future__ import annotations
 
+import json
+
 import pytest
 
 
@@ -322,3 +324,215 @@ def test_report_normalizes_windows_screenshot_paths_for_markdown_links():
     })
 
     assert "[run#1](</D:/evidence folder/step.png>)" in report
+
+
+def test_filter_recipe_quality_gate_rejects_stale_partial_match_pattern():
+    import test_execution
+
+    reasons = test_execution.weak_recipe_reasons({
+        "automation_recipe": [
+            {"action": "explore_action", "args": {
+                "action": "click_xy", "x": 1496, "y": 168, "observe_mode": "none",
+            }},
+            {"action": "count_vtable_rows", "args": {
+                "column_title": "生产部门", "value": "注塑车间",
+            }, "assertions": [{"path": "match_count", "operator": "truthy"}]},
+        ],
+    })
+
+    assert any("未使用 query_filter" in item for item in reasons)
+    assert any("不能证明全量结果匹配" in item for item in reasons)
+
+
+def test_full_column_assertions_require_every_visible_row_to_match():
+    import test_execution
+
+    case = {"case_id": "ALL", "automation_recipe": [{
+        "action": "get_table_values",
+        "assertions": [{"path": "values", "operator": "all_equals", "value": "冲压部门"}],
+    }]}
+    passed = test_execution.execute_cases(
+        [case], lambda *_: {"ok": True, "values": ["冲压部门", "冲压部门"]},
+    )["results"][0]
+    failed = test_execution.execute_cases(
+        [case], lambda *_: {"ok": True, "values": ["冲压部门", "注塑车间"]},
+    )["results"][0]
+
+    assert passed["status"] == "passed"
+    assert failed["status"] == "failed"
+
+
+def test_query_filter_requires_a_successful_network_response(monkeypatch):
+    import server
+
+    monkeypatch.setattr(server.observe, "observe_start", lambda **_: {"ok": True})
+    monkeypatch.setattr(server.filter_area, "submit_filter_area", lambda: {"ok": True, "clicked": "查询"})
+    monkeypatch.setattr(server.browser_session, "get_active_frame", lambda: object())
+    monkeypatch.setattr(server.vtable, "is_loading_complete", lambda *_: True)
+    monkeypatch.setattr(server.observe, "observe_wait", lambda **_: {
+        "type": "network", "status": 200, "packet": {"status": 200},
+    })
+    passed = server._run_recipe_action("query_filter", {})
+
+    monkeypatch.setattr(server.observe, "observe_wait", lambda **_: {"type": "none"})
+    failed = server._run_recipe_action("query_filter", {})
+
+    assert passed["ok"] is True and passed["query_completed"] is True
+    assert failed["ok"] is False and "查询未在" in failed["reason"]
+
+
+def test_query_filter_requires_vtable_loading_mask_to_finish(monkeypatch):
+    import server
+
+    monkeypatch.setattr(server.observe, "observe_start", lambda **_: {"ok": True})
+    monkeypatch.setattr(server.filter_area, "submit_filter_area", lambda: {"ok": True, "clicked": "查询"})
+    monkeypatch.setattr(server.observe, "observe_wait", lambda **_: {
+        "type": "network", "status": 200, "packet": {"status": 200},
+    })
+    monkeypatch.setattr(server.browser_session, "get_active_frame", lambda: object())
+    monkeypatch.setattr(server.vtable, "is_loading_complete", lambda *_: False)
+
+    result = server._run_recipe_action("query_filter", {})
+
+    assert result["ok"] is False
+    assert result["loading_complete"] is False
+    assert "加载遮罩" in result["reason"]
+
+
+def test_formal_recipe_rejects_js_and_non_vtable_coordinate_clicks():
+    import server
+
+    server._recipe_context.native_actions_only = True
+    try:
+        js_click = server._run_recipe_action("explore_action", {
+            "action": "click", "locator": "text:保存", "by_js": True,
+        })
+        coordinate_click = server._run_recipe_action("explore_action", {
+            "action": "click_xy", "x": 100, "y": 100,
+        })
+    finally:
+        server._recipe_context.native_actions_only = False
+
+    assert js_click["ok"] is False and "禁止 by_js" in js_click["reason"]
+    assert coordinate_click["ok"] is False and "禁止普通坐标点击" in coordinate_click["reason"]
+
+
+def test_formal_recipe_uses_drission_element_click_and_multi_click(monkeypatch):
+    import server
+
+    calls = []
+
+    class Wait:
+        def clickable(self, **kwargs):
+            calls.append(("wait.clickable", kwargs))
+
+    class Clicker:
+        def __call__(self, **kwargs):
+            calls.append(("click", kwargs))
+            return True
+
+        def multi(self, **kwargs):
+            calls.append(("multi", kwargs))
+            return True
+
+    element = type("Element", (), {
+        "wait": Wait(),
+        "click": Clicker(),
+        "states": type("States", (), {"is_clickable": True})(),
+    })()
+    monkeypatch.setattr(server.browser_session, "find", lambda *_args, **_kwargs: element)
+
+    single = server._run_recipe_action("click", {"locator": "text:保存"})
+    double = server._run_recipe_action("double_click", {"locator": "text:保存"})
+
+    assert single["ok"] is True and single["method"] == "element.click"
+    assert double["ok"] is True and double["method"] == "element.click.multi"
+    assert ("click", {"by_js": False, "wait_stop": True}) in calls
+    assert ("multi", {"times": 2}) in calls
+
+
+def test_native_observer_wait_uses_drission_listener_without_python_sleep(monkeypatch):
+    import queue
+    import observe
+
+    class Listener:
+        def __init__(self):
+            self.calls = []
+
+        def wait(self, **kwargs):
+            self.calls.append(kwargs)
+            return {"packet": True}
+
+    listener = Listener()
+    session = {
+        "watch_network": True,
+        "tab": type("Tab", (), {"listen": listener})(),
+        "net_queue": queue.Queue(),
+        "start": observe.time.time(),
+        "sigset": {"network"},
+    }
+    events = iter([None, {"type": "network", "elapsedMs": 1}])
+    monkeypatch.setattr(observe, "_poll_once", lambda *_: next(events))
+    monkeypatch.setattr(observe, "_teardown_session", lambda *_: None)
+    monkeypatch.setattr(observe, "_attach_snapshot", lambda result, *_args, **_kwargs: result)
+    monkeypatch.setattr(observe.time, "sleep", lambda *_: (_ for _ in ()).throw(AssertionError("sleep called")))
+
+    result = observe._observe_wait_native(session, timeout=1, include_snapshot=False, detail="summary")
+
+    assert result["type"] == "network"
+    assert listener.calls == [{"count": 1, "timeout": 1, "fit_count": False, "raise_err": False}]
+
+
+def test_run_test_cases_enables_native_mode_before_ready_gate(monkeypatch, tmp_path):
+    import config
+    import flow_evidence
+    import server
+    import test_execution
+
+    monkeypatch.setattr(config, "SHOT_DIR", str(tmp_path))
+    case_file = tmp_path / "cases.json"
+    case_file.write_text(json.dumps({
+        "module_info": {},
+        "test_cases": [{"case_id": "NATIVE", "automation_recipe": [{"action": "click", "args": {"locator": "text:保存"}}]}],
+    }, ensure_ascii=False), encoding="utf-8")
+    seen = []
+    monkeypatch.setattr(server, "_browser_ready_gate", lambda *_: seen.append(server._recipe_requires_native_actions()) or {"ok": True})
+    monkeypatch.setattr(flow_evidence, "is_active", lambda: False)
+    monkeypatch.setattr(flow_evidence, "start", lambda *_args, **_kwargs: {"ok": True})
+    monkeypatch.setattr(flow_evidence, "stop", lambda: {"ok": True})
+    monkeypatch.setattr(flow_evidence, "sanitize", lambda payload: payload)
+    monkeypatch.setattr(test_execution, "execute_cases", lambda *_args, **_kwargs: {
+        "results": [], "started_at": "", "finished_at": "",
+    })
+
+    result = server.run_test_cases(str(case_file), "native.json")
+
+    assert result["ok"] is True
+    assert seen == [True]
+    assert server._recipe_requires_native_actions() is False
+
+
+def test_report_bundle_copies_execution_json_and_screenshots(monkeypatch, tmp_path):
+    import config
+    import server
+
+    monkeypatch.setattr(config, "SHOT_DIR", str(tmp_path))
+    screenshot = tmp_path / "source.png"
+    screenshot.write_bytes(b"png")
+    execution = tmp_path / "execution.json"
+    execution.write_text(json.dumps({
+        "results": [{
+            "case_id": "BUNDLE", "status": "passed", "steps": [],
+            "evidence_refs": [{"flow_id": "run", "sequence": 1, "screenshot": str(screenshot)}],
+        }],
+        "module_info": {"module_name": "归档验证"},
+    }, ensure_ascii=False), encoding="utf-8")
+
+    report = server.generate_test_report(str(execution), filename="bundle.md")
+    bundle = tmp_path / "test_results" / "reports" / "归档验证" / "execution"
+
+    assert report["ok"] is True
+    assert report["bundle_dir"] == str(bundle)
+    assert (bundle / "execution.json").is_file()
+    assert (bundle / "assets" / "source.png").is_file()
+    assert "(assets/source.png)" in (bundle / "bundle.md").read_text(encoding="utf-8")

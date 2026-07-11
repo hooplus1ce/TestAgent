@@ -8,6 +8,7 @@ dependencies = [
     "ddddocr>=1.6.1",
     "drissionpage>=4.2.0b20",
     "httpx>=0.28.1",
+    "loguru>=0.7.3",
     "mcp[cli]>=1.28.1,<2",
     "openpyxl>=3.1.5",
 ]
@@ -19,12 +20,12 @@ drissionpage-mcp = "drissionpage_mcp:main"
 [tool.uv]
 package = true
 
-[tool.setuptools]
-py-modules = ["drission_ui_mcp", "drissionpage_mcp"]
-
 [[tool.uv.index]]
 url = "https://mirrors.aliyun.com/pypi/simple/"
 default = true
+
+[tool.setuptools]
+py-modules = ["drission_ui_mcp", "drissionpage_mcp"]
 
 [dependency-groups]
 dev = [

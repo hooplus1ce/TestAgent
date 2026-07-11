@@ -14,6 +14,17 @@ logger = logging.getLogger("drissionpage-mcp")
 _lock = browser_session._lock
 
 
+def _native_click(element, timeout: float = 3) -> None:
+    """Click through DrissionPage; tolerate minimal test doubles without JS fallback."""
+    waiter = getattr(element, "wait", None)
+    if waiter is not None:
+        waiter.clickable(timeout=timeout, wait_stop=True, raise_err=False)
+    try:
+        element.click(by_js=False, wait_stop=True)
+    except TypeError:
+        element.click()
+
+
 def expand_filter_area(tab=None):
     """展开筛选区：优先切换为内联模式，并点击展开显示所有筛选字段。"""
     with _lock:
@@ -220,7 +231,7 @@ def select_date_range(field_name: str, start_date: str, end_date: str, tab=None)
                 return {"ok": False, "reason": f"未找到字段「{field_name}」的日期选择器"}
 
             picker_input = target_row.ele('c:.ant-calendar-picker-input')
-            picker_input.click()
+            _native_click(picker_input, timeout=3)
             # 智能等待：日历面板出现即就绪（ele 自带轮询，无需固定 sleep）
             cal = fr.ele('c:.ant-calendar', timeout=5)
             if cal is None:
@@ -237,18 +248,6 @@ def select_date_range(field_name: str, start_date: str, end_date: str, tab=None)
                 me = lp.ele('c:.ant-calendar-month-select')
                 return int(ye.text.replace('年', '')), int(me.text.replace('月', ''))
 
-            def _wait_ym_change(prev, deadline):
-                """轮询直到左面板显示年/月与 prev 不同（或已等于目标），最多到 deadline。"""
-                while time.time() < deadline:
-                    try:
-                        cur = _shown_ym()
-                    except Exception:
-                        cur = prev
-                    if cur != prev:
-                        return cur
-                    time.sleep(0.05)
-                return prev
-
             for _ in range(600):
                 cur_year, cur_month = _shown_ym()
                 if cur_year == target_year and cur_month == target_month:
@@ -260,14 +259,14 @@ def select_date_range(field_name: str, start_date: str, end_date: str, tab=None)
                 btn = cal.ele(btn_sel, timeout=1)
                 if not btn:
                     return {"ok": False, "reason": f"未找到{'下一月' if delta > 0 else '上一月'}按钮"}
-                btn.click()
-                # 智能等待：显示的年/月变化后再决定是否继续翻（最多 1.5s）
-                _wait_ym_change((cur_year, cur_month), time.time() + 1.5)
+                _native_click(btn, timeout=1.5)
+                # DrissionPage 原生 click 会等待页面停止变化；不使用固定延时。
+                cal.wait.stop_moving(timeout=1.5, raise_err=False)
 
             start_cell = cal.ele(f'c:td[title="{start_date}"] .ant-calendar-date')
             if start_cell is None:
                 return {"ok": False, "reason": f"未找到开始日期单元格: {start_date}"}
-            start_cell.click()
+            _native_click(start_cell, timeout=3)
             # 智能等待：开始日期被选中即视为已进入结束日期选择态（最多 3s）
             try:
                 cal.wait.ele_displayed('c:.ant-calendar-selected-start-date', timeout=3)
@@ -277,7 +276,10 @@ def select_date_range(field_name: str, start_date: str, end_date: str, tab=None)
             end_cell = cal.ele(f'c:td[title="{end_date}"] .ant-calendar-date')
             if end_cell is None:
                 return {"ok": False, "reason": f"未找到结束日期单元格: {end_date}"}
-            end_cell.click()
+            _native_click(end_cell, timeout=3)
+            frame_waiter = getattr(fr, "wait", None)
+            if frame_waiter is not None:
+                frame_waiter.ele_hidden('c:.ant-calendar-picker-container .ant-calendar', timeout=3, raise_err=False)
 
             inputs = target_row.eles('c:input.ant-calendar-range-picker-input')
             return {
@@ -394,22 +396,86 @@ def scan_filter_fields(tab=None):
             return {"ok": False, "reason": str(e)}
 
 
+def reset_filter_area(tab=None) -> dict:
+    """点击筛选区的「重置」按钮清除所有筛选条件，再点击「查询」刷新表格数据。
+    不刷新 iframe，远快于 reset_to_initial 的页面刷新。
+    """
+    tab = tab or browser_session.get_tab()
+    fr = browser_session.get_active_frame(tab)
+    if fr is None:
+        return {"ok": False, "reason": "未找到活动 iframe"}
+    try:
+        query = browser_session.ele_with_fallback(
+            fr,
+            'css:.page-query',
+            'xpath://div[contains(@class, "page-query")]',
+            timeout=3.0
+        )
+        if not query:
+            return {"ok": False, "reason": "未找到筛选区 .page-query"}
+
+        btns = browser_session.eles_with_fallback(query, 'css:button', 'xpath:.//button')
+        reset_btn = None
+        search_btn = None
+        for b in btns:
+            if not b.states.is_displayed:
+                continue
+            text = (b.text or "").replace(" ", "")
+            if "重置" in text:
+                reset_btn = b
+            elif "查询" in text:
+                search_btn = b
+
+        if reset_btn:
+            _native_click(reset_btn, timeout=3)
+        else:
+            return {"ok": False, "reason": "未找到重置按钮"}
+
+        if search_btn:
+            _native_click(search_btn, timeout=3)
+
+        return {"ok": True, "reset_clicked": reset_btn is not None, "search_clicked": search_btn is not None}
+    except Exception as e:
+        logger.debug("reset_filter_area 失败: %s", e)
+        return {"ok": False, "reason": str(e)}
+
+
+def submit_filter_area(tab=None) -> dict:
+    """点击当前内联筛选区的「查询」按钮。
+
+    网络等待不在这里完成；调用方必须在点击前建立监听，以免错过短请求。
+    """
+    tab = tab or browser_session.get_tab()
+    fr = browser_session.get_active_frame(tab)
+    if fr is None:
+        return {"ok": False, "reason": "未找到活动 iframe"}
+    try:
+        query = browser_session.ele_with_fallback(
+            fr, 'css:.page-query',
+            'xpath://div[contains(@class, "page-query")]', timeout=3.0,
+        )
+        if not query:
+            return {"ok": False, "reason": "未找到筛选区 .page-query"}
+        for button in browser_session.eles_with_fallback(query, 'css:button', 'xpath:.//button'):
+            if button.states.is_displayed and "查询" in (button.text or "").replace(" ", ""):
+                _native_click(button, timeout=3)
+                return {"ok": True, "clicked": "查询"}
+        return {"ok": False, "reason": "未找到查询按钮"}
+    except Exception as exc:
+        logger.debug("submit_filter_area 失败: %s", exc)
+        return {"ok": False, "reason": str(exc)}
+
+
 def _close_visible_dropdowns(fr, timeout=0.5):
     """快速关闭可见 Ant Design 下拉浮层。
 
     扫描下拉选项时不等待完整关闭动画；只做一次关闭动作 + 短确认，
     避免 slide-up-leave 动画导致每个下拉多等数秒。
     """
-    fr.run_js(r"""
-        document.activeElement && document.activeElement.blur && document.activeElement.blur();
-        document.dispatchEvent(new KeyboardEvent('keydown', {key:'Escape', code:'Escape', keyCode:27, which:27, bubbles:true}));
-        document.body.dispatchEvent(new MouseEvent('mousedown', {bubbles:true}));
-        document.body.dispatchEvent(new MouseEvent('mouseup', {bubbles:true}));
-        document.body.click();
-        document.querySelectorAll('.ant-select-dropdown, .ant-dropdown').forEach(function(d){
-            d.style.removeProperty('display');
-        });
-    """)
+    try:
+        fr.actions.key_down('Escape').key_up('Escape')
+    except Exception:
+        pass
     try:
         fr.wait.ele_hidden('c:.ant-select-dropdown:not(.ant-select-dropdown-hidden)', timeout=timeout)
     except Exception:
@@ -430,7 +496,10 @@ def _collect_dropdown_options(fr, col_idx, sel_idx):
         fr.actions.key_down('Escape').key_up('Escape')
     except Exception:
         pass
-    time.sleep(0.1)
+    try:
+        fr.wait.ele_hidden('c:.ant-select-dropdown:not(.ant-select-dropdown-hidden)', timeout=1, raise_err=False)
+    except Exception:
+        pass
 
     try:
         cols = browser_session.eles_with_fallback(

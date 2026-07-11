@@ -8,9 +8,49 @@ from datetime import datetime, timezone
 
 _OPERATORS = {
     "equals", "not_equals", "contains", "truthy", "falsy", "in",
-    "all_contains", "regex",
+    "all_contains", "all_equals", "all_each_contains", "regex",
 }
 _MISSING = object()
+
+
+def weak_recipe_reasons(case: dict) -> list[str]:
+    """Reject recipes that can report a stale or only partially matched table as pass.
+
+    This deliberately targets the historical filter recipe shape. It does not try to
+    infer arbitrary page semantics, but it prevents the known false-positive pattern:
+    coordinate click with observation disabled followed by a truthy row count.
+    """
+    try:
+        _, steps, _ = _recipe_sections(case.get("automation_recipe"))
+    except ValueError as exc:
+        return [str(exc)]
+    reasons = []
+    has_query_barrier = any(item.get("action") == "query_filter" for item in steps if isinstance(item, dict))
+    has_full_table_assertion = any(
+        command.get("action") == "get_table_values"
+        and any(_normalize_assertion(item)[0] in {"all_equals", "all_each_contains"}
+                for item in _assertion_specs(command))
+        for command in steps if isinstance(command, dict)
+    )
+    for command in steps:
+        if not isinstance(command, dict):
+            continue
+        if command.get("action") != "count_vtable_rows":
+            continue
+        assertions = _assertion_specs(command)
+        if not has_full_table_assertion and any(
+            _normalize_assertion(item)[0] == "truthy" and item.get("path") == "match_count"
+            for item in assertions
+        ):
+            reasons.append("count_vtable_rows 的 truthy 断言只能证明存在匹配行，不能证明全量结果匹配")
+    if any(
+        item.get("action") == "explore_action"
+        and str((item.get("args") or {}).get("observe_mode", "")).lower() in {"none", "off"}
+        and str((item.get("args") or {}).get("action", "")).lower() in {"click", "click_xy"}
+        for item in steps if isinstance(item, dict)
+    ) and not has_query_barrier:
+        reasons.append("查询点击关闭了观察且未使用 query_filter，无法证明数据已刷新")
+    return list(dict.fromkeys(reasons))
 
 
 def _get_path(data, path: str):
@@ -99,6 +139,12 @@ def _evaluate_assertion(actual, operator: str, expected) -> tuple[bool, str]:
         if operator == "all_contains":
             values = expected if isinstance(expected, (list, tuple, set)) else [expected]
             return all(_contains(actual, item) for item in values), ""
+        if operator == "all_equals":
+            values = actual if isinstance(actual, (list, tuple, set)) else []
+            return bool(values) and all(item == expected for item in values), ""
+        if operator == "all_each_contains":
+            values = actual if isinstance(actual, (list, tuple, set)) else []
+            return bool(values) and all(str(expected) in str(item or "") for item in values), ""
         if operator == "regex":
             return re.search(str(expected), str(actual)) is not None, ""
     except (TypeError, ValueError, re.error) as exc:

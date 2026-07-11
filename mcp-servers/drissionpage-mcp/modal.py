@@ -152,26 +152,25 @@ def detect_modal(timeout: float = 0):
 
 
 def mouse_trail(on: bool = True):
-    """开启/关闭鼠标轨迹可视化(红色圆点跟踪 mousemove/click)。同时开启 top 层和活动 iframe。"""
+    """开启/关闭鼠标轨迹可视化。使用 tabpanel → iframe 方式确保 iframe 层级生效。"""
     tab = browser_session.get_tab()
-    show_trail = getattr(getattr(tab, "set", None), "show_trail", None)
-    if show_trail is None:
-        script = browser_session.load_js("mouse-trail-inject.js")
-        action = "on" if on else "off"
-        try:
-            tab.run_js(script + "\nif (window.mt) { window.mt.%s(); }\nreturn JSON.stringify({ok:!!window.mt,on:%s});" % (action, "true" if on else "false"))
-        except Exception as e:
-            return {"ok": False, "reason": "当前 DrissionPage 版本不支持 set.show_trail，JS fallback 失败: %s" % e}
-    else:
-        show_trail(on)
-    fr = browser_session.get_active_frame(tab)
-    if fr is not None:
-        try:
-            fr_show_trail = getattr(getattr(fr, "set", None), "show_trail", None)
-            if fr_show_trail is not None:
-                fr_show_trail(on)
-        except Exception as e:
-            logger.debug("iframe show_trail 失败: %s", e)
+    try:
+        tab.set.show_trail(on)
+    except Exception as e:
+        logger.debug("tab.show_trail 失败: %s", e)
+    # 用 tabpanel 方式获取 iframe（与 tools/main.py 一致）
+    try:
+        is_displayed = tab.wait.eles_loaded(
+            "t:div@@role=tabpanel@@aria-hidden=false", timeout=3, raise_err=False
+        )
+        if is_displayed:
+            active_tabpanel = tab.ele("t:div@@role=tabpanel@@aria-hidden=false", timeout=2)
+            if active_tabpanel:
+                iframe = active_tabpanel.get_frame("t:iframe", timeout=2)
+                if iframe is not None:
+                    iframe.set.show_trail(on)
+    except Exception as e:
+        logger.debug("iframe mouse_trail 失败: %s", e)
     return {"ok": True, "on": on}
 
 
@@ -274,26 +273,46 @@ def _normalize_js_list(res):
 
 
 def clear_transient_overlays(tab=None):
-    """Remove leftover Ant notification/message toasts before the next click.
+    """Close dismissible transient overlays through DrissionPage element APIs.
 
-    This intentionally does not close business modals/confirm dialogs; tests may
-    need to click their buttons as the next action.
+    This intentionally does not close business modals/confirm dialogs. A message
+    without a visible close control is left to its normal auto-dismiss behavior;
+    removing it with JavaScript would make a formal replay non-native.
     """
     tab = tab or browser_session.get_tab()
     errors = []
-    try:
-        closed = _normalize_js_list(tab.run_js(_CLEAR_TRANSIENT_ALL_JS))
-    except Exception as e:
-        logger.debug("clear transient overlays 失败(top): %s", e)
-        return {"ok": False, "closed": [], "errors": ["top: %s" % e]}
-    normalized = []
-    for item in closed:
-        if item.get("type") == "error":
-            errors.append("%s: %s" % (item.get("scope", ""), item.get("message", "")))
-            continue
-        item.setdefault("scope", "top")
-        normalized.append(item)
-    return {"ok": not errors, "closed": normalized, "errors": errors}
+    closed = []
+    for scope, target in _target_contexts(tab):
+        try:
+            notices = target.eles('c:.ant-notification-notice', timeout=0.2)
+            for notice in notices:
+                if not notice.states.is_displayed:
+                    continue
+                text = (notice.text or "").strip()
+                close = notice.ele('c:.ant-notification-notice-close', timeout=0.2)
+                if not close:
+                    continue
+                close.wait.clickable(timeout=1, wait_stop=True, raise_err=False)
+                close.click(wait_stop=True)
+                target.wait.ele_hidden(notice, timeout=1, raise_err=False)
+                closed.append({"scope": scope, "type": "notification", "message": text})
+
+            messages = target.eles('c:.ant-message-notice', timeout=0.2)
+            for message in messages:
+                if not message.states.is_displayed:
+                    continue
+                close = message.ele('c:.ant-message-close,.ant-message-notice-close', timeout=0.2)
+                if not close:
+                    continue
+                text = (message.text or "").strip()
+                close.wait.clickable(timeout=1, wait_stop=True, raise_err=False)
+                close.click(wait_stop=True)
+                target.wait.ele_hidden(message, timeout=1, raise_err=False)
+                closed.append({"scope": scope, "type": "message", "message": text})
+        except Exception as exc:
+            logger.debug("clear transient overlays 失败(%s): %s", scope, exc)
+            errors.append("%s: %s" % (scope, exc))
+    return {"ok": not errors, "closed": closed, "errors": errors}
 
 
 def close_modal(tab=None):
@@ -324,11 +343,13 @@ def close_modal(tab=None):
             if active_wrap:
                 cancel = active_wrap.ele('c:.ant-btn:not(.ant-btn-primary)', timeout=0.3)
                 if cancel:
-                    cancel.click()
+                    cancel.wait.clickable(timeout=2, wait_stop=True, raise_err=False)
+                    cancel.click(wait_stop=True)
                 else:
                     close_x = active_wrap.ele('c:.ant-modal-close', timeout=0.3)
                     if close_x:
-                        close_x.click()
+                        close_x.wait.clickable(timeout=2, wait_stop=True, raise_err=False)
+                        close_x.click(wait_stop=True)
                     else:
                         errors.append("%s modal: 无可点击的取消/关闭按钮" % scope)
                 if not any(e.startswith("%s modal: 无可点击" % scope) for e in errors):

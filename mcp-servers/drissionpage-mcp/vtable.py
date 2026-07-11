@@ -13,6 +13,9 @@ import browser_session
 
 
 _VTABLE_RETRY_REASON = "VTable 实例失效且自动重挂载失败，请重新进入模块或刷新 active iframe 后重试"
+_VTABLE_LOADING_LOCATOR = (
+    "xpath://div[@class='page-content']//div[contains(@class, 'vtable-loading')]"
+)
 
 
 def _frame():
@@ -59,21 +62,23 @@ def _ensure_vtable():
 
 
 def _wait_stable(reader, timeout=3):
-    """轮询 reader() 返回值，连续两次相等即认为稳定，返回稳定值；超时返回最后一次（可能仍在变化，但优于立即取）。
+    """Use DrissionPage's passive waiter before reading a VTable render state.
 
-    reader 返回 None 表示尚未就绪，继续轮询不中止。用于 scrollToCell 后等待场景图动画停止。
+    VTable is canvas-based, so there is no semantic row element to wait on. The
+    canvas geometry is the closest native synchronization target after
+    ``scrollToCell``; `stop_moving()` performs DrissionPage-managed polling
+    instead of a Python fixed-delay loop.
     """
-    import time as _time
-    prev, last, deadline = None, None, _time.time() + timeout
-    while _time.time() < deadline:
-        cur = reader()
-        if cur is not None:
-            if prev is not None and cur == prev:
-                return cur
-            prev = cur
-            last = cur
-        _time.sleep(0.05)
-    return last
+    fr = _frame()
+    try:
+        canvas = fr.ele('c:canvas', timeout=min(float(timeout), 1.0))
+        if canvas:
+            canvas.wait.stop_moving(timeout=timeout, raise_err=False)
+        else:
+            fr.wait.doc_loaded(timeout=timeout, raise_err=False)
+    except Exception:
+        pass
+    return reader()
 
 
 def _wait_cell_center_stable(col, row, timeout=3):
@@ -86,6 +91,29 @@ def _wait_cell_center_stable(col, row, timeout=3):
         return (round(ctr.get("viewportX", 0), 1), round(ctr.get("viewportY", 0), 1)), ctr
     stable = _wait_stable(reader, timeout)
     return stable[1] if stable else None
+
+
+def wait_for_render_stable(timeout: float = 3) -> dict:
+    """Passively wait for the VTable canvas to settle through DrissionPage."""
+    if not _ensure_vtable():
+        return {"ok": False, "reason": _VTABLE_RETRY_REASON}
+    _wait_stable(lambda: True, timeout=max(float(timeout or 0), 0.1))
+    return {"ok": True}
+
+
+def is_loading_complete(iframe=None) -> bool:
+    """Return whether the page VTable loading mask has been removed.
+
+    The waiters are DrissionPage-native and passive: first allow the loading
+    element to appear, then wait for it to be deleted. When a page does not
+    render a loading mask, ``ele_deleted`` succeeds immediately.
+    """
+    frame = iframe or _frame()
+    try:
+        frame.wait.eles_loaded(_VTABLE_LOADING_LOCATOR, timeout=3, raise_err=False)
+        return bool(frame.wait.ele_deleted(_VTABLE_LOADING_LOCATOR, timeout=20, raise_err=False))
+    except Exception:
+        return False
 
 
 def mount_vtable():
@@ -379,7 +407,7 @@ def _perform_pointer_action(action: str, vx, vy, hover_first: bool = True,
         tab.actions.move_to((vx, vy), duration=move_duration).click()
         return {"ok": True}
     if action == "double_click":
-        tab.actions.move_to((vx, vy), duration=move_duration).click().wait(0.15).click()
+        tab.actions.move_to((vx, vy), duration=move_duration).click(times=2)
         return {"ok": True}
     if action == "drag":
         dx, dy, reason = _resolve_drag_destination(vx, vy, drag_to)
