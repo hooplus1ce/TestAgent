@@ -1,6 +1,6 @@
 # drissionpage-mcp
 
-这是与原 `mcp-servers/drission-ui` 平行的新 MCP 服务目录。原目录保持不改；本目录内的浏览器连接、元素定位、点击、输入、截图、监听、弹窗观察、HTML 表格和 VTable facade 都通过 DrissionPage 实现。VTable 私有实例、React fiber 探测、canvas 坐标换算等仍封装在工具内部的 `frame.run_js()` 中，不暴露给调用侧。
+这是项目唯一的 MCP 核心实现。旧 `drission-ui-mcp` 命令保留为兼容入口，但会转发到本服务；不再维护第二套业务逻辑。本目录内的浏览器连接、元素定位、点击、输入、截图、监听、弹窗观察、HTML 表格和 VTable facade 都通过 DrissionPage 实现。VTable 私有实例、React fiber 探测、canvas 坐标换算等仍封装在工具内部的 `frame.run_js()` 中，不暴露给调用侧。
 
 ## 文档基线
 
@@ -66,19 +66,26 @@
 - 保存类按钮区分普通按钮和 `ant-dropdown-trigger` 下拉按钮。
 - `run_js` 一律顶层 `return`；需要 scope 精确判断时用 `target.run_js(document.querySelector(...))`，避免 `tab.ele()` 递归 iframe 导致误判。
 
+## 证据、执行与回归
+
+真实页面探索使用以下闭环，所有文件都保存到 `HL_SHOT_DIR` 下的当前模块目录：
+
+1. 通过 `flow_start(module=...)` 开始记录。
+2. 通过 `flow_capture_page_state(label="initial")` 采集 DOM、元素、表单、浮层和表格资产。
+3. 使用 `explore_action(...)` 执行业务动作。每步自动关联目标元素、页面反馈、网络请求/响应摘要、截图与耗时；敏感 Cookie、Token、密码和授权字段写入文件前会被脱敏。
+4. 使用 `flow_stop()` 保存证据包；破坏性流必须通过 `cleanup_from_sequence` 标出始终执行的清理段。再用 `generate_test_cases_from_flow(flow_file=...)` 生成覆盖矩阵和仅包含“已验证”场景的 19 字段用例候选。
+5. 多个真实业务流通过 `combine_test_case_files(...)` 去重合并。覆盖资产同时来自页面快照、真实操作和业务接口证据，账号轮询/心跳不会进入覆盖分母。
+6. 对包含显式 `automation_recipe` 的用例文件调用 `run_test_cases(case_file=...)`；运行期可用 `find_vtable_row`、`count_vtable_rows`、`get_vtable_row_values` 和 `$ref` 动态绑定业务行，避免依赖固定行号。
+7. 使用 `generate_test_report(...)` 生成包含需求、风险、页面/接口资产覆盖率的 Markdown 报告；`compare_regression_report(...)` 比较当前与历史结果，报告用例增删、状态变化、覆盖变化和超过 20% 的性能变化。
+
+配方不得隐式加入删除、提交、审批等破坏性操作，历史基线也不得由当前结果自动覆盖。已知缺陷复现使用 `xfailed`，不计为正常通过；无法覆盖“缺陷已修复”清理分支的破坏性复现只能保留为一次性证据，不进入正式可重复套件。
+
 ## 启动
 
 从项目根目录运行：
 
 ```bash
-uv run --project drissionpage-mcp python drissionpage-mcp/server.py
-```
-
-或进入目录运行：
-
-```bash
-cd drissionpage-mcp
-uv run python server.py
+uv run drissionpage-mcp
 ```
 
 MCP 配置示例：
@@ -88,7 +95,7 @@ MCP 配置示例：
   "mcpServers": {
     "drissionpage-mcp": {
       "command": "uv",
-      "args": ["run", "--project", "drissionpage-mcp", "python", "drissionpage-mcp/server.py"],
+      "args": ["run", "drissionpage-mcp"],
       "env": {
         "DRISSIONPAGE_MCP_CAPS": "all"
       }
@@ -102,7 +109,7 @@ MCP 配置示例：
 默认启用全部工具。需要裁剪上下文时设置：
 
 ```bash
-DRISSIONPAGE_MCP_CAPS=core,vtable,filter
+DRISSIONPAGE_MCP_CAPS=core,vtable,filter,observe,network,workflow
 ```
 
 兼容旧变量 `DRISSION_UI_CAPS`，但新服务优先读取 `DRISSIONPAGE_MCP_CAPS`。
@@ -115,4 +122,7 @@ DRISSIONPAGE_MCP_CAPS=core,vtable,filter
 - `filter_area.py`：筛选区展开、字段矩阵和下拉/日期操作。
 - `modal.py` / `observe.py`：浮窗、消息、通知、点击后观察。
 - `network_record.py`：网络监听与时间线导出，兼容 4.1/4.2 listener API。
+- `flow_evidence.py`：脱敏的业务流证据包、页面资产快照与元素-反馈-接口映射。
+- `testcase_generation.py`：证据驱动覆盖矩阵和 19 字段用例候选。
+- `test_execution.py` / `test_reporting.py`：配方回放、Markdown 报告和回归比较。
 - `js/`：只在工具内部注入的页面侧脚本。

@@ -11,6 +11,7 @@ import threading
 import json
 import logging
 import os
+import re
 import sys
 import time
 from datetime import datetime
@@ -33,6 +34,10 @@ import caps
 import page_model
 import network_record
 import resource_store
+import flow_evidence
+import testcase_generation
+import test_execution
+import test_reporting
 
 # 日志输出到 stderr（stdout 用于 MCP 协议帧，不可污染）
 logging.basicConfig(
@@ -64,6 +69,7 @@ _READ_ONLY_TOOLS = {
     "scan_modal",
     "scan_pagination",
     "scan_toolbar_actions",
+    "flow_status",
 }
 
 _ADDITIVE_TOOLS = {
@@ -76,6 +82,9 @@ _ADDITIVE_TOOLS = {
     "scan_page_elements",
     "scan_table",
     "screenshot",
+    "generate_test_cases_from_flow",
+    "generate_test_report",
+    "compare_regression_report",
 }
 
 _IDEMPOTENT_WRITE_TOOLS = {
@@ -150,11 +159,16 @@ class _RWLock:
         self._readers = 0
         self._writers_waiting = 0
         self._writing = False
+        self._writer_owner = None
+        self._writer_depth = 0
         self._can_read = threading.Condition(self._lock)
         self._can_write = threading.Condition(self._lock)
 
     def acquire_read(self):
         with self._lock:
+            if self._writing and self._writer_owner == threading.get_ident():
+                self._readers += 1
+                return
             while self._writers_waiting > 0 or self._writing:
                 self._can_read.wait()
             self._readers += 1
@@ -167,15 +181,27 @@ class _RWLock:
 
     def acquire_write(self):
         with self._lock:
+            current = threading.get_ident()
+            if self._writing and self._writer_owner == current:
+                self._writer_depth += 1
+                return
             self._writers_waiting += 1
             while self._readers > 0 or self._writing:
                 self._can_write.wait()
             self._writing = True
+            self._writer_owner = current
+            self._writer_depth = 1
             self._writers_waiting -= 1
 
     def release_write(self):
         with self._lock:
+            if self._writer_owner != threading.get_ident():
+                raise RuntimeError("write lock released by a non-owner")
+            self._writer_depth -= 1
+            if self._writer_depth:
+                return
             self._writing = False
+            self._writer_owner = None
             self._can_read.notify_all()
             self._can_write.notify()
 
@@ -378,6 +404,23 @@ def enter_module(menu_text: str, timeout: float = 8, expand_filter: bool = True)
 def reset_to_initial(module_text: str, timeout: float = 20) -> dict:
     """重置到初始状态：关闭当前业务 tab → 重进模块 → 等 iframe+VTable 就绪。用例间隔离用。"""
     tab = browser_session.get_tab()
+    active_frame = browser_session.get_active_frame(tab)
+    active_name = browser_session.get_active_tab_name()
+    if active_frame is not None and str(active_name or "").strip() == str(module_text or "").strip():
+        try:
+            active_frame.refresh()
+            try:
+                active_frame.wait.doc_loaded(timeout=timeout)
+            except Exception:
+                pass
+            expand_result = filter_area.expand_filter_area(tab)
+            return {
+                "ok": True, "entered": module_text, "iframe_ready": True,
+                "reset_mode": "iframe_refresh", "expand_filter": expand_result,
+                "resource_context": resource_store.set_module(module_text),
+            }
+        except Exception as exc:
+            logger.debug("iframe refresh reset failed, falling back to tab reopen: %s", exc)
     close_btn = browser_session.ele_with_fallback(
         tab,
         'css:.ant-tabs-tab-active.outSide .anticon-close',
@@ -1056,9 +1099,85 @@ def _resolve_visible_action_target(target: dict, in_frame: bool) -> dict:
     text = _target_get(target, "text", "name", "label", "title")
     if not text:
         return {"ok": False, "reason": "action/button target requires text/name/label"}
-    scope = str(_target_get(target, "scope", default="toolbar") or "toolbar")
+    scope = str(_target_get(target, "scope", default="auto") or "auto").lower()
     max_items = int(_target_get(target, "max_items", default=160) or 160)
-    data = page_model.scan_toolbar_actions(scope=scope, in_frame=in_frame, max_items=max_items)
+
+    def _matching_button(overlays: list[dict], area: str):
+        needle = _compact_text(text)
+        for exact in (True, False):
+            for overlay in reversed(overlays or []):
+                for item in reversed(overlay.get("buttons") or []):
+                    hay = _compact_text(item.get("text") or item.get("title") or "")
+                    matched = hay == needle if exact else bool(needle and needle in hay)
+                    if not matched or item.get("disabled"):
+                        continue
+                    semantic_xpath = item.get("semanticXPath")
+                    structural_xpath = item.get("xpath")
+                    selector_hint = item.get("selectorHint")
+                    locator = (
+                        _as_locator("xpath", semantic_xpath)
+                        if semantic_xpath else
+                        _as_locator("css", selector_hint)
+                        if selector_hint else
+                        _as_locator("xpath", structural_xpath)
+                        if structural_xpath else ""
+                    )
+                    result = {
+                        "ok": True,
+                        "action": "click",
+                        "locator": locator,
+                        "in_frame": overlay.get("scope") == "iframe",
+                        "meta": {
+                            "target_type": "action",
+                            "text": item.get("text") or text,
+                            "area": area,
+                            "overlay_title": overlay.get("title") or "",
+                            "scope": overlay.get("scope") or "",
+                            "matched": item,
+                        },
+                    }
+                    rect = item.get("rect") or {}
+                    result["x"] = item.get("cx", item.get("viewportX", rect.get("cx")))
+                    result["y"] = item.get("cy", item.get("viewportY", rect.get("cy")))
+                    if result["x"] is None and {"x", "width"} <= set(rect):
+                        result["x"] = float(rect["x"]) + float(rect["width"]) / 2
+                    if result["y"] is None and {"y", "height"} <= set(rect):
+                        result["y"] = float(rect["y"]) + float(rect["height"]) / 2
+                    # Overlay DOM often retains hidden copies with identical text/XPath.
+                    # Fresh snapshot coordinates identify the currently visible instance.
+                    if result["x"] is not None and result["y"] is not None:
+                        result["action"] = "click_xy"
+                    return result
+        return None
+
+    if scope in {"auto", "all", "overlay", "modal", "drawer"}:
+        snapshot = observe.observe_snapshot(
+            only_visible=True, include_table_data=False, detail="summary",
+        )
+        visible_overlays = snapshot.get("overlays") or []
+        requested_areas = []
+        if scope in {"auto", "all", "overlay", "modal"}:
+            requested_areas.append("modal")
+        if scope in {"auto", "all", "overlay", "drawer"}:
+            requested_areas.append("drawer")
+        for area in requested_areas:
+            accepted_types = (
+                {"modal", "confirm", "system_confirm", "interactive"}
+                if area == "modal" else {area}
+            )
+            typed = [item for item in visible_overlays if item.get("type") in accepted_types]
+            resolved = _matching_button(typed, area)
+            if resolved:
+                if resolved["action"] == "click_xy" and (
+                    resolved.get("x") is None or resolved.get("y") is None
+                ):
+                    continue
+                return resolved
+
+    toolbar_scope = "toolbar" if scope in {"auto", "modal", "drawer", "overlay"} else scope
+    data = page_model.scan_toolbar_actions(
+        scope=toolbar_scope, in_frame=in_frame, max_items=max_items,
+    )
     if not data.get("ok"):
         return {"ok": False, "reason": data.get("reason", "scan toolbar actions failed")}
 
@@ -1088,12 +1207,157 @@ def _resolve_visible_action_target(target: dict, in_frame: bool) -> dict:
         "action": "click_xy",
         "x": float(cx),
         "y": float(cy),
+        "locator": "",
+        "in_frame": in_frame,
         "meta": {
             "target_type": "action",
             "text": item.get("text") or text,
+            "area": item.get("area") or toolbar_scope,
             "matched": item,
         },
     }
+
+
+def _element_is_visible(element) -> bool:
+    states = getattr(element, "states", None)
+    return bool(getattr(states, "is_displayed", True))
+
+
+def _field_container_label(container) -> str:
+    try:
+        label = container.ele(
+            "css:.ant-form-item-label label,.ant-form-item-label,label,[class*='label']",
+            timeout=0.2,
+        )
+        return str(getattr(label, "text", "") or "").strip().rstrip("：:")
+    except Exception:
+        return ""
+
+
+def _semantic_field_candidates(target, field_name: str, area: str, timeout: float) -> list:
+    label_lit = _xpath_literal(field_name)
+    label_predicate = (
+        ".//*[self::label or contains(@class, 'label')]"
+        "[contains(normalize-space(.), %s)]" % label_lit
+    )
+    form_item = (
+        "//div[contains(concat(' ', normalize-space(@class), ' '), ' ant-form-item ')]"
+        "[%s]" % label_predicate
+    )
+    if area == "modal":
+        locator = (
+            "xpath://div[contains(@class, 'ant-modal')][%s]//div[contains(@class, 'ant-form-item')]"
+            "[%s]" % (label_predicate, label_predicate)
+        )
+    elif area == "drawer":
+        locator = (
+            "xpath://div[contains(@class, 'ant-drawer')][%s]//div[contains(@class, 'ant-form-item')]"
+            "[%s]" % (label_predicate, label_predicate)
+        )
+    elif area == "filter":
+        locator = (
+            "xpath://div[contains(@class, 'page-query') or contains(@class, 'quick-filter')]"
+            "//*[contains(@class, 'ant-form-item') or contains(@class, 'ant-col')][%s]"
+            % label_predicate
+        )
+    else:
+        locator = "xpath:" + form_item
+    try:
+        return [item for item in target.eles(locator, timeout=min(timeout, 2.0)) if _element_is_visible(item)]
+    except Exception:
+        return []
+
+
+@mcp.tool()
+@write_synchronized
+def set_field_value(field_name: str, value: str, in_frame: bool = True,
+                    clear: bool = True, timeout: float = 5.0,
+                    scope: str = "auto", select_index: int = 0) -> dict:
+    """按可见表单标签设置文本/筛选值，优先当前弹窗或抽屉，全程使用 DrissionPage 元素 API。"""
+    field_name = str(field_name or "").strip()
+    if not field_name:
+        return {"ok": False, "reason": "field_name is required"}
+    scope = str(scope or "auto").lower()
+    tab = browser_session.get_tab()
+    contexts = []
+    if in_frame and scope not in {"top"}:
+        frame = browser_session.get_active_frame(tab)
+        if frame is not None:
+            contexts.append(("iframe", frame))
+    if scope in {"auto", "top", "modal", "drawer", "overlay", "filter", "page"} or not contexts:
+        contexts.append(("top", tab))
+
+    if scope == "modal":
+        areas = ["modal"]
+    elif scope == "drawer":
+        areas = ["drawer"]
+    elif scope == "overlay":
+        areas = ["modal", "drawer"]
+    elif scope == "filter":
+        areas = ["filter"]
+    elif scope == "page":
+        areas = ["page"]
+    else:
+        areas = ["modal", "drawer", "filter", "page"]
+
+    control_locator = (
+        "css:input:not([type='hidden']),textarea,.ant-input-number-input,"
+        "[contenteditable='true']"
+    )
+    for scope_name, context in contexts:
+        for area in areas:
+            containers = _semantic_field_candidates(context, field_name, area, timeout)
+            exact = [item for item in containers if _compact_text(_field_container_label(item)) == _compact_text(field_name)]
+            ordered = exact or containers
+            for container in reversed(ordered):
+                try:
+                    controls = [
+                        item for item in container.eles(control_locator, timeout=0.3)
+                        if _element_is_visible(item)
+                    ]
+                except Exception:
+                    controls = []
+                if not controls:
+                    continue
+                index = min(max(int(select_index or 0), 0), len(controls) - 1)
+                control = controls[index]
+                states = getattr(control, "states", None)
+                if not bool(getattr(states, "is_enabled", True)):
+                    return {"ok": False, "reason": "field is disabled: %s" % field_name}
+                try:
+                    if control.attr("readonly") not in (None, False, "", "false"):
+                        return {"ok": False, "reason": "field is read-only: %s" % field_name}
+                except Exception:
+                    pass
+                try:
+                    if clear:
+                        control.clear()
+                    text_value = "" if value is None else str(value)
+                    control.input(text_value)
+                    try:
+                        actual = control.property("value")
+                    except Exception:
+                        actual = None
+                    if actual is None:
+                        try:
+                            actual = control.attr("value")
+                        except Exception:
+                            actual = None
+                    return {
+                        "ok": True,
+                        "action": "set_field_value",
+                        "field_name": field_name,
+                        "value": text_value,
+                        "actual_value": actual,
+                        "scope": scope_name,
+                        "area": "overlay" if area in {"modal", "drawer"} else area,
+                        "select_index": index,
+                    }
+                except Exception as exc:
+                    return {"ok": False, "reason": "field input failed: %s" % exc,
+                            "field_name": field_name, "scope": scope_name, "area": area}
+    return {"ok": False, "reason": "field not found: %s" % field_name,
+            "scope": scope, "in_frame": in_frame}
 
 
 def _click_field_raw(field_name: str, in_frame: bool = True, timeout: float = 5.0,
@@ -1549,6 +1813,7 @@ def _resolve_target_action(target, action_name: str, locator, x, y, field_name,
             "column_title": column_title, "kind": kind, "table_index": table_index,
             "icon_name": icon_name, "option_text": option_text, "key": key,
             "modifiers": modifiers, "target_meta": meta, "target_error": None,
+            "in_frame": in_frame,
         }
 
     target_type = str(_target_get(target, "type", "kind", default="") or "").lower()
@@ -1576,13 +1841,17 @@ def _resolve_target_action(target, action_name: str, locator, x, y, field_name,
                     "table_index": table_index, "icon_name": icon_name,
                     "option_text": option_text, "key": key, "modifiers": modifiers}
         action_name = resolved["action"]
-        x = resolved["x"]
-        y = resolved["y"]
+        locator = resolved.get("locator") or locator
+        x = resolved.get("x")
+        y = resolved.get("y")
+        in_frame = resolved.get("in_frame", in_frame)
         meta.update(resolved.get("meta") or {})
     elif target_type in ("field", "form_field", "date", "date-picker", "select"):
         field_name = str(_target_get(target, "field_name", "name", "label", default=field_name) or "")
         action_name = "field_click" if action_name in ("click", "click_xy") else action_name
         meta["field_name"] = field_name
+        meta["scope"] = str(_target_get(target, "scope", default="auto") or "auto")
+        meta["select_index"] = int(_target_get(target, "select_index", "selectIndex", default=0) or 0)
         if target_type in ("date", "date-picker") or any(word in field_name for word in ("日期", "时间")):
             meta["control_type"] = "date-picker"
         elif target_type == "select":
@@ -1628,6 +1897,7 @@ def _resolve_target_action(target, action_name: str, locator, x, y, field_name,
         "column_title": column_title, "kind": kind, "table_index": table_index,
         "icon_name": icon_name, "option_text": option_text, "key": key,
         "modifiers": modifiers, "target_meta": meta, "target_error": None,
+        "in_frame": in_frame,
     }
 
 
@@ -1739,7 +2009,9 @@ def explore_action(action: str = "click", target: dict = None,
                    locator: str = None, x: float = None, y: float = None,
                    row: int = 0, col: int = None, column_title: str = None, kind: str = "auto",
                    table_index: int = 0, icon_name: str = None, option_text: str = None,
-                   field_name: str = None, key: str = None, modifiers: list[str] = None,
+                   field_name: str = None, text: str = None, date: str = None,
+                   start_date: str = None, end_date: str = None,
+                   key: str = None, modifiers: list[str] = None,
                    by_js: bool = False, in_frame: bool = True, timeout: float = 8,
                    signals: list[str] = None, listen_targets: str = None,
                    capture_before: bool = False, capture_after: bool = False,
@@ -1748,7 +2020,7 @@ def explore_action(action: str = "click", target: dict = None,
                    clean_overlays: bool = True) -> dict:
     """动作探索封装：observe_start → 执行动作 → observe_wait → 可选页面模型快照。
 
-    action 可选 click/click_xy/table_cell/select_option/press_key。target 可选语义目标：
+    action 可选 click/click_xy/input/set_date/date_range/table_cell/select_option/press_key。target 可选语义目标：
     {"type":"field","name":"工作日期"}、{"type":"button","text":"添加"}、
     {"type":"css","value":"button.ant-btn"}、{"type":"xpath","value":"//button"}、
     {"type":"xy","x":100,"y":200}。旧参数 locator/x/y/field_name 仍保持兼容。
@@ -1760,6 +2032,7 @@ def explore_action(action: str = "click", target: dict = None,
     - 只需确认浮层有无 → 用 signal.snapshot_after 即可。
     - 需要完整页面动作列表/表格数据 → 显式 capture_after=True。
     """
+    flow_started = time.perf_counter()
     action_name = (action or "click").lower()
     resolved = _resolve_target_action(
         target, action_name, locator, x, y, field_name, row, col, column_title,
@@ -1782,6 +2055,7 @@ def explore_action(action: str = "click", target: dict = None,
         option_text = resolved["option_text"]
         key = resolved["key"]
         modifiers = resolved["modifiers"]
+        in_frame = resolved.get("in_frame", in_frame)
 
     observe_policy = _resolve_observe_policy(
         signals, listen_targets, expect, observe_mode, include_snapshot, detail,
@@ -1823,10 +2097,38 @@ def explore_action(action: str = "click", target: dict = None,
             else:
                 tab.actions.move_to((x, y), duration=0.3).click()
                 action_result = {"ok": True, "action": "click_xy", "x": x, "y": y}
+        elif action_name == "input":
+            if text is None:
+                action_result = {"ok": False, "reason": "text is required for input"}
+            elif field_name:
+                action_result = set_field_value(
+                    field_name, text, in_frame=in_frame, clear=True, timeout=timeout,
+                    scope=target_meta.get("scope", "auto"),
+                    select_index=int(target_meta.get("select_index", 0) or 0),
+                )
+                action_result["action"] = "input"
+            elif not locator:
+                action_result = {"ok": False, "reason": "locator or semantic field target is required for input"}
+            else:
+                action_result = input(locator, text, in_frame=in_frame, timeout=timeout)
+                action_result["action"] = "input"
+        elif action_name == "set_date":
+            if not field_name or not date:
+                action_result = {"ok": False, "reason": "field_name and date are required for set_date"}
+            else:
+                action_result = set_date(field_name, date, in_frame=in_frame, timeout=timeout)
+                action_result["action"] = "set_date"
+        elif action_name == "date_range":
+            if not field_name or not start_date or not end_date:
+                action_result = {"ok": False, "reason": "field_name, start_date and end_date are required for date_range"}
+            else:
+                action_result = select_date_range(field_name, start_date, end_date)
+                action_result["action"] = "date_range"
         elif action_name == "field_click":
             scope = "auto" if in_frame else "top"
             action_result = _click_field_raw(field_name or "", in_frame=in_frame,
-                                             timeout=min(timeout, 5), scope=scope)
+                                             timeout=min(timeout, 5), scope=target_meta.get("scope", scope),
+                                             select_index=int(target_meta.get("select_index", 0) or 0))
             if action_result.get("control_type") and "control_type" not in target_meta:
                 target_meta["control_type"] = action_result["control_type"]
         elif action_name == "table_cell":
@@ -1867,7 +2169,7 @@ def explore_action(action: str = "click", target: dict = None,
     if capture_after:
         after = page_model.capture_page_model(include_filters=False, include_table_data=False,
                                              max_table_rows=20, max_elements=80)
-    return {
+    result = {
         "ok": bool(action_result.get("ok")),
         "observe_start": observe_start_result,
         "observe_policy": observe_policy,
@@ -1877,6 +2179,504 @@ def explore_action(action: str = "click", target: dict = None,
         "before": before,
         "after": after,
     }
+    screenshot_path = None
+    if flow_evidence.wants_screenshot():
+        try:
+            screenshot_path = resource_store.resolve_path(
+                default_name="flow_step_%d.png" % int(time.time() * 1000),
+                category="screenshots",
+            )
+            browser_session.get_tab().get_screenshot(path=screenshot_path)
+        except Exception as exc:
+            logger.debug("flow screenshot failed: %s", exc)
+            screenshot_path = None
+    flow_step = flow_evidence.record_exploration(
+        {
+            "action": action, "target": target, "locator": locator, "x": x, "y": y,
+            "row": row, "col": col, "column_title": column_title, "kind": kind,
+            "table_index": table_index, "icon_name": icon_name, "option_text": option_text,
+            "field_name": field_name, "text": text, "date": date,
+            "start_date": start_date, "end_date": end_date, "key": key, "modifiers": modifiers,
+            "by_js": by_js, "in_frame": in_frame, "expect": expect,
+        },
+        result,
+        elapsed_ms=int((time.perf_counter() - flow_started) * 1000),
+        screenshot=screenshot_path,
+    )
+    if flow_step:
+        result["flow_step"] = flow_step
+    return result
+
+
+@mcp.tool()
+@write_synchronized
+def flow_start(module: str, flow_name: str = "exploration", capture_screenshots: bool = True,
+               scenario_type: str = "功能测试", risk_type: str = "正常路径",
+               destructive: bool = False, cleanup_strategy: str = "") -> dict:
+    """开始记录真实业务流证据；后续 explore_action 自动关联元素、反馈、接口和截图。"""
+    result = flow_evidence.start(
+        module, flow_name, capture_screenshots,
+        scenario_type=scenario_type,
+        risk_type=risk_type,
+        destructive=destructive,
+        cleanup_strategy=cleanup_strategy,
+    )
+    if result.get("ok"):
+        resource_store.set_module(module)
+    return result
+
+
+@mcp.tool()
+@read_synchronized
+def flow_status() -> dict:
+    """返回当前或最近一次业务流证据的状态与步骤数量。"""
+    return flow_evidence.status()
+
+
+@mcp.tool()
+@write_synchronized
+def flow_capture_page_state(label: str = "initial", include_filters: bool = True,
+                            include_tables: bool = True, max_table_rows: int = 30) -> dict:
+    """采集当前 iframe 的元素、DOM、表单、浮层和表格资产，并写入活动业务流证据。"""
+    if not flow_evidence.is_active():
+        return {"ok": False, "reason": "no active evidence flow; call flow_start first"}
+    page_state = page_model.capture_page_model(
+        include_filters=include_filters,
+        include_tables=include_tables,
+        include_table_data=True,
+        max_table_rows=max_table_rows,
+        max_elements=200,
+    )
+    reference = flow_evidence.record_page_state(label, page_state)
+    return {"ok": bool(page_state.get("ok")), "reference": reference, "page_state": page_state}
+
+
+@mcp.tool()
+@write_synchronized
+def flow_stop(filename: str = None, cleanup_from_sequence: int = None) -> dict:
+    """结束并保存业务流；破坏性流用 cleanup_from_sequence 标记必执行清理段。"""
+    return flow_evidence.stop(filename, cleanup_from_sequence=cleanup_from_sequence)
+
+
+def _read_json_resource(filename: str) -> tuple[dict | None, str | None]:
+    try:
+        value = json.loads(resource_store.read_text_resource(filename))
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        return None, str(exc)
+    return value, None
+
+
+def _safe_artifact_segment(value: str, fallback: str = "default") -> str:
+    value = re.sub(r'[^0-9A-Za-z_\-\u4e00-\u9fff]+', "_", str(value or "").strip())
+    return value.strip("._-") or fallback
+
+
+def _artifact_root() -> str:
+    """Use the project root normally, while respecting isolated test resource roots."""
+    project_root = os.path.abspath(config.PROJECT_ROOT)
+    shot_root = os.path.abspath(config.SHOT_DIR)
+    try:
+        return project_root if os.path.commonpath([project_root, shot_root]) == project_root else shot_root
+    except ValueError:
+        return shot_root
+
+
+def _module_artifact_name(module_info: dict | None) -> str:
+    info = module_info or {}
+    level1 = (info.get("module_level1_pinyin") or info.get("level1_pinyin") or
+              info.get("module_level1") or "")
+    module = (info.get("module_pinyin") or info.get("module_level2") or
+              info.get("module_name") or "default")
+    parts = [_safe_artifact_segment(item) for item in (level1, module) if str(item or "").strip()]
+    return "_".join(parts) or "default"
+
+
+def _resolve_artifact_path(filename: str | None, category: str, module_info: dict | None,
+                           default_name: str) -> str:
+    root = _artifact_root()
+    requested = str(filename or "").strip()
+    if requested and os.path.isabs(requested):
+        path = os.path.abspath(requested)
+        if os.path.commonpath([root, path]) != root:
+            raise ValueError("artifact path escapes project directory")
+    elif requested and os.path.dirname(requested):
+        path = os.path.abspath(os.path.join(root, requested))
+        if os.path.commonpath([root, path]) != root:
+            raise ValueError("artifact path escapes project directory")
+    else:
+        path = os.path.join(root, category, _module_artifact_name(module_info), requested or default_name)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    return path
+
+
+def _next_case_id_start(case_dir: str, exclude_path: str = None) -> dict:
+    highest = {}
+    if not os.path.isdir(case_dir):
+        return {"default": 1}
+    excluded = os.path.abspath(exclude_path) if exclude_path else None
+    for root, _, names in os.walk(case_dir):
+        for name in names:
+            if not name.lower().endswith(".json"):
+                continue
+            source_path = os.path.abspath(os.path.join(root, name))
+            if excluded and source_path == excluded:
+                continue
+            try:
+                with open(source_path, "r", encoding="utf-8") as source:
+                    payload = json.load(source)
+            except (OSError, ValueError, json.JSONDecodeError):
+                continue
+            for case in payload.get("test_cases", []) if isinstance(payload, dict) else []:
+                match = re.search(r"([A-Za-z])(\d+)$", str(case.get("case_id", "")))
+                if match:
+                    prefix = match.group(1).upper()
+                    highest[prefix] = max(highest.get(prefix, 0), int(match.group(2)))
+    return {**{prefix: value + 1 for prefix, value in highest.items()}, "default": 1}
+
+
+@mcp.tool()
+@write_synchronized
+def generate_test_cases_from_flow(flow_file: str, module_info: dict = None,
+                                  filename: str = None) -> dict:
+    """由已保存的真实证据生成覆盖矩阵和 19 字段用例候选，仅输出已验证场景为正式用例。"""
+    loaded = flow_evidence.load(flow_file)
+    if not loaded.get("ok"):
+        return loaded
+    info = dict(module_info or {})
+    default_name = "cases_%s.json" % loaded["flow"].get("flow_id", "evidence")
+    try:
+        path = _resolve_artifact_path(filename, "test_cases", info, default_name)
+    except ValueError as exc:
+        return {"ok": False, "reason": str(exc)}
+    info.setdefault("case_id_start", _next_case_id_start(os.path.dirname(path), exclude_path=path))
+    generated = testcase_generation.generate_verified_cases(loaded["flow"], info)
+    with open(path, "w", encoding="utf-8") as output:
+        json.dump(generated, output, ensure_ascii=False, indent=2)
+    generated["saved_to"] = path
+    return generated
+
+
+@mcp.tool()
+@write_synchronized
+def combine_test_case_files(case_files: list[str], filename: str = None,
+                            module_info: dict = None, exclude_case_ids: list[str] = None,
+                            exclude_known_defects: bool = False) -> dict:
+    """合并多个真实 flow 用例文件，并按资产/场景去重汇总覆盖率。"""
+    payloads = []
+    for case_file in case_files or []:
+        payload, error = _read_json_resource(case_file)
+        if error:
+            return {"ok": False, "reason": "%s: %s" % (case_file, error)}
+        payloads.append(payload)
+    if not payloads:
+        return {"ok": False, "reason": "case_files is empty"}
+    merged = testcase_generation.merge_generated_suites(
+        payloads, module_info=module_info,
+        exclude_case_ids=exclude_case_ids,
+        exclude_known_defects=exclude_known_defects,
+    )
+    info = merged.get("module_info") or {}
+    try:
+        path = _resolve_artifact_path(
+            filename, "test_cases", info, "test_suite_%d.json" % int(time.time()),
+        )
+    except ValueError as exc:
+        return {"ok": False, "reason": str(exc)}
+    with open(path, "w", encoding="utf-8") as output:
+        json.dump(merged, output, ensure_ascii=False, indent=2)
+    merged["saved_to"] = path
+    return merged
+
+
+_recipe_context = threading.local()
+
+
+def _recipe_values() -> dict:
+    values = getattr(_recipe_context, "values", None)
+    if values is None:
+        values = {}
+        _recipe_context.values = values
+    return values
+
+
+def _reset_recipe_context() -> None:
+    _recipe_context.values = {}
+
+
+def _recipe_ref_value(path: str):
+    parts = str(path or "").strip(".").split(".")
+    value = _recipe_values()
+    for part in parts:
+        if isinstance(value, dict) and part in value:
+            value = value[part]
+        elif isinstance(value, (list, tuple)) and part.isdigit() and int(part) < len(value):
+            value = value[int(part)]
+        else:
+            raise KeyError(path)
+    return value
+
+
+def _resolve_recipe_refs(value):
+    if isinstance(value, dict):
+        if set(value) == {"$ref"}:
+            return _recipe_ref_value(value["$ref"])
+        return {key: _resolve_recipe_refs(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_resolve_recipe_refs(item) for item in value]
+    return value
+
+
+def _run_recipe_action(action: str, args: dict) -> dict:
+    actions = {
+        "explore_action": explore_action,
+        "set_field_value": set_field_value,
+        "reset_to_initial": reset_to_initial,
+        "enter_module": enter_module,
+        "get_active_frame": get_active_frame,
+        "check_session": check_session,
+        "get_table_values": get_table_values,
+        "find_vtable_row": find_vtable_row,
+        "count_vtable_rows": count_vtable_rows,
+        "get_vtable_row_values": get_vtable_row_values,
+        "scan_table": scan_table,
+        "get_vtable_cell_render_info": get_vtable_cell_render_info,
+        "vtable_action": vtable_action,
+        "click_table_cell": click_table_cell,
+        "select_option": select_option,
+        "observe_snapshot": observe_snapshot,
+        "browser_get_element_state": browser_get_element_state,
+        "find_elements": find_elements,
+    }
+    runner = actions.get(action)
+    if runner is None:
+        return {"ok": False, "reason": "unsupported recipe action: %s" % action}
+    recorded_args = dict(args or {})
+    effective_args = dict(recorded_args)
+    save_as = str(effective_args.pop("save_as", "") or "").strip()
+    try:
+        effective_args = _resolve_recipe_refs(effective_args)
+    except KeyError as exc:
+        return {"ok": False, "reason": "recipe reference not found: %s" % exc.args[0]}
+    started = time.perf_counter()
+    try:
+        result = runner(**effective_args)
+    except TypeError as exc:
+        return {"ok": False, "reason": "invalid recipe arguments for %s: %s" % (action, exc)}
+    if save_as and isinstance(result, dict) and result.get("ok"):
+        _recipe_values()[save_as] = dict(result)
+        result = dict(result)
+        result["saved_as"] = save_as
+    if action == "explore_action" or not flow_evidence.is_active() or not isinstance(result, dict):
+        return result
+
+    screenshot_path = None
+    if flow_evidence.wants_screenshot():
+        try:
+            screenshot_path = resource_store.resolve_path(
+                "execution_%d_%d.png" % (int(time.time() * 1000), len(flow_evidence.status()["flow"] or {})),
+                category="screenshots",
+            )
+            browser_session.get_tab().get_screenshot(path=screenshot_path)
+        except Exception as exc:
+            logger.debug("recipe evidence screenshot failed: %s", exc)
+            screenshot_path = None
+    reference = flow_evidence.record_exploration(
+        {"action": action, **recorded_args},
+        {
+            "action": {"ok": bool(result.get("ok")), "action": action,
+                       "reason": result.get("reason", "")},
+            "signal": {"type": "structured_result", "payload": result},
+        },
+        elapsed_ms=int((time.perf_counter() - started) * 1000),
+        screenshot=screenshot_path,
+    )
+    if reference:
+        result = dict(result)
+        result["flow_step"] = reference
+    return result
+
+
+def _execution_module_text(payload: dict) -> str:
+    info = payload.get("module_info") or {}
+    return str(info.get("menu_text") or info.get("module_level2") or "").strip()
+
+
+def _browser_ready_gate(module_text: str) -> dict:
+    if not module_text:
+        return {"ok": True, "skipped": True, "reason": "module_info.menu_text/module_level2 is absent"}
+    try:
+        connection = connect(config.DEFAULT_PORT, config.DEFAULT_TARGET_HINT)
+        first_session = check_session()
+        refresh = None
+        if first_session.get("expired"):
+            refresh = refresh_session()
+        final_session = check_session()
+        if final_session.get("expired"):
+            return {"ok": False, "reason": "session remains expired after refresh",
+                    "connection": connection, "session": final_session, "refresh": refresh}
+        frame = get_active_frame()
+        entered = {"ok": True, "skipped": True, "reason": "target module already active"}
+        if not frame.get("ok") or str(frame.get("tab_name") or "").strip() != module_text:
+            entered = enter_module(module_text, timeout=12)
+            frame = get_active_frame()
+        if not entered.get("ok") or not frame.get("ok"):
+            return {"ok": False, "reason": "target module iframe is not ready",
+                    "connection": connection, "session": final_session,
+                    "entered": entered, "frame": frame, "refresh": refresh}
+        return {"ok": True, "connection": connection, "initial_session": first_session,
+                "session": final_session, "entered": entered, "frame": frame,
+                "refresh": refresh}
+    except Exception as exc:
+        return {"ok": False, "reason": "%s: %s" % (type(exc).__name__, exc)}
+
+
+@mcp.tool()
+@write_synchronized
+def run_test_cases(case_file: str, filename: str = None) -> dict:
+    """回放用例中的 automation_recipe，执行真实浏览器操作并保存逐步结果与性能数据。"""
+    payload, error = _read_json_resource(case_file)
+    if error:
+        return {"ok": False, "reason": error}
+    cases = payload.get("test_cases", []) if isinstance(payload, dict) else []
+    if not cases:
+        return {"ok": False, "reason": "case file contains no test_cases"}
+    module_info = payload.get("module_info") or {}
+    module_text = _execution_module_text(payload)
+    ready_gate = _browser_ready_gate(module_text)
+    if not ready_gate.get("ok"):
+        return {"ok": False, "reason": "browser ready gate failed: %s" % ready_gate.get("reason", ""),
+                "ready_gate": ready_gate}
+    if flow_evidence.is_active():
+        return {"ok": False, "reason": "an evidence flow is already active; stop it before execution"}
+
+    started_flow = flow_evidence.start(
+        module_text or str(module_info.get("module_name") or "automated_execution"),
+        "automated_execution_%d" % int(time.time()), capture_screenshots=True,
+        scenario_type="自动化回归测试", risk_type="执行复验",
+        destructive=any(bool(case.get("destructive")) for case in cases),
+        cleanup_strategy="automation_recipe.cleanup + after_case overlay cleanup",
+    )
+    if not started_flow.get("ok"):
+        return started_flow
+
+    def before_case(_case):
+        _reset_recipe_context()
+        if not module_text:
+            return {"ok": True, "skipped": True, "reason": "module reset unavailable"}
+        reset = _run_recipe_action("reset_to_initial", {"module_text": module_text})
+        if not reset.get("ok"):
+            return reset
+        frame = get_active_frame()
+        if not frame.get("ok"):
+            return frame
+        return {"ok": True, "reset": reset, "frame": frame,
+                "flow_step": reset.get("flow_step")}
+
+    def after_case(_case, _result):
+        cleanup = _pre_click_cleanup(True)
+        response = {"ok": not cleanup.get("errors"), "cleanup": cleanup}
+        if cleanup.get("errors"):
+            response["reason"] = "; ".join(str(item) for item in cleanup["errors"])
+        return response
+
+    execution_flow = None
+    try:
+        execution = test_execution.execute_cases(
+            cases, _run_recipe_action, before_case=before_case, after_case=after_case,
+        )
+    finally:
+        execution_flow = flow_evidence.stop()
+    execution["module_info"] = module_info
+    execution["source_case_file"] = os.path.abspath(case_file)
+    execution["ready_gate"] = ready_gate
+    execution["evidence_flow"] = execution_flow
+    if payload.get("coverage_summary") is not None:
+        execution["coverage_summary"] = payload["coverage_summary"]
+    if payload.get("coverage_matrix") is not None:
+        execution["coverage_matrix"] = payload["coverage_matrix"]
+    try:
+        path = _resolve_artifact_path(
+            filename, os.path.join("test_results", "executions"), module_info,
+            "execution_%d.json" % int(time.time()),
+        )
+    except ValueError as exc:
+        return {"ok": False, "reason": str(exc)}
+    with open(path, "w", encoding="utf-8") as output:
+        json.dump(flow_evidence.sanitize(execution), output, ensure_ascii=False, indent=2)
+    counts = {state: sum(1 for item in execution["results"] if item["status"] == state)
+              for state in ("passed", "failed", "xfailed", "skipped")}
+    return {"ok": True, "saved_to": path, "counts": counts, "execution": execution}
+
+
+@mcp.tool()
+@write_synchronized
+def generate_test_report(execution_file: str, coverage_file: str = None,
+                         baseline_file: str = None, filename: str = None,
+                         defects_file: str = None,
+                         supplemental_execution_files: list[str] = None) -> dict:
+    """生成包含执行结果、覆盖率、缺陷、证据、性能和回归差异的 Markdown 报告。"""
+    execution, error = _read_json_resource(execution_file)
+    if error:
+        return {"ok": False, "reason": error}
+    coverage_payload, coverage_error = _read_json_resource(coverage_file) if coverage_file else ({}, None)
+    if coverage_error:
+        return {"ok": False, "reason": coverage_error}
+    baseline, baseline_error = _read_json_resource(baseline_file) if baseline_file else (None, None)
+    if baseline_error:
+        return {"ok": False, "reason": baseline_error}
+    defects_payload, defects_error = _read_json_resource(defects_file) if defects_file else ({}, None)
+    if defects_error:
+        return {"ok": False, "reason": defects_error}
+    current = dict(execution)
+    supplemental_results = []
+    supplemental_sources = []
+    for supplemental_file in supplemental_execution_files or []:
+        supplemental, supplemental_error = _read_json_resource(supplemental_file)
+        if supplemental_error:
+            return {"ok": False, "reason": "%s: %s" % (supplemental_file, supplemental_error)}
+        supplemental_results.extend(
+            item for item in supplemental.get("results", []) if isinstance(item, dict)
+        )
+        supplemental_sources.append(os.path.abspath(supplemental_file))
+    if supplemental_results:
+        current["results"] = list(execution.get("results", [])) + supplemental_results
+        current["supplemental_execution_files"] = supplemental_sources
+    if coverage_payload:
+        if coverage_payload.get("coverage_summary") is not None:
+            current["coverage_summary"] = coverage_payload["coverage_summary"]
+        if coverage_payload.get("coverage_matrix") is not None:
+            current["coverage_matrix"] = coverage_payload["coverage_matrix"]
+    if defects_payload:
+        if isinstance(defects_payload, list):
+            current["known_defects"] = defects_payload
+        else:
+            current["known_defects"] = defects_payload.get("known_defects", [])
+    regression = test_reporting.compare_regression(current, baseline)
+    markdown = test_reporting.render_markdown(current, coverage_payload or current, regression)
+    try:
+        path = _resolve_artifact_path(
+            filename, os.path.join("test_results", "reports"), execution.get("module_info") or {},
+            "test_report_%d.md" % int(time.time()),
+        )
+    except ValueError as exc:
+        return {"ok": False, "reason": str(exc)}
+    with open(path, "w", encoding="utf-8") as output:
+        output.write(markdown)
+    return {"ok": True, "saved_to": path, "regression": regression,
+            "coverage_summary": current.get("coverage_summary")}
+
+
+@mcp.tool()
+@read_synchronized
+def compare_regression_report(execution_file: str, baseline_file: str) -> dict:
+    """比较当前执行结果与历史基线，识别状态变化和超过 20% 的性能回退。"""
+    execution, error = _read_json_resource(execution_file)
+    if error:
+        return {"ok": False, "reason": error}
+    baseline, error = _read_json_resource(baseline_file)
+    if error:
+        return {"ok": False, "reason": error}
+    return test_reporting.compare_regression(execution, baseline)
 
 
 def _action_disabled_diff(before: dict, after: dict) -> list:
@@ -2463,6 +3263,118 @@ def get_table_values(column_title: str, kind: str = "auto", raw: bool = False, t
         }
 
     return result
+
+
+@mcp.tool()
+@read_synchronized
+def find_vtable_row(column_title: str, value: str, raw: bool = False,
+                    match: str = "equals", header_rows: int = 1,
+                    timeout: float = 0) -> dict:
+    """按唯一列值解析 VTable 画布行号；重复值会失败，避免回放误操作其他业务行。"""
+    match = str(match or "equals").lower()
+    if match not in {"equals", "contains"}:
+        return {"ok": False, "reason": "unsupported row match: %s" % match}
+    expected = str(value or "").strip()
+    deadline = time.perf_counter() + max(float(timeout or 0), 0)
+    matches = []
+    while True:
+        scanned = get_table_values(column_title=column_title, kind="vtable", raw=raw)
+        if not scanned.get("ok"):
+            return scanned
+        matches = []
+        for index, actual in enumerate(scanned.get("values") or []):
+            normalized = str(actual if actual is not None else "").strip()
+            if normalized == expected if match == "equals" else expected in normalized:
+                matches.append({"data_index": index, "row": index + max(int(header_rows), 0),
+                                "actual": actual})
+        if len(matches) == 1 or time.perf_counter() >= deadline:
+            break
+        time.sleep(0.1)
+    if len(matches) != 1:
+        return {
+            "ok": False,
+            "kind": "vtable",
+            "reason": "列值未唯一定位到 VTable 行: %s=%s（匹配 %d 行）" % (
+                column_title, expected, len(matches),
+            ),
+            "column_title": column_title,
+            "value": value,
+            "match": match,
+            "match_count": len(matches),
+            "matches": matches,
+        }
+    found = matches[0]
+    return {
+        "ok": True,
+        "kind": "vtable",
+        "column_title": column_title,
+        "value": value,
+        "row": found["row"],
+        "data_index": found["data_index"],
+        "match": match,
+    }
+
+
+@mcp.tool()
+@read_synchronized
+def count_vtable_rows(column_title: str, value: str, raw: bool = False,
+                      match: str = "equals", expected_count: int = None,
+                      timeout: float = 0) -> dict:
+    """统计 VTable 指定列的匹配行数，用于新增存在性与删除完成断言。"""
+    match = str(match or "equals").lower()
+    if match not in {"equals", "contains"}:
+        return {"ok": False, "reason": "unsupported row match: %s" % match}
+    expected = str(value or "").strip()
+    deadline = time.perf_counter() + max(float(timeout or 0), 0)
+    matched_indexes = []
+    while True:
+        scanned = get_table_values(column_title=column_title, kind="vtable", raw=raw)
+        if not scanned.get("ok"):
+            return scanned
+        matched_indexes = []
+        for index, actual in enumerate(scanned.get("values") or []):
+            normalized = str(actual if actual is not None else "").strip()
+            if normalized == expected if match == "equals" else expected in normalized:
+                matched_indexes.append(index)
+        if expected_count is None or len(matched_indexes) == int(expected_count) or time.perf_counter() >= deadline:
+            break
+        time.sleep(0.1)
+    return {
+        "ok": True, "kind": "vtable", "column_title": column_title,
+        "value": value, "match": match, "match_count": len(matched_indexes),
+        "data_indexes": matched_indexes, "expected_count": expected_count,
+    }
+
+
+@mcp.tool()
+@read_synchronized
+def get_vtable_row_values(key_column: str, key_value: str, column_titles: list[str],
+                          raw: bool = False, match: str = "equals",
+                          timeout: float = 0) -> dict:
+    """按唯一业务键读取同一 VTable 行的多个列值，避免依赖易变的视觉行号。"""
+    found = find_vtable_row(
+        column_title=key_column, value=key_value, raw=raw, match=match,
+        header_rows=1, timeout=timeout,
+    )
+    if not found.get("ok"):
+        return found
+    data_index = found["data_index"]
+    values = {}
+    for title in column_titles or []:
+        scanned = get_table_values(column_title=title, kind="vtable", raw=raw)
+        if not scanned.get("ok"):
+            return {"ok": False, "reason": "读取列失败: %s" % title,
+                    "column": title, "detail": scanned}
+        column_values = scanned.get("values") or []
+        if data_index >= len(column_values):
+            return {"ok": False, "reason": "列数据行数不一致: %s" % title,
+                    "column": title, "data_index": data_index, "value_count": len(column_values)}
+        values[str(title)] = column_values[data_index]
+    return {
+        "ok": True, "kind": "vtable", "key_column": key_column,
+        "key_value": key_value, "row": found["row"], "data_index": data_index,
+        "values": values,
+    }
 
 
 @mcp.tool()

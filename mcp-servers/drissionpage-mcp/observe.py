@@ -676,22 +676,15 @@ def _poll_once(sess, now):
             pkt = None
         if pkt:
             p = pkt[0] if isinstance(pkt, list) else pkt
-            url = getattr(p, "url", "")
-            method = getattr(p, "method", "")
-            status = getattr(p.response, "status", None) if getattr(p, "response", None) else None
-            api_target = ""
-            post_data = None
-            if getattr(p, "request", None):
-                headers = dict(p.request.headers) if hasattr(p.request, "headers") else {}
-                api_target = headers.get("api-target", "")
-                post_data = p.request.postData if hasattr(p.request, "postData") else None
+            packet = network_record.packet_to_dict(p)
             return {
                 "type": "network",
-                "url": url,
-                "method": method,
-                "api_target": api_target,
-                "post_data": post_data,
-                "status": status,
+                "url": packet.get("url", ""),
+                "method": packet.get("method", ""),
+                "api_target": packet.get("api_target", ""),
+                "post_data": (packet.get("request") or {}).get("post_data"),
+                "status": packet.get("status"),
+                "packet": packet,
                 "elapsedMs": int((now - sess["start"]) * 1000),
             }
     return None

@@ -137,6 +137,7 @@ def write_section(ws, start_row, title, headers, data_rows):
 def load_testcases_from_json(json_files):
     """从多个JSON文件加载测试用例"""
     all_cases = []
+    assets_by_key = {}
     module_info = None
 
     for fpath in sorted(json_files):
@@ -153,13 +154,21 @@ def load_testcases_from_json(json_files):
             loaded_case["_source_order"] = len(all_cases)
             all_cases.append(loaded_case)
 
+        for asset in data.get("asset_inventory", []):
+            if not isinstance(asset, dict):
+                continue
+            key = (asset.get("asset_type"), str(asset.get("name", "")).strip())
+            if key[0] and key[1]:
+                assets_by_key.setdefault(key, dict(asset))
+
         if cases:
             print(f"✅ 加载: {os.path.basename(fpath)} → {len(cases)} 条用例")
 
-    return module_info, all_cases
+    return module_info, all_cases, list(assets_by_key.values())
 
 
-def build_excel(module_info, test_cases, output_dir=None, custom_filename=None):
+def build_excel(module_info, test_cases, output_dir=None, custom_filename=None,
+                asset_inventory=None):
     """构建Excel文件"""
     test_cases = sort_test_cases(test_cases)
 
@@ -206,7 +215,8 @@ def build_excel(module_info, test_cases, output_dir=None, custom_filename=None):
         if test_data_dict:
             test_data_parts = ["表单数据"]
             for k, v in test_data_dict.items():
-                test_data_parts.append(f"{k}：{v}")  # 注意：中文冒号！
+                rendered = "、".join(map(str, v)) if isinstance(v, list) else v
+                test_data_parts.append(f"{k}：{rendered}")  # 注意：中文冒号！
             test_data = "\n".join(test_data_parts)
         else:
             test_data = ""
@@ -277,29 +287,71 @@ def build_excel(module_info, test_cases, output_dir=None, custom_filename=None):
             ["", "", ""],
         ] + [[k, str(v), f"{v/total*100:.1f}%"] for k, v in type_count.items()])
     
+    case_config_rows = []
+    for case in test_cases:
+        case_config_rows.append([
+            len(case_config_rows) + 1,
+            f"{prefix}_{pinyin}_{case.get('case_id', '')}", level1, level2,
+            case.get("function", ""), case.get("case_title", ""),
+            case.get("priority", ""), case.get("test_type", ""),
+            author, write_date,
+        ])
     row = write_section(ws2, row, "2. 测试数据配置",
         ["序号", "系统编号", "一级模块", "二级模块", "功能",
-         "用例标题", "级别", "测试类型", "编写人", "编写日期"], [])
+         "用例标题", "级别", "测试类型", "编写人", "编写日期"], case_config_rows)
     
     # 3. 筛选字段说明（如果有）
+    assets = [item for item in (asset_inventory or []) if isinstance(item, dict)]
     filter_fields = []
-    if "meta_data" in test_cases[0] if test_cases else False:
-        filter_fields = test_cases[0]["meta_data"].get("filter_fields", [])
+    for asset in assets:
+        if asset.get("asset_type") != "filter":
+            continue
+        metadata = asset.get("metadata") or {}
+        details = []
+        if metadata.get("operators"):
+            details.append("操作符：%s" % "、".join(map(str, metadata["operators"])))
+        if metadata.get("options"):
+            details.append("选项数：%d" % len(metadata["options"]))
+        if metadata.get("required"):
+            details.append("必填")
+        filter_fields.append([
+            asset.get("name", ""), metadata.get("value_mode", ""),
+            "", "；".join(details),
+        ])
     
     row = write_section(ws2, row, "3. 筛选字段说明",
         ["字段名称", "输入方式", "对应测试数据", "说明"], filter_fields or [
             ["（探索过程中自动填充）", "", "", ""],
         ])
     
+    action_rows = []
+    for asset in assets:
+        if asset.get("asset_type") != "action":
+            continue
+        metadata = asset.get("metadata") or {}
+        name = str(asset.get("name", ""))
+        requires_selection = "是" if any(word in name for word in ("编辑", "删除", "审核", "审批", "作废")) else "否"
+        action_rows.append([
+            name, requires_selection,
+            "区域：%s；类型：%s" % (metadata.get("area", "页面"), metadata.get("kind", "普通")),
+        ])
     row = write_section(ws2, row, "4. 工具栏按钮一览表",
-        ["按钮名称", "是否需要勾选行", "功能说明"], [
-            ["（探索过程中自动填充）", "", ""],
-        ])
+        ["按钮名称", "是否需要勾选行", "功能说明"], action_rows or [["未采集", "", ""]])
     
-    row = write_section(ws2, row, "5. VTable列定义一览表",
-        ["列标题", "列类型", "可交互", "说明"], [
-            ["（探索过程中自动填充）", "", "", ""],
+    column_rows = []
+    for asset in assets:
+        if asset.get("asset_type") != "table_column":
+            continue
+        metadata = asset.get("metadata") or {}
+        behavior = metadata.get("behavior") or "展示"
+        interactive = "是" if metadata.get("editable") or behavior not in ("", "none", "展示") else "否"
+        row_count = metadata.get("row_count")
+        column_rows.append([
+            asset.get("name", ""), behavior, interactive,
+            "快照数据行数：%s" % row_count if row_count is not None else "已采集列定义",
         ])
+    row = write_section(ws2, row, "5. VTable列定义一览表",
+        ["列标题", "列类型", "可交互", "说明"], column_rows or [["未采集", "", "", ""]])
     
     # ===================== 保存 =====================
     module_name = module_info.get("module_name", "测试用例")
@@ -362,13 +414,13 @@ def main():
         print("❌ 未找到任何JSON文件")
         return
     
-    module_info, test_cases = load_testcases_from_json(json_files)
+    module_info, test_cases, asset_inventory = load_testcases_from_json(json_files)
     
     if not test_cases:
         print("❌ 未加载到任何测试用例")
         return
     
-    build_excel(module_info, test_cases)
+    build_excel(module_info, test_cases, asset_inventory=asset_inventory)
 
 
 if __name__ == "__main__":

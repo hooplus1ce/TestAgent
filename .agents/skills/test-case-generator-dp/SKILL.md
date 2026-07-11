@@ -44,16 +44,22 @@ Read only the references needed for the requested area when the task is narrow.
 1. Run the Browser Ready Gate whenever the user says "connect browser" or before real page exploration:
    `connect(port=9222, target_hint=<TEST_PAGE_URL>)` -> open/select the page under test with `browser_tabs` -> `check_session` -> if expired, `refresh_session` -> return to the page/module -> final `check_session` -> `get_active_frame`. Stop if the final session check still reports expiration or if no active iframe is available.
 2. Enter the requested module with `enter_module(..., expand_filter=True)` when the ready gate did not already land on the target module, then run `get_active_frame` again.
-3. Collect page structure with `scan_page_elements`, `dom_tree`,
+3. Start an evidence flow with `flow_start(module=<MODULE_NAME>)`. While it is active,
+   use `explore_action(...)` for each business interaction so the MCP records the
+   element, observed feedback, network request/response summary, screenshot and
+   duration as one traceable step. Call `flow_capture_page_state(label="initial")`
+   before interaction to record DOM, form and table assets. Use
+   `capture_before`/`capture_after` only when a page-level state comparison is needed.
+4. Collect page structure with `scan_page_elements`, `dom_tree`,
    `scan_filter_fields`, and `scan_table(kind="auto")`.
    Use `vtable_action(...)` or `click_table_cell(...)` for VTable interactions;
    use `get_vtable_cell_render_info(...)` for status tag/text/background color assertions
    and `get_vtable_cell_icons(...)` before clicking data-row cell icons;
    do not compute canvas coordinates in the skill.
-4. Build a coverage model before generating cases: asset inventory, testable
+5. Build a coverage model before generating cases: asset inventory, testable
    functions, scenario matrix, and coverage statuses (`已验证`, `待验证`,
    `需用户确认`, `工具缺口`).
-5. For every click-like action, use:
+6. For every click-like action, use:
 
    ```text
    observe_start(...) -> action -> observe_wait(...)
@@ -64,17 +70,21 @@ Read only the references needed for the requested area when the task is narrow.
    as structured overlays; hidden VTable overlay DOM should not be treated as
    visible behavior.
 
-6. For interface assertions, prefer `listen_start` / `listen_wait` or
+7. For interface assertions, prefer `listen_start` / `listen_wait` or
    `observe_start(signals=[...,"network"], listen_targets="gateway")`.
-7. Generate only cases supported by observed page behavior, table data, modal
+8. Finish the evidence flow with `flow_stop()`, then use
+   `generate_test_cases_from_flow(flow_file=...)` to obtain a coverage matrix and
+   formal candidates. Only its `已验证` rows can enter the 19-column case JSON;
+   review the generated business wording and executable assertions before export.
+9. Generate only cases supported by observed page behavior, table data, modal
    content, toast/message text, URL/tab changes, or network evidence.
-8. Store generated case JSON files in:
+10. Store generated case JSON files in:
 
    ```text
    test_cases/<LEVEL1_PINYIN>_<MODULE_PINYIN>/
    ```
 
-9. Export Excel using the existing upstream exporter:
+11. Export Excel using the existing upstream exporter:
 
    ```bash
    uv run python .claude/skills/test-case-generator-dp/scripts/generate_from_json.py test_cases/<LEVEL1_PINYIN>_<MODULE_PINYIN>/*.json
@@ -82,6 +92,27 @@ Read only the references needed for the requested area when the task is narrow.
 
 Use `uv run python`, not bare `python`, because this project environment does
 not guarantee a `python` executable on PATH.
+
+## Execution And Regression
+
+Every formal case JSON MUST include an explicit `automation_recipe` with the
+complete observed flow and at least one business assertion. A successful tool
+return (`ok=true`) is not a business assertion. Destructive steps are permitted
+only after explicit user authorization and MUST include deterministic cleanup.
+Execute every formal case at least once through `run_test_cases(case_file=...)`
+before delivery; a skipped or failed trial is not reproducible automation and
+must stay outside the formal deliverable until fixed. The returned execution JSON
+must use evidence and screenshots captured in that execution, not exploration-time
+artifacts. Generate a Markdown report with
+`generate_test_report(execution_file=..., coverage_file=..., baseline_file=...)`.
+Use `compare_regression_report` for a direct current versus baseline comparison.
+Do not overwrite a historical baseline automatically.
+
+Known-defect reproduction must never count as a normal pass. Mark an executable
+known-defect case as `xfailed`, or keep it as evidence plus a defect sidecar when
+the product fix path would make deterministic cleanup impossible. Such a case
+must be excluded from the repeatable formal suite until setup and both cleanup
+branches are safe.
 
 ## Output Rules
 
@@ -94,11 +125,12 @@ not guarantee a `python` executable on PATH.
 - Mark unverified assumptions as `[待确认]`; do not present them as verified.
 - Do not claim coverage is complete until the coverage matrix has no unexplained
   core gaps.
+- Report coverage by explicit requirement/risk/asset totals. Never derive a high
+  percentage from only the generated cases while silently omitting page assets.
 
 ## Current Boundary
 
-This adapter intentionally keeps browser automation in `drissionpage-mcp` MCP and
-test generation policy in the skill. The next architecture step should extract
-shared schemas and scripts into a neutral location such as `schemas/` and
-`tools/testcase/`, then let both Claude and Codex adapters reference that shared
-core.
+This adapter keeps browser operation, evidence capture, execution and reporting
+in `drissionpage-mcp`; the skill owns coverage policy and user-facing Chinese
+business wording. The old `drission-ui-mcp` command is a compatibility entry
+point to the same MCP core and must not be treated as a second implementation.

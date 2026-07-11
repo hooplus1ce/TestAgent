@@ -48,7 +48,7 @@ def test_list_resources_returns_relative_file_index(monkeypatch, tmp_path):
     assert result["ok"] is True
     assert result["base_dir"] == os.path.abspath(str(tmp_path))
     assert result["files"][0]["path"] == "page-model.json"
-    assert result["files"][0]["uri"] == "drission-ui://resources/page-model.json"
+    assert result["files"][0]["uri"] == "drissionpage-mcp://resources/page-model.json"
     assert result["files"][0]["size"] > 0
 
 

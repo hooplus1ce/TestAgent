@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
-"""drission-ui MCP server entry point (uv run drission-ui-mcp)."""
+"""Compatibility entry point for the retired drission-ui MCP command."""
 import os
 import sys
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "mcp-servers/drission-ui"))
+# Keep existing user configuration working while enforcing one implementation.
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "mcp-servers/drissionpage-mcp"))
 
 from server import mcp  # type: ignore
 
 
 def main():
-    """Run the drission-ui MCP server over stdio."""
+    """Run the unified drissionpage-mcp server over stdio."""
     mcp.run()
 
 

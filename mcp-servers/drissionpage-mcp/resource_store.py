@@ -79,11 +79,23 @@ def resolve_path(filename: str = None, default_name: str = None, category: str =
 
 def _resolve_existing_path(filename: str) -> str:
     decoded = urllib.parse.unquote(str(filename or ""))
-    parts = _sanitize_relative(decoded)
-    full_path = os.path.abspath(os.path.join(config.SHOT_DIR, *parts))
     base_dir = os.path.abspath(config.SHOT_DIR)
-    if os.path.commonpath([base_dir, full_path]) != base_dir:
-        raise ValueError("resource path escapes base directory")
+    project_dir = os.path.abspath(config.PROJECT_ROOT)
+    if os.path.isabs(decoded):
+        full_path = os.path.abspath(decoded)
+    else:
+        parts = _sanitize_relative(decoded)
+        full_path = os.path.abspath(os.path.join(base_dir, *parts))
+    allowed = False
+    for root in {base_dir, project_dir}:
+        try:
+            if os.path.commonpath([root, full_path]) == root:
+                allowed = True
+                break
+        except ValueError:
+            continue
+    if not allowed:
+        raise ValueError("resource path escapes resource and project directories")
     return full_path
 
 

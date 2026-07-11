@@ -25,6 +25,15 @@ EXPECTED_PUBLIC_TOOLS = {
     "check_session",
     "enter_module",
     "explore_action",
+    "flow_start",
+    "flow_status",
+    "flow_capture_page_state",
+    "flow_stop",
+    "generate_test_cases_from_flow",
+    "combine_test_case_files",
+    "run_test_cases",
+    "generate_test_report",
+    "compare_regression_report",
     "scan_filter_fields",
     "get_active_frame",
     "dom_tree",
@@ -39,6 +48,7 @@ EXPECTED_PUBLIC_TOOLS = {
     "click_xy",
     "select_date_range",
     "select_option",
+    "set_field_value",
     "input",
     "insert_text",
     "hover",
@@ -46,6 +56,9 @@ EXPECTED_PUBLIC_TOOLS = {
     "run_js",
     "scan_table",
     "get_table_values",
+    "find_vtable_row",
+    "count_vtable_rows",
+    "get_vtable_row_values",
     "get_table_data",
     "get_all_table_data",
     "get_vtable_cell_render_info",
@@ -73,6 +86,7 @@ EXPECTED_PUBLIC_TOOLS = {
     "list_contexts",
     "set_permission",
     "get_element_coords",
+    "set_date",
 }
 
 REMOVED_DUPLICATE_TOOLS = {
@@ -156,20 +170,20 @@ def test_resources_and_templates_are_exposed():
     resource_uris = {str(r.uri) for r in resources}
 
     assert {
-        "drission-ui://caps",
-        "drission-ui://context",
-        "drission-ui://resources",
+        "drissionpage-mcp://caps",
+        "drissionpage-mcp://context",
+        "drissionpage-mcp://resources",
     } <= resource_uris
 
     templates = asyncio.run(server.mcp.list_resource_templates())
     template_uris = {t.uriTemplate for t in templates}
-    assert "drission-ui://resources/{resource_path}" in template_uris
+    assert "drissionpage-mcp://resources/{resource_path}" in template_uris
 
 
 def test_caps_resource_returns_json():
     import server
 
-    contents = asyncio.run(server.mcp.read_resource("drission-ui://caps"))
+    contents = asyncio.run(server.mcp.read_resource("drissionpage-mcp://caps"))
     data = json.loads(contents[0].content)
 
     assert data["enabled"]
@@ -186,7 +200,7 @@ def test_evidence_resource_template_reads_encoded_nested_file(monkeypatch, tmp_p
     (nested / "dom.yml").write_text("tag: body", encoding="utf-8")
     encoded = urllib.parse.quote("生产动态表/dom.yml", safe="")
 
-    contents = asyncio.run(server.mcp.read_resource(f"drission-ui://resources/{encoded}"))
+    contents = asyncio.run(server.mcp.read_resource(f"drissionpage-mcp://resources/{encoded}"))
 
     assert contents[0].content == "tag: body"
 
@@ -409,6 +423,22 @@ def test_explore_action_capture_after_disables_snapshot_by_default():
     assert calls["observe_wait"]["include_snapshot"] is False
     assert result["observe_policy"]["include_snapshot"] is False
     assert result["after"] == {"ok": True, "modals": {"count": 1}}
+
+
+def test_explore_action_routes_text_input_to_standard_input_tool():
+    import server
+
+    fake_tab = SimpleNamespace()
+    with patch.object(server.modal, "clear_transient_overlays", return_value={"ok": True, "closed": [], "errors": []}), \
+         patch.object(server.browser_session, "get_tab", return_value=fake_tab), \
+         patch.object(server, "input", return_value={"ok": True, "locator": "#order"}) as input_tool:
+        result = server.explore_action(
+            action="input", locator="#order", text="PO20260711", observe_mode="none",
+        )
+
+    input_tool.assert_called_once_with("#order", "PO20260711", in_frame=True, timeout=8)
+    assert result["ok"] is True
+    assert result["action"]["action"] == "input"
 
 
 def test_drissionpage_observe_wait_compacts_and_dedupes_events():
@@ -889,7 +919,7 @@ def test_observe_snapshot_wraps_scan_floats_as_unified_overlays():
     assert result["overlays"] == [{"type": "calendar", "title": "日期选择器"}]
     assert result["page"]["active_tab"] == "active"
     assert result["source"] == "scan_floats"
-    scan.assert_called_once_with(only_visible=True, include_table_data=True)
+    scan.assert_called_once_with(only_visible=True, include_table_data=True, detail="summary")
 
 
 def test_observe_start_creates_active_session():
@@ -958,7 +988,8 @@ def test_observe_wait_attaches_snapshot_after_signal():
 
 def test_click_table_cell_routes_to_vtable_backend_by_col():
     import server
-    with patch.object(server.vtable, "click_cell", return_value={"ok": True, "col": 2, "row": 1}) as click_cell:
+    with patch.object(server.modal, "clear_transient_overlays", return_value={"ok": True, "closed": [], "errors": []}), \
+         patch.object(server.vtable, "click_cell", return_value={"ok": True, "col": 2, "row": 1}) as click_cell:
         assert server.click_table_cell(row=1, col=2, kind="vtable") == {"ok": True, "col": 2, "row": 1, "kind": "vtable"}
         click_cell.assert_called_once_with(2, 1, None, True, 0.3, False)
 
@@ -1127,6 +1158,28 @@ def test_synchronized_returns_value():
         return a + b
 
     assert add(2, 3) == 5
+
+
+def test_write_owner_can_reenter_through_read_tool():
+    """执行套件持有写锁时必须能调用只读断言工具，不能自锁。"""
+    import server
+
+    result = []
+
+    @server.read_synchronized
+    def read_assertion():
+        return "observed"
+
+    @server.write_synchronized
+    def execute_suite():
+        result.append(read_assertion())
+
+    worker = threading.Thread(target=execute_suite)
+    worker.start()
+    worker.join(timeout=1)
+
+    assert worker.is_alive() is False
+    assert result == ["observed"]
 
 
 class _FakeSetter:
@@ -1411,9 +1464,9 @@ def test_click_text_locator_falls_back_to_js_after_fast_native_failure():
     find.assert_called_once()
     assert find.call_args.kwargs == {"in_frame": True, "timeout": 1.0, "wait_clickable": False}
     assert "normalize-space(.)='搜索'" in find.call_args.args[0]
-    assert ele.click_kwargs == {"by_js": False, "timeout": 2.0, "wait_stop": False}
+    assert ele.click_kwargs == {"by_js": True}
     assert result["ok"] is True
-    assert result["fallback"] == "js-text"
+    assert result["fallback"] == "direct-js"
     assert "native_error" in result
 
 

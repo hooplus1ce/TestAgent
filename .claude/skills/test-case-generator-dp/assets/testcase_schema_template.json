@@ -5,6 +5,7 @@
     "module_level1": "<一级模块>",
     "module_level2": "<二级模块>",
     "module_pinyin": "<MODULE_PINYIN>",
+    "menu_text": "<可由 enter_module 精确进入的菜单文本>",
     "author": "<AUTHOR>"
   },
   "test_cases": [
@@ -28,7 +29,37 @@
         "目标字段": "来自页面真实数据的值"
       },
       "expected_result": "1. 表格仅显示符合筛选条件的记录\n2. 目标列所有可见值均满足筛选条件\n3. 无不符合条件的记录",
-      "automation_suggestion": "使用 scan_filter_fields 获取字段矩阵，设置真实筛选值后点击查询，使用 get_table_values 验证目标列"
+      "automation_suggestion": "使用 scan_filter_fields 获取字段矩阵，设置真实筛选值后点击查询，使用 get_table_values 验证目标列",
+      "evidence_refs": [
+        {
+          "flow_id": "<真实探索 flow_id>",
+          "sequence": 1
+        }
+      ],
+      "automation_recipe": {
+        "setup": [],
+        "steps": [
+          {
+            "action": "explore_action",
+            "args": {
+              "action": "click",
+              "target": {
+                "type": "button",
+                "text": "查询"
+              }
+            },
+            "assertions": [
+              {
+                "path": "signal.payload.message",
+                "operator": "contains",
+                "value": "<真实观察到的业务反馈>",
+                "description": "查询业务反馈"
+              }
+            ]
+          }
+        ],
+        "cleanup": []
+      }
     }
   ],
   "meta_data": {

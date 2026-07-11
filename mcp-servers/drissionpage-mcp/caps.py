@@ -27,7 +27,7 @@ CAP_GROUPS = {
         # 导航与 frame
         "enter_module", "get_active_frame",
         # 通用 DOM 原语
-        "click", "click_xy", "input", "insert_text", "hover", "set_date",
+        "click", "click_xy", "input", "set_field_value", "insert_text", "hover", "set_date",
         # 页面理解
         "scan_page_elements", "find_elements", "find_batch", "dom_tree",
         "capture_page_model", "scan_toolbar_actions", "scan_form_fields",
@@ -47,7 +47,8 @@ CAP_GROUPS = {
     ],
     "vtable": [
         # 统一表格 facade
-        "scan_table", "get_table_values", "get_table_data",
+        "scan_table", "get_table_values", "find_vtable_row", "count_vtable_rows",
+        "get_vtable_row_values", "get_table_data",
         "get_all_table_data", "scan_action_availability_by_selection",
         "get_vtable_cell_render_info", "get_vtable_cell_icons",
         "vtable_action", "click_table_cell", "hover_table_cell", "resize_table_column",
@@ -65,6 +66,13 @@ CAP_GROUPS = {
         "listen_start", "listen_wait", "listen_stop",
         "listen_ws_start", "listen_ws_wait",
         "network_record_start", "network_record_stop", "network_record_export",
+    ],
+    "workflow": [
+        # 真实证据、用例生成、执行、报告与回归
+        "flow_start", "flow_status", "flow_capture_page_state", "flow_stop",
+        "generate_test_cases_from_flow", "run_test_cases",
+        "combine_test_case_files",
+        "generate_test_report", "compare_regression_report",
     ],
     "storage": [
         # 存储/上下文

@@ -152,7 +152,14 @@ def connect(
         logger.info("connect port=%s target_hint=%r", port, target_hint)
 
         _ensure_display_env()
-        co = ChromiumOptions(read_file=True, ini_path=_DP_INI)
+        # A project-specific ini is optional. DrissionPage raises before trying
+        # CDP when read_file=True points at a missing file, which prevented a
+        # normal remote-debugging browser from being attached in fresh clones.
+        if os.path.isfile(_DP_INI):
+            co = ChromiumOptions(read_file=True, ini_path=_DP_INI)
+        else:
+            co = ChromiumOptions(read_file=False)
+            logger.info("DrissionPage ini not found; using runtime options: %s", _DP_INI)
         co.set_address(f"127.0.0.1:{port}")
         # 浏览器路径（跨平台）：优先 HL_CHROME_PATH；否则 Linux 显式指向 google-chrome
         # （ini 默认 'chrome' 在多数发行版无此命令），Windows/macOS 交给 DrissionPage 自动探测。
