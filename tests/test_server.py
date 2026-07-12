@@ -12,12 +12,6 @@ from unittest.mock import MagicMock, patch
 
 
 EXPECTED_PUBLIC_TOOLS = {
-    "browser_console_messages",
-    "browser_get_element_state",
-    "browser_list_caps",
-    "browser_press_key",
-    "browser_save_pdf",
-    "browser_scroll",
     "browser_tabs",
     "capture_page_model",
     "connect",
@@ -30,66 +24,22 @@ EXPECTED_PUBLIC_TOOLS = {
     "flow_capture_page_state",
     "flow_stop",
     "generate_test_cases_from_flow",
-    "combine_test_case_files",
     "run_test_cases",
     "generate_test_report",
     "compare_regression_report",
     "scan_filter_fields",
     "get_active_frame",
-    "dom_tree",
-    "scan_page_elements",
-    "scan_toolbar_actions",
-    "scan_form_fields",
-    "scan_pagination",
     "observe_snapshot",
     "find_elements",
-    "find_batch",
-    "click",
-    "click_xy",
-    "select_date_range",
-    "select_option",
-    "set_field_value",
-    "input",
-    "insert_text",
-    "hover",
     "screenshot",
-    "run_js",
     "scan_table",
-    "get_table_values",
-    "find_vtable_row",
-    "count_vtable_rows",
-    "get_vtable_row_values",
-    "get_table_data",
-    "get_all_table_data",
-    "get_vtable_cell_render_info",
-    "get_vtable_cell_icons",
-    "vtable_action",
-    "click_table_cell",
-    "hover_table_cell",
-    "resize_table_column",
-    "scan_action_availability_by_selection",
+    "query_table",
+    "inspect_table_cell",
+    "table_action",
     "close_modal",
-    "observe_start",
-    "observe_wait",
-    "listen_start",
-    "listen_wait",
-    "listen_stop",
-    "network_record_start",
-    "network_record_stop",
-    "network_record_export",
-    "mouse_trail",
-    "download_by_browser",
-    "listen_ws_start",
-    "listen_ws_wait",
-    "new_context",
-    "close_context",
-    "switch_context",
-    "list_contexts",
-    "set_permission",
-    "get_element_coords",
-    "set_date",
-    "role_session_open",
-    "role_session_login",
+    "network_trace_start",
+    "network_trace_stop",
+    "role_session_start",
     "role_session_activate",
     "role_session_list",
     "role_session_close",
@@ -133,7 +83,7 @@ def _tool_names():
 
 
 def test_public_tool_surface():
-    """公开 MCP 工具应收敛到业务常用工具 + 表格 facade + 高级调试工具。"""
+    """enterprise profile 只公开无歧义的企业测试主路径。"""
     names = _tool_names()
     assert names == EXPECTED_PUBLIC_TOOLS
 
@@ -158,13 +108,15 @@ def test_public_tools_include_mcp_annotations():
     assert tools["find_elements"].annotations.destructiveHint is False
     assert tools["observe_snapshot"].annotations.readOnlyHint is True
     assert tools["observe_snapshot"].annotations.destructiveHint is False
-    assert tools["click"].annotations.readOnlyHint is False
-    assert tools["click"].annotations.destructiveHint is True
+    assert tools["query_table"].annotations.readOnlyHint is True
+    assert tools["inspect_table_cell"].annotations.readOnlyHint is True
+    assert tools["explore_action"].annotations.readOnlyHint is False
+    assert tools["explore_action"].annotations.destructiveHint is True
     assert tools["connect"].annotations.readOnlyHint is False
     assert tools["connect"].annotations.destructiveHint is False
     assert tools["connect"].annotations.idempotentHint is True
     assert tools["screenshot"].annotations.destructiveHint is False
-    for name in ("listen_wait", "listen_ws_wait"):
+    for name in ("network_trace_start", "network_trace_stop", "role_session_start"):
         assert tools[name].annotations.readOnlyHint is False
         assert tools[name].annotations.destructiveHint is False
     assert server.listen_wait._du_access == "write"
@@ -193,6 +145,8 @@ def test_caps_resource_returns_json():
     contents = asyncio.run(server.mcp.read_resource("drissionpage-mcp://caps"))
     data = json.loads(contents[0].content)
 
+    assert data["profile"] == "enterprise"
+    assert set(data["exposed_tools"]) == EXPECTED_PUBLIC_TOOLS
     assert data["enabled"]
     assert "core" in data["available"]
 
@@ -214,6 +168,7 @@ def test_evidence_resource_template_reads_encoded_nested_file(monkeypatch, tmp_p
 def test_drissionpage_caps_filters_public_tools():
     """DRISSIONPAGE_MCP_CAPS 应实际影响 MCP tools/list，而不只是报告能力分组。"""
     env = os.environ.copy()
+    env["DRISSIONPAGE_MCP_PROFILE"] = "enterprise"
     env["DRISSIONPAGE_MCP_CAPS"] = "core"
     script = """
 import asyncio, json, sys
@@ -233,14 +188,16 @@ asyncio.run(main())
         check=True,
     )
     names = set(json.loads(result.stdout))
-    assert {"connect", "observe_snapshot", "get_element_coords", "browser_list_caps"} <= names
+    assert {"connect", "observe_snapshot", "find_elements"} <= names
+    assert "get_element_coords" not in names
+    assert "browser_list_caps" not in names
     assert "scan_floats" not in names
     assert "scan_table" not in names
     assert "run_js" not in names
 
 
-def test_every_capability_group_exposes_exact_tool_union():
-    """每个分组独立启动时只暴露该组工具和常驻的能力查询工具。"""
+def test_full_profile_exposes_every_capability_group_exactly():
+    """full profile 保留完整调试工具面，并继续受 capability 裁剪。"""
     from drissionpage_mcp.core import caps
     script = """
 import asyncio, json, sys
@@ -254,6 +211,7 @@ asyncio.run(main())
     root = os.path.dirname(os.path.dirname(__file__))
     for capability, grouped_tools in caps.CAP_GROUPS.items():
         env = os.environ.copy()
+        env["DRISSIONPAGE_MCP_PROFILE"] = "full"
         env["DRISSIONPAGE_MCP_CAPS"] = capability
         result = subprocess.run(
             [sys.executable, "-c", script],
@@ -264,7 +222,7 @@ asyncio.run(main())
             check=True,
         )
         exposed = set(json.loads(result.stdout))
-        expected = set(grouped_tools) | {"browser_list_caps"}
+        expected = set(grouped_tools)
         assert exposed == expected, capability
 
 
@@ -273,15 +231,31 @@ def test_list_parameters_have_typed_items_schema():
     from drissionpage_mcp import server
     tools = {t.name: t for t in asyncio.run(server.mcp.list_tools())}
     checks = [
-        ("find_batch", "locators"),
-        ("observe_start", "signals"),
         ("explore_action", "signals"),
         ("explore_action", "modifiers"),
-        ("browser_press_key", "modifiers"),
+        ("query_table", "column_titles"),
     ]
     for tool_name, field in checks:
         prop = tools[tool_name].inputSchema["properties"][field]
         assert prop["items"]["type"] == "string"
+
+
+def test_enterprise_facade_schemas_constrain_choice_parameters():
+    from drissionpage_mcp import server
+
+    tools = {tool.name: tool for tool in asyncio.run(server.mcp.list_tools())}
+    query_properties = tools["query_table"].inputSchema["properties"]
+    action_properties = tools["table_action"].inputSchema["properties"]
+
+    assert set(query_properties["operation"]["enum"]) == {"values", "data", "find", "count", "row"}
+    assert set(query_properties["kind"]["enum"]) == {"auto", "html", "vtable"}
+    assert set(query_properties["match"]["enum"]) == {"equals", "contains"}
+    assert set(action_properties["action"]["enum"]) == {
+        "click", "double_click", "hover", "drag", "resize",
+    }
+    assert set(action_properties["target"]["enum"]) == {
+        "cell", "header", "header-icon", "cell-icon",
+    }
 
 
 def test_explore_action_uses_default_observe_signals_without_listen_targets():
@@ -403,6 +377,7 @@ def test_explore_action_observe_mode_none_skips_observer():
 
     with patch.object(server.observe, "observe_start", side_effect=AssertionError("observe_start should be skipped")), \
          patch.object(server.observe, "observe_wait", side_effect=AssertionError("observe_wait should be skipped")), \
+         patch.object(server.caps, "ENABLED_PROFILE", "full"), \
          patch.object(server, "_pre_click_cleanup", return_value=None), \
          patch.object(server, "_attach_cleanup", side_effect=lambda result, cleanup: result), \
          patch.object(server.browser_session, "get_tab", return_value=fake_tab):
@@ -417,6 +392,21 @@ def test_explore_action_observe_mode_none_skips_observer():
     assert result["ok"] is True
     assert result["observe_start"]["session"] == "skipped"
     assert result["signal"]["type"] == "skipped"
+
+
+def test_enterprise_explore_action_rejects_low_level_or_unobserved_requests():
+    from drissionpage_mcp import server
+
+    coordinate = server.explore_action(action="click_xy", x=10, y=20)
+    javascript = server.explore_action(action="click", locator="text:保存", by_js=True)
+    unobserved = server.explore_action(action="input", field_name="单号", text="PO-1", observe_mode="none")
+
+    for result in (coordinate, javascript, unobserved):
+        assert result["ok"] is False
+        assert result["profile"] == "enterprise"
+    assert "显式坐标动作" in coordinate["reason"]
+    assert "JS 点击" in javascript["reason"]
+    assert "跳过动作观察" in unobserved["reason"]
 
 
 def test_explore_action_capture_after_disables_snapshot_by_default():
@@ -434,6 +424,7 @@ def test_explore_action_capture_after_disables_snapshot_by_default():
 
     with patch.object(server.observe, "observe_start", return_value={"ok": True}), \
          patch.object(server.observe, "observe_wait", side_effect=lambda **kwargs: calls.setdefault("observe_wait", kwargs) or {"type": "modal"}), \
+         patch.object(server.caps, "ENABLED_PROFILE", "full"), \
          patch.object(server.page_model, "capture_page_model", return_value={"ok": True, "modals": {"count": 1}}), \
          patch.object(server, "_pre_click_cleanup", return_value=None), \
          patch.object(server, "_attach_cleanup", side_effect=lambda result, cleanup: result), \
@@ -454,7 +445,8 @@ def test_explore_action_capture_after_disables_snapshot_by_default():
 def test_explore_action_routes_text_input_to_standard_input_tool():
     from drissionpage_mcp import server
     fake_tab = SimpleNamespace()
-    with patch.object(server.modal, "clear_transient_overlays", return_value={"ok": True, "closed": [], "errors": []}), \
+    with patch.object(server.caps, "ENABLED_PROFILE", "full"), \
+         patch.object(server.modal, "clear_transient_overlays", return_value={"ok": True, "closed": [], "errors": []}), \
          patch.object(server.browser_session, "get_tab", return_value=fake_tab), \
          patch.object(server, "input", return_value={"ok": True, "locator": "#order"}) as input_tool:
         result = server.explore_action(
@@ -539,7 +531,8 @@ from drissionpage_mcp import server
 async def main():
     tools = await server.mcp.list_tools()
     data = {
-        "has_set_date": "set_date" in {tool.name for tool in tools},
+        "has_explore_action": "explore_action" in {tool.name for tool in tools},
+        "set_date_hidden": "set_date" not in {tool.name for tool in tools},
         "dash": server._normalize_date_value("2026-06-01"),
         "slash": server._normalize_date_value("2026/06/01"),
         "invalid": server._normalize_date_value("2026.06.01"),
@@ -557,7 +550,8 @@ asyncio.run(main())
     )
     data = json.loads(result.stdout)
 
-    assert data["has_set_date"] is True
+    assert data["has_explore_action"] is True
+    assert data["set_date_hidden"] is True
     assert data["dash"] == {
         "ok": True,
         "dash": "2026-06-01",
@@ -578,6 +572,7 @@ import sys
 from types import SimpleNamespace
 from unittest.mock import patch
 from drissionpage_mcp import server
+server.caps.ENABLED_PROFILE = "full"
 class FakeElement:
     def __init__(self):
         self.click_calls = []
@@ -639,15 +634,102 @@ def test_table_facade_registered():
     names = _tool_names()
     assert {
         "scan_table",
-        "get_table_values",
-        "get_table_data",
-        "get_vtable_cell_render_info",
-        "get_vtable_cell_icons",
-        "vtable_action",
-        "click_table_cell",
-        "hover_table_cell",
-        "resize_table_column",
+        "query_table",
+        "inspect_table_cell",
+        "table_action",
     } <= names
+
+
+def test_query_table_routes_by_operation():
+    from drissionpage_mcp import server
+
+    with patch.object(server, "get_table_values", return_value={"ok": True, "values": ["A"]}) as values:
+        result = server.query_table(operation="values", column_title="单号", kind="auto")
+
+    assert result == {"ok": True, "values": ["A"], "operation": "values"}
+    values.assert_called_once_with(
+        column_title="单号", kind="auto", raw=False, table_index=0, filename=None,
+    )
+
+    invalid = server.query_table(operation="delete")
+    assert invalid["ok"] is False
+    assert "values/data/find/count/row" in invalid["reason"]
+
+
+def test_inspect_table_cell_combines_render_and_icons():
+    from drissionpage_mcp import server
+
+    with patch.object(server, "get_vtable_cell_render_info", return_value={"ok": True, "text": "已审核"}), \
+         patch.object(server, "get_vtable_cell_icons", return_value={"ok": True, "icons": []}):
+        result = server.inspect_table_cell(row=2, column_title="状态")
+
+    assert result["ok"] is True
+    assert result["render"]["text"] == "已审核"
+    assert result["icons"]["icons"] == []
+
+
+def test_table_action_routes_common_and_advanced_actions():
+    from drissionpage_mcp import server
+
+    observation = {
+        "observe_start": patch.object(server.observe, "observe_start", return_value={"ok": True}),
+        "observe_wait": patch.object(server.observe, "observe_wait", return_value={"type": "none"}),
+        "cleanup": patch.object(server, "_pre_click_cleanup", return_value=None),
+    }
+    with observation["observe_start"], observation["observe_wait"], observation["cleanup"], \
+         patch.object(server, "click_table_cell", return_value={"ok": True, "kind": "html"}) as click_cell:
+        clicked = server.table_action(
+            action="double_click", row=1, column_title="单号", kind="html",
+        )
+    assert clicked["ok"] is True
+    assert clicked["action"] == "double_click"
+    assert clicked["result"]["kind"] == "html"
+    click_cell.assert_called_once_with(
+        row=1, col=None, column_title="单号", kind="html", table_index=0,
+        icon_name=None, hover_first=True, duration=0.3, double_click=True,
+        clean_overlays=False,
+    )
+
+    with patch.object(server.observe, "observe_start", return_value={"ok": True}), \
+         patch.object(server.observe, "observe_wait", return_value={"type": "none"}), \
+         patch.object(server, "_pre_click_cleanup", return_value=None), \
+         patch.object(server, "vtable_action", return_value={"ok": True, "kind": "vtable"}) as action:
+        result = server.table_action(
+            action="click", row=0, column_title="操作", target="header-icon",
+            icon_name="filter",
+        )
+    assert result["ok"] is True
+    action.assert_called_once()
+
+
+def test_table_action_adds_network_signal_for_interface_assertion():
+    from drissionpage_mcp import server
+
+    with patch.object(server, "_pre_click_cleanup", return_value=None), \
+         patch.object(server.observe, "observe_start", return_value={"ok": True}) as start, \
+         patch.object(server.observe, "observe_wait", return_value={"type": "network"}), \
+         patch.object(server, "click_table_cell", return_value={"ok": True}):
+        result = server.table_action(
+            action="click", row=0, column_title="单号", listen_targets="gateway",
+        )
+
+    assert result["ok"] is True
+    assert "network" in start.call_args.kwargs["signals"]
+    assert start.call_args.kwargs["listen_targets"] == "gateway"
+
+
+def test_network_trace_facade_reuses_timeline_recorder():
+    from drissionpage_mcp import server
+
+    with patch.object(server, "network_record_start", return_value={"ok": True}) as start:
+        assert server.network_trace_start(targets="gateway", method="POST")["ok"] is True
+    start.assert_called_once_with(targets="gateway", method="POST")
+
+    with patch.object(server, "network_record_stop", return_value={"ok": True, "packets": []}) as stop:
+        assert server.network_trace_stop(timeout=1, max_packets=5)["ok"] is True
+    stop.assert_called_once_with(
+        timeout=1, max_packets=5, fit_count=False, max_body_chars=12000,
+    )
 
 
 def test_scan_table_routes_to_vtable_backend():
@@ -1301,7 +1383,7 @@ def test_hover_table_cell_routes_to_vtable_action():
         action.assert_called_once_with(action="hover", col=2, row=1, target="cell", duration=0.2)
 
 
-def test_drissionpage_vtable_action_tool_is_public_and_grouped():
+def test_enterprise_table_facades_are_public_and_grouped():
     script = r"""
 import asyncio
 import json
@@ -1313,14 +1395,14 @@ async def main():
     names = {tool.name for tool in tools}
     print(json.dumps({
         "public": all(name in names for name in [
-            "vtable_action",
-            "get_vtable_cell_render_info",
-            "get_vtable_cell_icons",
+            "query_table",
+            "inspect_table_cell",
+            "table_action",
         ]),
         "grouped": all(name in caps.CAP_GROUPS["vtable"] for name in [
-            "vtable_action",
-            "get_vtable_cell_render_info",
-            "get_vtable_cell_icons",
+            "query_table",
+            "inspect_table_cell",
+            "table_action",
         ]),
     }, ensure_ascii=False, sort_keys=True))
 

@@ -4,20 +4,16 @@ import os
 
 def test_registered_catalog_matches_the_source_service():
     from drissionpage_mcp import server
+    from drissionpage_mcp.core import caps
 
     tools = asyncio.run(server.mcp.list_tools())
     resources = asyncio.run(server.mcp.list_resources())
     templates = asyncio.run(server.mcp.list_resource_templates())
 
-    assert len(tools) == 81
+    assert len(tools) == 31
     tool_names = {tool.name for tool in tools}
-    assert {
-        "role_session_open",
-        "role_session_login",
-        "role_session_activate",
-        "role_session_list",
-        "role_session_close",
-    } <= tool_names
+    assert tool_names == caps.ENTERPRISE_TOOLS
+    assert {"role_session_open", "role_session_login", "run_js", "click_xy"}.isdisjoint(tool_names)
     assert {str(resource.uri) for resource in resources} == {
         "drissionpage-mcp://caps",
         "drissionpage-mcp://context",

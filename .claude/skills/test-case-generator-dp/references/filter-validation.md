@@ -6,14 +6,14 @@
 
 ## 二、筛选验证方法（MUST）
 
-生成筛选用例时，AI **必须先用 `get_table_values()` 在浏览器中执行验证**，确认筛选逻辑正确后，再将验证结论转化为**纯中文描述**写入 Excel 预期结果列(L)。
+生成筛选用例时，AI **必须先用 `query_table(operation="values")` 在浏览器中执行验证**，确认筛选逻辑正确后，再将验证结论转化为**纯中文描述**写入 Excel 预期结果列(L)。
 
 > ⚠️ 不经验证直接写预期结果 = 凭空臆测，违反技能核心原则。
 
 ### 验证流程
 
-1. 执行筛选操作（`input` 填写值 → `click` 点查询）
-2. `get_table_values('目标列', kind='auto', raw=False)` 取目标列所有值
+1. 使用 `explore_action` 设置筛选条件并点击查询
+2. `query_table(operation="values", column_title="目标列", kind="auto", raw=False)` 取目标列所有值
 3. 内部断言：`all_match = all(v and '预期值' in v for v in values)`
 4. 结论 → 中文写入 Excel L 列
 
@@ -40,4 +40,4 @@
 | 空结果 | 输入不存在的值，验证空状态展示 |
 | 级别 | 主字段筛选→中级，组合/重置/边界/空结果→低级 |
 
-**预期结果必须基于实际 `get_table_values` 验证结论**，禁止写「筛选结果正确」这类不可验证表述。
+**预期结果必须基于实际 `query_table` 验证结论**，禁止写「筛选结果正确」这类不可验证表述。

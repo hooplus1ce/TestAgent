@@ -8,10 +8,8 @@ def _role_recipe() -> dict:
         "case_title": "申请人与主管顺序审批",
         "automation_recipe": {
             "setup": [
-                {"action": "role_session_open", "args": {"role_id": "requester"}},
-                {"action": "role_session_login", "args": {"role_id": "requester"}},
-                {"action": "role_session_open", "args": {"role_id": "dept_manager"}},
-                {"action": "role_session_login", "args": {"role_id": "dept_manager"}},
+                {"action": "role_session_start", "args": {"role_id": "requester"}},
+                {"action": "role_session_start", "args": {"role_id": "dept_manager"}},
             ],
             "steps": [
                 {"action": "role_session_activate", "args": {"role_id": "requester"}},
@@ -46,6 +44,7 @@ def test_role_recipe_requires_activation_before_business_actions():
 
 def test_role_recipe_rejects_proxy_arguments_before_evidence_is_written():
     case = _role_recipe()
+    case["automation_recipe"]["setup"][0]["action"] = "role_session_open"
     case["automation_recipe"]["setup"][0]["args"]["proxy"] = "http://user:password@example.test:8080"
 
     reasons = test_execution.weak_recipe_reasons(case)
@@ -63,6 +62,7 @@ def test_recipe_dispatches_role_session_actions(monkeypatch):
         return run
 
     for name in (
+        "role_session_start",
         "role_session_open",
         "role_session_login",
         "role_session_activate",
@@ -71,14 +71,12 @@ def test_recipe_dispatches_role_session_actions(monkeypatch):
     ):
         monkeypatch.setattr(server, name, action(name))
 
-    assert server._run_recipe_action("role_session_open", {"role_id": "requester"})["ok"] is True
-    assert server._run_recipe_action("role_session_login", {"role_id": "requester"})["ok"] is True
+    assert server._run_recipe_action("role_session_start", {"role_id": "requester"})["ok"] is True
     assert server._run_recipe_action("role_session_activate", {"role_id": "dept_manager"})["ok"] is True
     assert server._run_recipe_action("role_session_list", {})["ok"] is True
     assert server._run_recipe_action("role_session_close", {"role_id": "requester"})["ok"] is True
     assert [name for name, _ in calls] == [
-        "role_session_open",
-        "role_session_login",
+        "role_session_start",
         "role_session_activate",
         "role_session_list",
         "role_session_close",
@@ -130,8 +128,7 @@ def test_run_test_cases_executes_role_recipe_without_default_session_gate(monkey
         return run
 
     for name in (
-        "role_session_open",
-        "role_session_login",
+        "role_session_start",
         "role_session_activate",
         "role_session_close",
     ):
@@ -149,10 +146,8 @@ def test_run_test_cases_executes_role_recipe_without_default_session_gate(monkey
     assert result["execution"]["role_mode"] is True
     assert calls == [
         "connection_gate",
-        "role_session_open:requester",
-        "role_session_login:requester",
-        "role_session_open:dept_manager",
-        "role_session_login:dept_manager",
+        "role_session_start:requester",
+        "role_session_start:dept_manager",
         "role_session_activate:requester",
         "role_session_activate:dept_manager",
         "scan_table",

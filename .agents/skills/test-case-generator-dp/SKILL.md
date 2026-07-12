@@ -26,9 +26,9 @@ Before generating test cases, confirm the active Codex session has loaded
 it through `mcp-service/launcher.py`; do not import service modules directly or
 construct another MCP command. Browser settings come from
 `mcp-service/configs/dp_configs.ini`, and local credentials come from the MCP
-process environment. `DRISSIONPAGE_MCP_CAPS` is the only capability selector;
-full test generation needs at least `core,vtable,filter,observe,network,workflow`,
-plus `roles` for multi-account approval regression.
+process environment. Normal runs MUST use `DRISSIONPAGE_MCP_PROFILE=enterprise`;
+`full` is reserved for explicit service diagnostics. Capability filtering remains
+available through `DRISSIONPAGE_MCP_CAPS`.
 
 ## Reference Files
 
@@ -58,28 +58,27 @@ Read only the references needed for the requested area when the task is narrow.
    duration as one traceable step. Call `flow_capture_page_state(label="initial")`
    before interaction to record DOM, form and table assets. Use
    `capture_before`/`capture_after` only when a page-level state comparison is needed.
-4. Collect page structure with `scan_page_elements`, `dom_tree`,
-   `scan_filter_fields`, and `scan_table(kind="auto")`.
-   Use `vtable_action(...)` or `click_table_cell(...)` for VTable interactions;
-   use `get_vtable_cell_render_info(...)` for status tag/text/background color assertions
-   and `get_vtable_cell_icons(...)` before clicking data-row cell icons;
+4. Collect page structure with `capture_page_model`, `scan_filter_fields`, and
+   `scan_table(kind="auto")`.
+   Use `table_action(...)` for table interactions, `query_table(...)` for table
+   assertions, and `inspect_table_cell(...)` before clicking data-row icons or
+   asserting status text/colors;
    do not compute canvas coordinates in the skill.
 5. Build a coverage model before generating cases: asset inventory, testable
    functions, scenario matrix, and coverage statuses (`已验证`, `待验证`,
    `需用户确认`, `工具缺口`).
-6. For every click-like action, use:
-
-   ```text
-   observe_start(...) -> action -> observe_wait(...)
-   ```
+6. For every DOM click/input/select action use `explore_action(...)`; it owns the
+   observation lifecycle. For table actions use `table_action(...)`, which also
+   returns the observed toast/modal/network signal.
 
    Use `observe_snapshot(detail="full")` for visible VTable overlays too:
    column filter menus, toolbar tooltips, and column-setting menus are exposed
    as structured overlays; hidden VTable overlay DOM should not be treated as
    visible behavior.
 
-7. For interface assertions, prefer `listen_start` / `listen_wait` or
-   `observe_start(signals=[...,"network"], listen_targets="gateway")`.
+7. For a single interface assertion pass `listen_targets="gateway"` to
+   `explore_action` or `table_action`. Use `network_trace_start` /
+   `network_trace_stop` only for evidence spanning multiple actions.
 8. Finish the evidence flow with `flow_stop()`, then use
    `generate_test_cases_from_flow(flow_file=...)` to obtain a coverage matrix and
    formal candidates. Only its `已验证` rows can enter the 19-column case JSON;
@@ -120,7 +119,7 @@ For role/department/permission and approval-flow regression, keep each account
 in an isolated BrowserContext and execute actors sequentially:
 
 ```text
-role_session_open -> role_session_login -> role_session_activate
+role_session_start -> role_session_activate
 ```
 
 Use stable role IDs such as `requester`, `dept_manager`, and

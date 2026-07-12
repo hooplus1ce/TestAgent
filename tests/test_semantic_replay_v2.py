@@ -67,8 +67,16 @@ class _Context:
 
 def _without_observation(server):
     return (
-        patch.object(server, "_pre_click_cleanup", return_value=None),
-        patch.object(server, "_attach_cleanup", side_effect=lambda result, cleanup: result),
+        patch.multiple(
+            server,
+            _pre_click_cleanup=lambda *_args, **_kwargs: None,
+            _attach_cleanup=lambda result, _cleanup: result,
+        ),
+        patch.multiple(
+            server.observe,
+            observe_start=lambda **_kwargs: {"ok": True},
+            observe_wait=lambda **_kwargs: {"type": "none", "events": []},
+        ),
         patch.object(server.flow_evidence, "wants_screenshot", return_value=False),
     )
 
@@ -86,7 +94,6 @@ def test_explore_action_inputs_semantic_field_target_without_locator():
             action="input",
             target={"type": "field", "name": "供应商编码", "scope": "modal"},
             text="SUP-20260711",
-            observe_mode="none",
         )
 
     setter.assert_called_once_with(
@@ -145,7 +152,6 @@ def test_semantic_button_prefers_latest_visible_modal_stable_xpath():
          patch.object(server, "_resolve_and_click", return_value={"ok": True}) as click:
         result = server.explore_action(
             target={"type": "button", "text": "确定"},
-            observe_mode="none",
         )
 
     click.assert_called_once_with(

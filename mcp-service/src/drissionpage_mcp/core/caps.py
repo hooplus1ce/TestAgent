@@ -4,6 +4,8 @@
 避免一次性加载全部工具造成上下文浪费。
 
 使用方式：
+  export DRISSIONPAGE_MCP_PROFILE=enterprise          # 默认：模型只看到企业测试主路径
+  export DRISSIONPAGE_MCP_PROFILE=full                # 调试：暴露完整工具面
   export DRISSIONPAGE_MCP_CAPS=core,vtable,filter  # 启用指定分组
   export DRISSIONPAGE_MCP_CAPS=all                 # 启用所有分组
 
@@ -48,6 +50,7 @@ CAP_GROUPS = {
     ],
     "vtable": [
         # 统一表格 facade
+        "query_table", "inspect_table_cell", "table_action",
         "scan_table", "get_table_values", "find_vtable_row", "count_vtable_rows",
         "get_vtable_row_values", "get_table_data",
         "get_all_table_data", "scan_action_availability_by_selection",
@@ -64,6 +67,7 @@ CAP_GROUPS = {
     ],
     "network": [
         # 网络监听
+        "network_trace_start", "network_trace_stop",
         "listen_start", "listen_wait", "listen_stop",
         "listen_ws_start", "listen_ws_wait",
         "network_record_start", "network_record_stop", "network_record_export",
@@ -82,6 +86,7 @@ CAP_GROUPS = {
     ],
     "roles": [
         # 多账号角色会话（每个角色独立 BrowserContext）
+        "role_session_start",
         "role_session_open", "role_session_login", "role_session_activate",
         "role_session_list", "role_session_close",
     ],
@@ -93,6 +98,35 @@ CAP_GROUPS = {
         "browser_save_pdf",
     ],
 }
+
+
+# 模型默认只看到无歧义的企业测试主路径。被隐藏的工具仍可供服务内部和 full profile 使用。
+ENTERPRISE_TOOLS = {
+    # 浏览器、会话与模块导航
+    "connect", "browser_tabs", "check_session", "refresh_session",
+    "enter_module", "get_active_frame",
+    # 页面理解与统一交互
+    "capture_page_model", "scan_filter_fields", "scan_table", "find_elements",
+    "observe_snapshot", "explore_action", "close_modal", "screenshot",
+    # 表格、网络证据
+    "query_table", "inspect_table_cell", "table_action",
+    "network_trace_start", "network_trace_stop",
+    # 证据、生成、执行和报告
+    "flow_start", "flow_status", "flow_capture_page_state", "flow_stop",
+    "generate_test_cases_from_flow", "run_test_cases",
+    "generate_test_report", "compare_regression_report",
+    # 多角色审批回归
+    "role_session_start", "role_session_activate", "role_session_list",
+    "role_session_close",
+}
+
+PROFILES = {"enterprise", "full"}
+
+
+def get_enabled_profile() -> str:
+    """返回模型工具面 profile；未知值安全回退到 enterprise。"""
+    profile = os.environ.get("DRISSIONPAGE_MCP_PROFILE", "enterprise").strip().lower()
+    return profile if profile in PROFILES else "enterprise"
 
 
 def get_enabled_caps() -> set[str]:
@@ -107,12 +141,13 @@ def get_enabled_caps() -> set[str]:
 
 
 ENABLED_CAPS = get_enabled_caps()
+ENABLED_PROFILE = get_enabled_profile()
 
 
 def is_tool_enabled(tool_name: str) -> bool:
     """检查工具是否在启用的分组中"""
-    if tool_name == "browser_list_caps":
-        return True
+    if ENABLED_PROFILE == "enterprise" and tool_name not in ENTERPRISE_TOOLS:
+        return False
     for cap, tools in CAP_GROUPS.items():
         if cap in ENABLED_CAPS and tool_name in tools:
             return True
@@ -130,7 +165,12 @@ def get_tool_group(tool_name: str) -> str | None:
 def list_caps() -> dict:
     """列出所有分组及其包含的工具"""
     return {
+        "profile": ENABLED_PROFILE,
         "enabled": sorted(ENABLED_CAPS),
+        "exposed_tools": sorted({
+            tool for tools in CAP_GROUPS.values() for tool in tools
+            if is_tool_enabled(tool)
+        }),
         "available": {
             cap: tools for cap, tools in CAP_GROUPS.items()
         },

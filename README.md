@@ -29,6 +29,8 @@ sed -n '1,120p' mcp-service/configs/dp_configs.ini
 
 `dp_configs.ini` 中的 `../dp_profile` 复用项目根目录的浏览器用户数据。
 机器差异和账号密码通过 MCP 进程环境变量注入，不写入仓库配置。
+正常运行固定使用 `DRISSIONPAGE_MCP_PROFILE=enterprise`，模型只看到企业测试主路径；
+`full` profile 仅供显式开发诊断。
 
 项目已有以下 Agent 配置：
 

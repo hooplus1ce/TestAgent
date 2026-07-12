@@ -181,6 +181,35 @@ def login_role(role_id: str) -> dict:
     }
 
 
+def start_role(role_id: str) -> dict:
+    """创建并登录角色 Context；登录失败时关闭刚创建的隔离上下文。"""
+    normalized = normalize_role_id(role_id)
+    opened = open_role(normalized)
+    if not opened.get("ok"):
+        return {**opened, "stage": "open"}
+    logged_in = login_role(normalized)
+    if not logged_in.get("ok"):
+        cleanup = close_role(normalized)
+        return {
+            "ok": False,
+            "role_id": normalized,
+            "stage": "login",
+            "reason": logged_in.get("reason", "角色登录失败"),
+            "credential_env": opened.get("credential_env"),
+            "cleanup": {
+                "ok": bool(cleanup.get("ok")),
+                "reason": cleanup.get("reason", ""),
+            },
+        }
+    return {
+        **logged_in,
+        "ok": True,
+        "role_id": normalized,
+        "stage": "ready",
+        "credential_env": opened.get("credential_env"),
+    }
+
+
 def close_role(role_id: str) -> dict:
     """关闭角色专属 Context，并移除本地角色映射。"""
     normalized = normalize_role_id(role_id)

@@ -12,6 +12,8 @@ Codex reads `.codex/config.toml` in trusted projects. This project configures:
 Codex, Claude, and Trae all call `mcp-service/launcher.py`. The launcher fixes the
 runtime directory to `mcp-service/`, so its local virtual environment and
 `mcp-service/configs/dp_configs.ini` remain portable with the repository.
+Normal Agent sessions pin the 31-tool `enterprise` profile; the complete tool
+catalog is reserved for explicit service diagnostics.
 
 Verify from the repository root:
 

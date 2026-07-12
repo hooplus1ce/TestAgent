@@ -1,6 +1,6 @@
 [project]
 name = "drissionpage-mcp-refactored"
-version = "0.1.0"
+version = "0.2.0"
 description = "Structured DrissionPage MCP server for UI testing"
 readme = "README.md"
 requires-python = ">=3.11"

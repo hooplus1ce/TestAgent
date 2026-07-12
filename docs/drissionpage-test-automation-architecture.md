@@ -26,6 +26,7 @@ drissionpage_mcp.server (stdio FastMCP)
 - 服务配置：`mcp-service/configs/dp_configs.ini`
 - 浏览器用户目录：配置中的 `../dp_profile`
 - 证据目录：默认 `mcp-service/resources/`
+- 模型工具面：默认 `DRISSIONPAGE_MCP_PROFILE=enterprise`
 - 能力裁剪：仅 `DRISSIONPAGE_MCP_CAPS`
 - 凭据：仅通过 MCP 进程环境变量注入
 
@@ -65,7 +66,7 @@ Skills 不导入内部 Python 模块，不执行裸 JavaScript 或自行换算 V
 ## 验收约束
 
 1. 仓库中只有 `mcp-service` 一套 MCP 实现和一个 launcher。
-2. 所有 Agent 配置的命令均指向该 launcher。
+2. 所有 Agent 配置的命令均指向该 launcher，并固定 31 工具的 enterprise profile。
 3. 根测试和服务测试都导入 `drissionpage_mcp` 新包。
 4. Skill 引用的工具必须存在于 MCP `tools/list`。
 5. 标准 MCP 客户端能够完成 initialize、resources/list 和 tools/list。

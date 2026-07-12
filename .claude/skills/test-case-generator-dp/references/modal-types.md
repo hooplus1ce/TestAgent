@@ -5,13 +5,13 @@
 | 场景 | 工具 | 说明 |
 |------|------|------|
 | **当前浮层快照** | `observe_snapshot(only_visible=True, include_table_data=True, detail="full")` | 读取所有当前可见浮窗及 VTable 列头筛选、工具栏提示、列设置菜单，返回标题、类型、坐标、按钮、字段和表格数据。**优先用于交互前检查** |
-| **点击后观察** | `observe_start` → action → `observe_wait` | 点击前安装观察器，点击后读取首个信号并清理 |
-| **短寿命消息/通知** | `observe_start(signals=["notification","message",...])` → action → `observe_wait` | 观察器必须在动作前启动，避免漏掉短寿命 toast |
+| **DOM 动作后观察** | `explore_action(...)` | facade 在动作前安装观察器，动作后从 `signal` 返回首个反馈 |
+| **表格动作后观察** | `table_action(...)` | facade 同时完成表格动作和反馈采集，避免漏掉短寿命 toast |
 | 弹窗清理 | `close_modal` | 清理残留弹窗/通知/消息，避免干扰后续交互 |
 
-## 统一观察器优先级
+## facade 信号优先级
 
-`observe_wait` first-signal-wins，DOM 信号覆盖：
+`explore_action` / `table_action` 的 `signal` 使用 first-signal-wins，DOM 信号覆盖：
 1. iframe 内交互弹窗/通知/消息 → 无则
 2. top 层弹窗/通知/消息 → 无则
 3. `none`
@@ -44,7 +44,7 @@
 | 特征 | 警告图标 + 文字提示 + 单一操作按钮 |
 | 处理方式 | `check_session()` → 过期则 `refresh_session()` |
 
-## observe_wait 返回值结构
+## signal 返回值结构
 
 ```python
 # 命中（任一信号触发即返回）
@@ -60,10 +60,10 @@
 {"type": "none", "elapsedMs": int, "watched": [...]}
 ```
 
-调用：先 `observe_start(signals=["modal","notification","message","tab","url"], listen_targets="gateway")`，执行 action 后 `observe_wait(timeout=8)`
-- `signals` 默认 `["modal","notification","message","tab","url"]`，加 `"network"` 需配 `listen_targets`
-- `listen_targets` 用 `"gateway"` 抓 SCM 所有 API（保存接口走 `gateway.hoolinks.com/api/gateway`，业务关键词不命中）
-- 保存、提交、审核等后端校验类操作可能延迟返回提示；保存类操作统一使用更长 `observe_wait` 超时时间（建议 30s+）。若超时但页面出现明显反馈，应补充截图和 DOM 观察结果，不在 skill 中内联 raw JS 兜底。
+调用：`explore_action(..., signals=["modal","notification","message","tab","url","network"], listen_targets="gateway", timeout=30)`。
+- `signals` 默认覆盖浮层、消息、页签和 URL；监听网络时提供 `listen_targets`。
+- `listen_targets="gateway"` 用于 SCM gateway API。
+- 保存、提交、审核等后端校验类操作使用更长 facade timeout（建议 30s+）。若超时但页面出现明显反馈，应补充 `observe_snapshot`，不在 Skill 中内联 raw JS 兜底。
 
 
 ## 各类型处理逻辑

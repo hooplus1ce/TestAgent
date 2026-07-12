@@ -36,7 +36,7 @@ description: 为 WMS/MOM/ERP 等企业系统迭代生成测试用例（DrissionP
 - Claude、Codex、Trae 均通过 `mcp-service/launcher.py` 启动；Skill 不直接导入服务模块，也不拼装其他启动命令。
 - 浏览器配置只读取 `mcp-service/configs/dp_configs.ini`，其中 `../dp_profile` 指向项目根浏览器数据目录。
 - 账号密码只通过 MCP 进程环境变量注入，禁止写入 Skill、用例 JSON、`.mcp.json` 或自动化配方。
-- 能力裁剪只使用 `DRISSIONPAGE_MCP_CAPS`。完整探索至少启用 `core,vtable,filter,observe,network,workflow`；审批回归还必须启用 `roles`。
+- 正常运行必须使用 `DRISSIONPAGE_MCP_PROFILE=enterprise`；`full` 仅限明确的服务开发诊断。Capability 裁剪继续使用 `DRISSIONPAGE_MCP_CAPS`。
 
 ### 浏览器连接入口
 当用户说“连接浏览器”、开始生成用例，或任何真实页面探索前，必须执行完整 Browser Ready Gate；不要只调用 `connect()` 后继续。
@@ -58,7 +58,7 @@ description: 为 WMS/MOM/ERP 等企业系统迭代生成测试用例（DrissionP
 不同部门、角色和权限账号必须使用独立 BrowserContext，按审批业务顺序串行切换，不共享 Cookie、localStorage 或登录态：
 
 ```text
-role_session_open(role_id) -> role_session_login(role_id)
+role_session_start(role_id)
 role_session_activate(requester) -> 创建并提交单据
 role_session_activate(dept_manager) -> 查询待办并审批
 role_session_activate(requester) -> 验证结果与可见权限
@@ -68,7 +68,7 @@ role_session_close(role_id) -> cleanup
 `role_id` 使用稳定英文逻辑名，如 `requester`、`dept_manager`、`finance_approver`。服务会读取对应的 `HL_SCM_ROLE_<ROLE_ID>_USERNAME` 与 `HL_SCM_ROLE_<ROLE_ID>_USERPWD`。每个角色的首个业务动作前必须调用 `role_session_activate`；`automation_recipe.cleanup` 必须关闭所有已创建角色会话。账号只解决身份登录，正式回归还必须固定账号所属部门、权限矩阵、审批模板/路由、测试数据夹具和每个节点的业务断言。
 
 ### 工具集
-所有浏览器原子操作由 `drissionpage-mcp` MCP 提供：点击/输入/截图/浮层快照(`observe_snapshot`)/VTable 操作/网络监听/筛选区操作/元素坐标获取(`get_element_coords`)/坐标点击(`click_xy`)。AI 只需调用工具并编排顺序，无需关心内部实现。
+所有浏览器操作由 `drissionpage-mcp` 的企业 facade 提供：通用动作使用 `explore_action`，表格动作使用 `table_action`，表格断言使用 `query_table` / `inspect_table_cell`，浮层读取使用 `observe_snapshot`。AI 不选择底层坐标、JavaScript、监听器或 DrissionPage 原语。
 
 系统配置与环境信息见 `references/scm-access.md`。
 
@@ -84,7 +84,7 @@ role_session_close(role_id) -> cleanup
 2. 执行“浏览器连接入口”完整 Browser Ready Gate，确保登录有效并拿到激活 iframe
 3. 如入口流程尚未进入目标模块，`enter_module("<模块名>", expand_filter=True)` 进入模块后再次 `get_active_frame()`
 4. 确保筛选区切换为**内联模式**（见“筛选区显示模式”）
-5. `scan_page_elements()` / `dom_tree()` 分析页面结构
+5. `capture_page_model()` 分析页面结构
 6. `scan_table(kind="auto")` 穷尽表格列定义与可交互信息
 7. `scan_filter_fields()` 穷尽筛选字段矩阵（内部自动展开筛选区）
 8. DFS 穷尽按钮 + 弹窗探索
@@ -109,7 +109,7 @@ role_session_close(role_id) -> cleanup
 每个用例 **19 个字段**，字段定义见 `references/field-spec.md`。
 
 **质量门**（详见 `references/quality-rubric.md`）：
-- 预期结果(L) 必须可验证——优先用 `listen_wait` 拿接口 `response.body` 作为可断言预期
+- 预期结果(L) 必须可验证——优先用 `explore_action(listen_targets="gateway")` 返回的接口响应作为可断言预期
 - 自动化建议(S) 必须说明可由 drissionpage-mcp MCP 执行的关键动作与断言方式
 - 级别(C) 按决策树分配
 - DFS 衍生用例导出前去重
@@ -124,14 +124,14 @@ role_session_close(role_id) -> cleanup
 **核心原则**：不一次性生成全部用例，通过对话按用户指示逐步覆盖各区域。
 ```
 用户 → 指令（如「测一下批量排产按钮」）
-  Agent → 执行（observe_start / click 或 vtable_action 或 click_table_cell / observe_wait）
+  Agent → 执行（explore_action 或 table_action）
   Agent → 汇报结果 + 询问下一步
 用户 → 继续或调整方向
 ```
 
-**每次 `click`/`vtable_action`/`click_table_cell`/`click_xy` 前 MUST 调用 `observe_start`，动作后 MUST 调用 `observe_wait`**，以捕获短寿命 toast、浮窗、接口、页签和 URL 变化。
+**每个业务动作 MUST 使用 `explore_action` 或 `table_action`**。两者都在动作前启动观察、动作后返回 toast、浮窗、接口、页签或 URL 信号，不允许 Skill 自行编排底层观察器。
 
-需要抓接口时单独使用 `listen_start` / `listen_wait` 做接口断言。
+单动作接口断言通过 facade 的 `listen_targets` 参数完成；跨多个动作的时间线使用 `network_trace_start` / `network_trace_stop`。
 需要读取当前已存在浮层的完整结构时，调用 `observe_snapshot(only_visible=True, include_table_data=True, detail="full")`。
 
 **断点续传**：每完成一个区域，调用 `scripts/load-exploration-state.py` 保存进度。
@@ -163,7 +163,7 @@ role_session_close(role_id) -> cleanup
 ### 坐标与 VTable
 VTable 是 canvas 渲染，无真实 DOM 节点。所有点击走坐标，工具自动处理 iframe 偏移和坐标换算。
 
-**表格交互统一使用 facade**：优先 `scan_table(kind="auto")`；普通单元格点击用 `click_table_cell(...)`，VTable 专项 click/double_click/hover/drag 用 `vtable_action(...)`，其中数据行单元格图标使用 `target="cell-icon"` 并先通过 `get_vtable_cell_icons(...)` 确认候选图标。状态标签、字体色、单元格背景色断言使用 `get_vtable_cell_render_info(...)`。VTable 列超出视口时工具内部自动滚动并换算坐标。
+**表格交互统一使用 facade**：优先 `scan_table(kind="auto")`；所有 click/double_click/hover/drag/resize 使用 `table_action(...)`。数据行图标先用 `inspect_table_cell(aspect="icons")` 获取候选，再执行 `table_action(target="cell-icon", ...)`；状态文本、标签色和背景色使用 `inspect_table_cell(aspect="render")`。列值、行定位、计数和同行多列断言统一使用 `query_table(...)`。
 
 ### iframe
 业务模块在 `[role=tabpanel][aria-hidden=false] iframe` 内。MCP 工具默认 `in_frame=True`，坐标换算自动完成。入口流程、模块切换、页签切换或 session 刷新后，都用 `get_active_frame()` 重新确认当前激活 iframe。
@@ -195,30 +195,28 @@ VTable 是 canvas 渲染，无真实 DOM 节点。所有点击走坐标，工具
 
 **优先使用 `observe_snapshot(only_visible=True, include_table_data=True, detail="full")`** 读取当前所有可见浮窗（模态框/抽屉/弹出框/消息/通知、VTable 列头筛选、工具栏提示、列设置菜单等）的结构化信息，包括标题、类型、中心坐标、关闭按钮、操作按钮、表单字段和表格数据。
 
-点击后如需捕获短寿命 toast（如「操作成功」），必须在点击前启动 `observe_start(signals=["modal","notification","message",...])`，点击后用 `observe_wait` 读取首个信号。
+点击后如需捕获短寿命 toast（如「操作成功」），通过 `explore_action` 或 `table_action` 的 `signal` 读取，不再直接调用底层观察器。
 
 VTable 列头筛选、工具栏提示、列设置菜单由 `observe_snapshot` 返回；单元格编辑器、虚拟下拉等特殊浮层必须通过 `drissionpage-mcp` 的 VTable facade 处理。若当前工具无法返回结构化结果，记录工具缺口并降级生成低级展示类用例，不在 skill 中内联 raw JS。
 
 ### 弹窗交互策略
-**与弹窗交互前 MUST 先用 `observe_snapshot(detail="full")` 获取弹窗结构化信息**，如需更详细 DOM 层级再用 `dom_tree`。
+**与弹窗交互前 MUST 先用 `observe_snapshot(detail="full")` 获取弹窗结构化信息**；需要更完整页面上下文时使用 `capture_page_model`。
 
-原因：SCM 系统大量使用自定义封装的弹窗组件。先通过 `observe_snapshot` 拿到弹窗内按钮、字段的标题/坐标/定位符后，再选择稳定的交互目标执行操作，可避免盲目猜测导致点击无效。
+原因：SCM 系统大量使用自定义封装的弹窗组件。先通过 `observe_snapshot` 拿到弹窗内按钮和字段标题，再构造 `explore_action` 的语义 target，可避免盲目猜测导致点击无效。
 
 流程：
 ```
-observe_start → click → observe_wait → 确认弹窗信号
+explore_action → 从 signal 确认弹窗信号
   ↓
-点击按钮/输入字段（用返回的 center 坐标或 selectorHint）
+用 `explore_action` 按按钮文本或字段名操作
   ↓
 observe_snapshot(detail="full") → 确认当前弹窗结构和状态
 ```
 
 ### 坐标系统
-所有元素坐标由 MCP 工具统一换算为顶层视口坐标，已自动叠加 iframe 偏移。Skill 不读取 ChromiumElement，也不直接调用 DrissionPage actions API。
-
-需要显式坐标时只调用 `get_element_coords(xpath, index, timeout)`，再把返回的 `{cx, cy}` 传给 `click_xy`。
-
-双击等多次点击通过 `click_xy(x, y, times=N)` 的 `times` 参数实现。
+坐标换算完全属于 MCP 内部实现。Skill 不读取 ChromiumElement、不请求坐标、不调用
+任何坐标点击或 DrissionPage actions API；DOM 目标使用语义 `target`，表格目标使用
+`table_action` 的 row/column/target 参数。
 
 ### 会话维持
 `check_session()` 检测过期 → 直接 `refresh_session()`（每次重新获取新 cookie，不再缓存）→ 重新打开待测页/进入模块 → 再次 `check_session()` → `get_active_frame()`。
@@ -253,4 +251,4 @@ observe_snapshot(detail="full") → 确认当前弹窗结构和状态
 - [ ] 每条正式用例均有完整 `automation_recipe` 和真实业务断言，并已真实试运行通过
 - [ ] 多角色用例在每个业务动作前激活正确角色，并在 cleanup 关闭全部角色会话
 - [ ] 报告中的截图均来自本次执行，覆盖率分母包含已识别需求、风险和页面资产
-- [ ] 每次点击前后使用 `observe_start` / `observe_wait` 捕获浮窗、toast、接口和页签切换
+- [ ] 每个动作使用 `explore_action` / `table_action` 并验证返回的业务 signal

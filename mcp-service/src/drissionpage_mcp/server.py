@@ -18,11 +18,13 @@ import sys
 import time
 import tempfile
 from datetime import datetime
+from typing import Literal
 
 from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 from DrissionPage.common import Keys
 
+from . import __version__
 from .core import caps, config, ui_contract
 from .resources import resource_store
 from .services import (
@@ -53,6 +55,7 @@ logging.basicConfig(
 logger = logging.getLogger("drissionpage-mcp")
 
 mcp = FastMCP("drissionpage-mcp")
+mcp._mcp_server.version = __version__
 _fastmcp_tool = mcp.tool
 
 
@@ -66,6 +69,8 @@ _READ_ONLY_TOOLS = {
     "get_element_coords",
     "list_contexts",
     "observe_snapshot",
+    "query_table",
+    "inspect_table_cell",
     "role_session_list",
     "scan_drawer",
     "scan_floats",
@@ -83,9 +88,12 @@ _ADDITIVE_TOOLS = {
     "connect",
     "dom_tree",
     "network_record_export",
+    "network_trace_start",
+    "network_trace_stop",
     "role_session_activate",
     "role_session_login",
     "role_session_open",
+    "role_session_start",
     "listen_wait",
     "listen_ws_wait",
     "scan_page_elements",
@@ -141,7 +149,7 @@ def _tool_annotations_for(tool_name: str, fn) -> ToolAnnotations:
 
 
 def _cap_aware_tool(*args, **kwargs):
-    """Register MCP tools only when enabled by DRISSIONPAGE_MCP_CAPS."""
+    """Register tools allowed by the active profile and capability selection."""
     def register(fn):
         explicit_name = kwargs.get("name")
         if args and isinstance(args[0], str):
@@ -153,7 +161,7 @@ def _cap_aware_tool(*args, **kwargs):
                 tool_kwargs["annotations"] = _tool_annotations_for(tool_name, fn)
             decorator = _fastmcp_tool(*args, **tool_kwargs)
             return decorator(fn)
-        logger.debug("Skipping MCP tool %s; disabled by DRISSIONPAGE_MCP_CAPS", tool_name)
+        logger.debug("Skipping MCP tool %s; disabled by MCP profile/capabilities", tool_name)
         return fn
 
     return register
@@ -274,6 +282,7 @@ def context_resource() -> str:
         "ok": True,
         "resource_context": resource_store.get_context(),
         "enabled_caps": sorted(caps.ENABLED_CAPS),
+        "tool_profile": caps.ENABLED_PROFILE,
         "remote_port": config.DEFAULT_PORT,
         "target_hint": config.DEFAULT_TARGET_HINT,
         "roles": role_sessions.list_roles(),
@@ -2237,7 +2246,9 @@ def _resolve_observe_policy(signals, listen_targets, expect: str, observe_mode: 
 
 @mcp.tool()
 @write_synchronized
-def explore_action(action: str = "click", target: dict = None,
+def explore_action(action: Literal["click", "input", "set_date", "date_range",
+                                   "table_cell", "select_option", "press_key"] = "click",
+                   target: dict = None,
                    locator: str = None, x: float = None, y: float = None,
                    row: int = 0, col: int = None, column_title: str = None, kind: str = "auto",
                    table_index: int = 0, icon_name: str = None, option_text: str = None,
@@ -2252,10 +2263,11 @@ def explore_action(action: str = "click", target: dict = None,
                    clean_overlays: bool = True) -> dict:
     """动作探索封装：observe_start → 执行动作 → observe_wait → 可选页面模型快照。
 
-    action 可选 click/click_xy/input/set_date/date_range/table_cell/select_option/press_key。target 可选语义目标：
+    enterprise profile 的 action 可选 click/input/set_date/date_range/table_cell/select_option/press_key。target 可选语义目标：
     {"type":"field","name":"工作日期"}、{"type":"button","text":"添加"}、
     {"type":"css","value":"button.ant-btn"}、{"type":"xpath","value":"//button"}、
-    {"type":"xy","x":100,"y":200}。旧参数 locator/x/y/field_name 仍保持兼容。
+    也可使用旧参数 locator/field_name。enterprise profile 禁止显式坐标、JS 点击和跳过观察；
+    这些兼容参数只在 full profile 的开发诊断中可用。
 
     瘦身说明（2026-07）：
     - capture_after 默认 False，避免返回冗余的完整页面模型（actions/fields/modals/tables）。
@@ -2266,6 +2278,24 @@ def explore_action(action: str = "click", target: dict = None,
     """
     flow_started = time.perf_counter()
     action_name = (action or "click").lower()
+    requested_target_type = (
+        str(target.get("type") or "").strip().lower()
+        if isinstance(target, dict) else ""
+    )
+    if caps.ENABLED_PROFILE == "enterprise":
+        violations = []
+        if action_name == "click_xy" or requested_target_type == "xy" or x is not None or y is not None:
+            violations.append("显式坐标动作")
+        if by_js:
+            violations.append("JS 点击")
+        if str(observe_mode or "auto").strip().lower() == "none" or signals == []:
+            violations.append("跳过动作观察")
+        if violations:
+            return {
+                "ok": False,
+                "reason": "enterprise profile 禁止%s；请使用语义 target 并保留业务反馈观察" % "、".join(violations),
+                "profile": caps.ENABLED_PROFILE,
+            }
     resolved = _resolve_target_action(
         target, action_name, locator, x, y, field_name, row, col, column_title,
         kind, table_index, icon_name, option_text, key, modifiers, in_frame,
@@ -2973,25 +3003,31 @@ def _run_recipe_action(action: str, args: dict) -> dict:
         "get_active_frame": get_active_frame,
         "check_session": check_session,
         "get_table_values": get_table_values,
+        "query_table": query_table,
         "find_vtable_row": find_vtable_row,
         "count_vtable_rows": count_vtable_rows,
         "get_vtable_row_values": get_vtable_row_values,
         "scan_table": scan_table,
         "get_vtable_cell_render_info": get_vtable_cell_render_info,
+        "inspect_table_cell": inspect_table_cell,
         "vtable_action": vtable_action,
         "click_table_cell": click_table_cell,
+        "table_action": table_action,
         "select_option": select_option,
         "select_date_range": select_date_range,
         "set_date": set_date,
         "query_filter": _query_filter,
         "verify_filter_query": _verify_filter_query,
         "observe_snapshot": observe_snapshot,
+        "network_trace_start": network_trace_start,
+        "network_trace_stop": network_trace_stop,
         "browser_get_element_state": browser_get_element_state,
         "find_elements": find_elements,
         "input": input,
         "insert_text": insert_text,
         "role_session_open": role_session_open,
         "role_session_login": role_session_login,
+        "role_session_start": role_session_start,
         "role_session_activate": role_session_activate,
         "role_session_list": role_session_list,
         "role_session_close": role_session_close,
@@ -3278,11 +3314,6 @@ def _verify_filter_query(filters: list[dict], timeout: float = 10,
     began = time.perf_counter()
     if not isinstance(filters, list) or not filters:
         return {"ok": False, "verified": False, "reason": "filters 必须是非空列表"}
-    expanded = filter_area.expand_filter_area()
-    if not expanded.get("ok"):
-        return {"ok": False, "verified": False,
-                "reason": "筛选区展开失败: %s" % expanded.get("reason", "")}
-    configured = []
     for index, condition in enumerate(filters):
         if not isinstance(condition, dict):
             return {"ok": False, "verified": False,
@@ -3298,6 +3329,14 @@ def _verify_filter_query(filters: list[dict], timeout: float = 10,
         if test_execution.normalize_filter_operator(operator) is None:
             return {"ok": False, "verified": False,
                     "reason": "不支持的筛选操作符: %s" % operator}
+    expanded = filter_area.expand_filter_area()
+    if not expanded.get("ok"):
+        return {"ok": False, "verified": False,
+                "reason": "筛选区展开失败: %s" % expanded.get("reason", "")}
+    configured = []
+    for condition in filters:
+        field = str(condition.get("field") or "").strip()
+        operator = str(condition.get("operator") or "").strip()
         setup_started = time.perf_counter()
         setup = filter_area.set_filter_condition(
             field, operator, condition.get("value"), timeout=min(timeout, 5.0),
@@ -4988,6 +5027,177 @@ def resize_table_column(width: int, col: int = None, column_title: str = None, k
     return _tag_table_result("vtable", vtable.resize_column(target_col, width))
 
 
+@mcp.tool()
+@read_synchronized
+def query_table(operation: Literal["values", "data", "find", "count", "row"] = "values",
+                column_title: str = None,
+                value: str = None, key_column: str = None, key_value: str = None,
+                column_titles: list[str] = None,
+                kind: Literal["auto", "html", "vtable"] = "auto",
+                table_index: int = 0, raw: bool = False,
+                match: Literal["equals", "contains"] = "equals",
+                expected_count: int = None, timeout: float = 0,
+                filename: str = None) -> dict:
+    """统一表格读取入口。
+
+    operation 只能是：
+    - values：读取 column_title 的全部可见值（HTML/VTable）。
+    - data：读取当前表格完整可读数据（HTML/VTable）。
+    - find：按 column_title/value 唯一定位 VTable 行。
+    - count：统计 column_title/value 匹配的 VTable 行数。
+    - row：按 key_column/key_value 读取 column_titles 指定的同一 VTable 行。
+    """
+    operation_key = str(operation or "values").strip().lower()
+    if operation_key == "values":
+        result = get_table_values(
+            column_title=column_title, kind=kind, raw=raw,
+            table_index=table_index, filename=filename,
+        )
+    elif operation_key == "data":
+        result = get_table_data(kind=kind, table_index=table_index, filename=filename)
+    elif operation_key == "find":
+        result = find_vtable_row(
+            column_title=column_title, value=value, raw=raw,
+            match=match, timeout=timeout,
+        )
+    elif operation_key == "count":
+        result = count_vtable_rows(
+            column_title=column_title, value=value, raw=raw, match=match,
+            expected_count=expected_count, timeout=timeout,
+        )
+    elif operation_key == "row":
+        result = get_vtable_row_values(
+            key_column=key_column or column_title,
+            key_value=key_value if key_value is not None else value,
+            column_titles=column_titles, raw=raw, match=match, timeout=timeout,
+        )
+    else:
+        return {
+            "ok": False,
+            "reason": "operation 必须是 values/data/find/count/row",
+            "operation": operation_key,
+        }
+    return {**result, "operation": operation_key}
+
+
+@mcp.tool()
+@read_synchronized
+def inspect_table_cell(row: int, col: int = None, column_title: str = None,
+                       aspect: Literal["all", "render", "icons"] = "all",
+                       icon_name: str = None,
+                       detail: str = "summary") -> dict:
+    """统一读取 VTable 单元格的渲染样式和图标。
+
+    aspect 可选 all/render/icons；all 同时返回 render 和 icons。
+    """
+    aspect_key = str(aspect or "all").strip().lower()
+    if aspect_key not in {"all", "render", "icons"}:
+        return {"ok": False, "reason": "aspect 必须是 all/render/icons", "aspect": aspect_key}
+    result = {"ok": True, "kind": "vtable", "aspect": aspect_key}
+    if aspect_key in {"all", "render"}:
+        result["render"] = get_vtable_cell_render_info(
+            row=row, col=col, column_title=column_title, detail=detail,
+        )
+        result["ok"] = result["ok"] and bool(result["render"].get("ok"))
+    if aspect_key in {"all", "icons"}:
+        result["icons"] = get_vtable_cell_icons(
+            row=row, col=col, column_title=column_title,
+            icon_name=icon_name, detail=detail,
+        )
+        result["ok"] = result["ok"] and bool(result["icons"].get("ok"))
+    return result
+
+
+@mcp.tool()
+@write_synchronized
+def table_action(action: Literal["click", "double_click", "hover", "drag", "resize"] = "click",
+                 row: int = 0, col: int = None,
+                 column_title: str = None,
+                 kind: Literal["auto", "html", "vtable"] = "auto",
+                 table_index: int = 0,
+                 target: Literal["cell", "header", "header-icon", "cell-icon"] = "cell",
+                 icon_name: str = None, icon_index: int = None,
+                 width: int = None, hover_first: bool = True,
+                 duration: float = 0.3, drag_to_x: float = None,
+                 drag_to_y: float = None, drag_by_x: float = None,
+                 drag_by_y: float = None, clean_overlays: bool = True,
+                 signals: list[str] = None, listen_targets: str = None,
+                 timeout: float = 8, include_snapshot: bool = True,
+                 detail: str = "summary") -> dict:
+    """统一表格动作入口。
+
+    action 可选 click/double_click/hover/drag/resize。普通单元格支持 HTML 与
+    VTable；header/header-icon/cell-icon、drag 和 resize 仅支持 VTable。
+    """
+    action_key = str(action or "click").strip().lower().replace("-", "_")
+    target_key = str(target or "cell").strip().lower().replace("_", "-")
+    cleanup = (None if action_key == "hover" else _pre_click_cleanup(clean_overlays))
+    effective_signals = signals
+    if effective_signals is None and listen_targets:
+        effective_signals = ["overlay", "notification", "message", "tab", "url", "network"]
+    observed = observe.observe_start(
+        signals=effective_signals,
+        listen_targets=listen_targets,
+        native_wait=_recipe_requires_native_actions(),
+    )
+    if action_key == "resize":
+        if width is None:
+            result = {"ok": False, "reason": "resize 必须提供 width", "action": action_key}
+        else:
+            result = resize_table_column(
+                width=width, col=col, column_title=column_title, kind=kind,
+            )
+    elif action_key == "hover" and target_key == "cell" and icon_index is None:
+        result = hover_table_cell(
+            row=row, col=col, column_title=column_title, kind=kind,
+            table_index=table_index, duration=duration,
+        )
+    elif action_key in {"click", "double_click"} and target_key == "cell" and icon_index is None:
+        result = click_table_cell(
+            row=row, col=col, column_title=column_title, kind=kind,
+            table_index=table_index, icon_name=icon_name,
+            hover_first=hover_first, duration=duration,
+            double_click=action_key == "double_click",
+            clean_overlays=False,
+        )
+    elif action_key in {"click", "double_click", "hover", "drag"}:
+        if kind == "html":
+            result = {
+                "ok": False, "kind": "html", "action": action_key,
+                "reason": "该 target/action 组合仅支持 VTable",
+            }
+        else:
+            result = vtable_action(
+                action=action_key, row=row, col=col, column_title=column_title,
+                target=target_key, icon_name=icon_name, icon_index=icon_index,
+                hover_first=hover_first, duration=duration,
+                drag_to_x=drag_to_x, drag_to_y=drag_to_y,
+                drag_by_x=drag_by_x, drag_by_y=drag_by_y,
+                clean_overlays=False,
+            )
+    else:
+        result = {
+            "ok": False,
+            "reason": "action 必须是 click/double_click/hover/drag/resize",
+            "action": action_key,
+        }
+    result = _attach_cleanup(result, cleanup)
+    signal = observe.observe_wait(
+        timeout=timeout if result.get("ok") else 0,
+        include_snapshot=include_snapshot,
+        detail=detail,
+        native_wait=_recipe_requires_native_actions(),
+    )
+    return {
+        "ok": bool(result.get("ok")),
+        "action": action_key,
+        "target": target_key,
+        "result": result,
+        "observe_start": observed,
+        "signal": signal,
+    }
+
+
 # ==================== VTable（canvas 表格）====================
 
 @read_synchronized
@@ -5291,6 +5501,29 @@ def network_record_stop(timeout: float = 3.0, max_packets: int = 50,
 
 
 @mcp.tool()
+@write_synchronized
+def network_trace_start(targets=None, method: str = None) -> dict:
+    """开始多步骤业务网络证据采集。
+
+    单个动作优先使用 explore_action(listen_targets=...)；只有需要覆盖多个连续动作时
+    才使用 network_trace_start -> actions -> network_trace_stop。
+    """
+    return network_record_start(targets=targets, method=method)
+
+
+@mcp.tool()
+@write_synchronized
+def network_trace_stop(timeout: float = 3.0, max_packets: int = 50,
+                       fit_count: bool = False,
+                       max_body_chars: int = 12000) -> dict:
+    """结束多步骤网络证据采集并返回脱敏后的数据包时间线。"""
+    return network_record_stop(
+        timeout=timeout, max_packets=max_packets,
+        fit_count=fit_count, max_body_chars=max_body_chars,
+    )
+
+
+@mcp.tool()
 @read_synchronized
 def network_record_export(filename: str = None) -> dict:
     """导出最近一次 network_record_stop 的数据包到 JSON 文件。"""
@@ -5483,6 +5716,13 @@ def role_session_login(role_id: str) -> dict:
 
 @mcp.tool()
 @write_synchronized
+def role_session_start(role_id: str) -> dict:
+    """创建并登录角色独立 Context；失败时自动清理，避免残留半初始化会话。"""
+    return _role_tool(role_sessions.start_role, role_id)
+
+
+@mcp.tool()
+@write_synchronized
 def role_session_activate(role_id: str) -> dict:
     """切换通用浏览器工具到指定角色，供顺序式审批回归流程使用。"""
     return _role_tool(role_sessions.activate_role, role_id)
@@ -5593,11 +5833,12 @@ def browser_list_caps() -> dict:
     """
     return {
         "ok": True,
+        "profile": caps.ENABLED_PROFILE,
         "enabled_caps": sorted(caps.ENABLED_CAPS),
         "available_caps": {
             cap: tools for cap, tools in caps.CAP_GROUPS.items()
         },
-        "env_hint": "Set DRISSIONPAGE_MCP_CAPS to all or a comma-separated capability list.",
+        "env_hint": "Use DRISSIONPAGE_MCP_PROFILE=enterprise normally; full is for explicit diagnostics. DRISSIONPAGE_MCP_CAPS further narrows groups.",
     }
 
 
@@ -5962,7 +6203,11 @@ def browser_get_element_state(locator: str, state: str = None) -> dict:
 
 
 def main():
-    logger.info(f"Starting drissionpage-mcp server, enabled caps: {sorted(caps.ENABLED_CAPS)}")
+    logger.info(
+        "Starting drissionpage-mcp server, profile=%s, enabled caps=%s",
+        caps.ENABLED_PROFILE,
+        sorted(caps.ENABLED_CAPS),
+    )
     mcp.run()
 
 

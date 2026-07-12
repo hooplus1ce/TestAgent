@@ -117,3 +117,41 @@ def test_role_login_failure_does_not_echo_password(monkeypatch):
         "role_id": "finance_approver",
     }
     assert "finance-secret" not in repr(result)
+
+
+def test_start_role_opens_and_logs_in_with_one_public_operation(monkeypatch):
+    tab = _prepare_role(monkeypatch)
+    username_env, password_env = role_sessions.credential_env_names("requester")
+    monkeypatch.setenv(username_env, "requester@example.test")
+    monkeypatch.setenv(password_env, "requester-secret")
+    monkeypatch.setattr(
+        role_sessions.session_auth,
+        "login_ocr_for_tab",
+        lambda *_args, **_kwargs: {"ok": True, "url": tab.url, "cookies": ["SESSION"]},
+    )
+
+    result = role_sessions.start_role("requester")
+
+    assert result["ok"] is True
+    assert result["stage"] == "ready"
+    assert result["authenticated"] is True
+    assert result["credential_env"] == {"username": username_env, "password": password_env}
+    assert "requester-secret" not in repr(result)
+
+
+def test_start_role_cleans_up_context_when_login_fails(monkeypatch):
+    _prepare_role(monkeypatch)
+    closed = []
+    monkeypatch.setattr(
+        role_sessions.browser_session,
+        "close_context",
+        lambda context_id: closed.append(context_id) or {"ok": True},
+    )
+
+    result = role_sessions.start_role("finance_approver")
+
+    assert result["ok"] is False
+    assert result["stage"] == "login"
+    assert result["cleanup"] == {"ok": True, "reason": ""}
+    assert closed == [41]
+    assert role_sessions.list_roles() == []

@@ -29,7 +29,7 @@
         "目标字段": "来自页面真实数据的值"
       },
       "expected_result": "1. 表格仅显示符合筛选条件的记录\n2. 目标列所有可见值均满足筛选条件\n3. 无不符合条件的记录",
-      "automation_suggestion": "使用 scan_filter_fields 获取字段矩阵，设置真实筛选值后点击查询，使用 get_table_values 验证目标列",
+      "automation_suggestion": "使用 scan_filter_fields 获取字段矩阵，explore_action 设置真实值并查询，query_table 验证目标列",
       "evidence_refs": [
         {
           "flow_id": "<真实探索 flow_id>",

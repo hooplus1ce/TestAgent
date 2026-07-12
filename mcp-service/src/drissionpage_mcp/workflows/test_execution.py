@@ -230,6 +230,7 @@ _NON_BUSINESS_ASSERTION_PATHS = {
     "http_ok", "business_ok",
 }
 ROLE_SESSION_ACTIONS = frozenset({
+    "role_session_start",
     "role_session_open",
     "role_session_login",
     "role_session_activate",

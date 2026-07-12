@@ -40,6 +40,7 @@ MCP client 配置示例：
       "command": "uv",
       "args": ["run", "--project", "mcp-service", "python", "mcp-service/launcher.py"],
       "env": {
+        "DRISSIONPAGE_MCP_PROFILE": "enterprise",
         "DRISSIONPAGE_MCP_CAPS": "all"
       }
     }
@@ -63,8 +64,7 @@ MCP client 配置示例：
 `BrowserContext` 隔离 Cookie、localStorage 和登录态，适合把同一审批流中的业务参与者
 分别登录为独立账号。服务新增以下 MCP 工具：
 
-- `role_session_open(role_id)`：为角色创建独立 Context。
-- `role_session_login(role_id)`：仅读取该角色的账号密码环境变量并登录。
+- `role_session_start(role_id)`：创建独立 Context、读取角色环境变量并登录；失败自动清理。
 - `role_session_activate(role_id)`：将现有通用工具切换到该角色的 Context。
 - `role_session_list()` / `role_session_close(role_id)`：查看或释放角色会话。
 
@@ -86,8 +86,8 @@ role_id=dept_manager    -> HL_SCM_ROLE_DEPT_MANAGER_USERNAME / HL_SCM_ROLE_DEPT_
 审批回归按角色顺序执行即可，无需并行：
 
 ```text
-role_session_open(requester) -> role_session_login(requester)
-role_session_open(dept_manager) -> role_session_login(dept_manager)
+role_session_start(requester)
+role_session_start(dept_manager)
 role_session_activate(requester) -> 创建并提交单据
 role_session_activate(dept_manager) -> 查询待办并审批
 role_session_activate(requester) -> 验证审批结果和可见权限
@@ -103,10 +103,8 @@ role_session_activate(requester) -> 验证审批结果和可见权限
   "case_title": "申请人提交后由部门主管审批",
   "automation_recipe": {
     "setup": [
-      {"action": "role_session_open", "args": {"role_id": "requester"}},
-      {"action": "role_session_login", "args": {"role_id": "requester"}},
-      {"action": "role_session_open", "args": {"role_id": "dept_manager"}},
-      {"action": "role_session_login", "args": {"role_id": "dept_manager"}}
+      {"action": "role_session_start", "args": {"role_id": "requester"}},
+      {"action": "role_session_start", "args": {"role_id": "dept_manager"}}
     ],
     "steps": [
       {"action": "role_session_activate", "args": {"role_id": "requester"}},
@@ -114,8 +112,8 @@ role_session_activate(requester) -> 验证审批结果和可见权限
       {"action": "role_session_activate", "args": {"role_id": "dept_manager"}},
       {"action": "enter_module", "args": {"menu_text": "待办审批"}},
       {
-        "action": "get_table_values",
-        "args": {"column_title": "单据状态"},
+        "action": "query_table",
+        "args": {"operation": "values", "column_title": "单据状态"},
         "assertions": [
           {"path": "values", "operator": "all_each_contains", "value": "已审批"}
         ]
@@ -132,10 +130,12 @@ role_session_activate(requester) -> 验证审批结果和可见权限
 在上述两个角色切换之间插入创建、提交、审批等业务动作即可。涉及提交、审批、驳回等
 持久化操作时，仍须设置 `destructive: true`，并在 `cleanup` 中提供可验证的业务清理步骤。
 执行结果会标记 `role_mode: true`，逐步记录也会保留实际执行的角色动作。
-为避免代理凭据写入执行证据，配方中的 `role_session_open` 不接受 `proxy` 参数；代理请通过
-服务配置提供。
+角色 facade 不接受代理凭据；代理请通过服务配置提供。
 
-在配置了能力裁剪时，需包含 `roles`，例如 `DRISSIONPAGE_MCP_CAPS=core,roles,vtable,workflow`。
+默认 `DRISSIONPAGE_MCP_PROFILE=enterprise` 只向模型暴露企业测试主路径；底层兼容、
+调试和专用工具仍保留在服务内部。只有明确开发诊断时才使用 `full` profile。
+在配置了 capability 裁剪时，审批回归需包含 `roles`，例如
+`DRISSIONPAGE_MCP_CAPS=core,roles,vtable,workflow`。
 同一 MCP 进程中的通用浏览器工具仍按调用顺序执行；这正符合多角色审批回归的状态传递模型。
 
 ## Verify
