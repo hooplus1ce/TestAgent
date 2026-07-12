@@ -5597,7 +5597,7 @@ def browser_list_caps() -> dict:
         "available_caps": {
             cap: tools for cap, tools in caps.CAP_GROUPS.items()
         },
-        "env_hint": "Set DRISSIONPAGE_MCP_CAPS environment variable to control enabled tools; DRISSION_UI_CAPS is accepted as a compatibility fallback.",
+        "env_hint": "Set DRISSIONPAGE_MCP_CAPS to all or a comma-separated capability list.",
     }
 
 

@@ -4,7 +4,7 @@ import os
 
 
 def test_defaults():
-    import config
+    from drissionpage_mcp.core import config
     assert config.SCM_ADMIN_URL.startswith("https://")
     assert config.COOKIE_DOMAIN.startswith(".")
     assert config.SCM_ACCESS_DOMAIN.startswith(".")
@@ -31,7 +31,7 @@ def test_env_override(monkeypatch):
     monkeypatch.setenv("HL_REFRESH_NAV_TIMEOUT", "3.5")
     monkeypatch.setenv("HL_REFRESH_LOAD_TIMEOUT", "4.5")
     monkeypatch.setenv("HL_REFRESH_HTTP_TIMEOUT", "5.5")
-    import config
+    from drissionpage_mcp.core import config
     importlib.reload(config)
     assert config.SCM_ADMIN_URL == "https://preprod.example.com/"
     assert config.COOKIE_DOMAIN == ".preprod.example.com"

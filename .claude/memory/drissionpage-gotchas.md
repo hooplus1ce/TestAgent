@@ -1,11 +1,11 @@
 ---
 name: drissionpage-gotchas
-description: DrissionPage run_js 必须 top-level return；tab.ele() 会递归 iframe——drission-ui MCP 服务端开发必知
+description: DrissionPage run_js 必须 top-level return；tab.ele() 会递归 iframe——drissionpage-mcp 服务端开发必知
 metadata:
   type: reference
 ---
 
-# DrissionPage 两个非显然陷阱（drission-ui MCP 服务端开发）
+# DrissionPage 两个非显然陷阱（drissionpage-mcp 服务端开发）
 
 ## 1. run_js 必须 top-level `return`，IIFE 会丢弃返回值
 

@@ -226,7 +226,7 @@ def is_loading_complete(iframe: ChromiumFrame) -> bool:
 
 def get_active_tab() -> ChromiumTab:
     logger.info("正在进行浏览器初始化...")
-    co = ChromiumOptions(ini_path="./configs/dp_configs.ini")
+    co = ChromiumOptions(ini_path="./mcp-service/configs/dp_configs.ini")
     browser = Chromium(addr_or_opts=co)
     logger.info("浏览器初始化完成！")
     return browser.latest_tab

@@ -62,13 +62,12 @@ def _patch_login(monkeypatch, session_auth, tab):
     monkeypatch.setattr(
         session_auth,
         "get_login_auth",
-        lambda: [{"name": "SESSION", "value": "s1"}],
+        lambda *_args: [{"name": "SESSION", "value": "s1"}],
     )
 
 
 def test_login_ocr_skips_navigation_when_already_on_admin_host(monkeypatch):
-    import session_auth
-
+    from drissionpage_mcp.services import session_auth
     tab = FakeTab("https://demo19-scm.hoolinks.com/scm-static/scm-admin/scm-admin/#/")
     _patch_login(monkeypatch, session_auth, tab)
 
@@ -85,8 +84,7 @@ def test_login_ocr_skips_navigation_when_already_on_admin_host(monkeypatch):
 
 
 def test_login_ocr_uses_single_bounded_navigation_from_other_host(monkeypatch):
-    import session_auth
-
+    from drissionpage_mcp.services import session_auth
     tab = FakeTab("chrome://newtab/")
     _patch_login(monkeypatch, session_auth, tab)
 
@@ -102,8 +100,7 @@ def test_login_ocr_uses_single_bounded_navigation_from_other_host(monkeypatch):
 
 
 def test_bounded_reload_uses_drissionpage_refresh_and_stops_loading_when_load_timeout():
-    import session_auth
-
+    from drissionpage_mcp.services import session_auth
     tab = FakeTab(
         "https://demo19-scm.hoolinks.com/scm-static/scm-admin/scm-admin/#/",
         doc_loaded=False,

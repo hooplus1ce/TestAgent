@@ -4,9 +4,9 @@
 
 | 场景 | 工具 | 说明 |
 |------|------|------|
-| **综合浮窗检测** | `scan_floats(only_visible=True, include_table_data=True)` | 一次性检测所有可见浮窗：模态框/抽屉/弹出框/提示框/下拉框/消息/通知，以及 VTable 列头筛选、工具栏提示、列设置菜单。返回每浮窗的标题、类型、中心坐标、关闭按钮定位、操作按钮、表单字段、表格数据。**优先使用** |
-| **点击后观察（旧方案）** | `observe_start` → action → `observe_wait` | 点击前安装观察器，点击后读取首个信号并清理。适合只需知道「有无弹窗」的场景 |
-| **短寿命消息/通知** | `scan_floats` 内置 toast 检测 | 自动调用 `detect_message`/`detect_notification`，捕获「操作成功」这类 ~100ms 延迟渲染的短暂提示 |
+| **当前浮层快照** | `observe_snapshot(only_visible=True, include_table_data=True, detail="full")` | 读取所有当前可见浮窗及 VTable 列头筛选、工具栏提示、列设置菜单，返回标题、类型、坐标、按钮、字段和表格数据。**优先用于交互前检查** |
+| **点击后观察** | `observe_start` → action → `observe_wait` | 点击前安装观察器，点击后读取首个信号并清理 |
+| **短寿命消息/通知** | `observe_start(signals=["notification","message",...])` → action → `observe_wait` | 观察器必须在动作前启动，避免漏掉短寿命 toast |
 | 弹窗清理 | `close_modal` | 清理残留弹窗/通知/消息，避免干扰后续交互 |
 
 ## 统一观察器优先级

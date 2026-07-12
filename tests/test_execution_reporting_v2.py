@@ -9,8 +9,7 @@ import pytest
 
 
 def test_business_assertion_prevents_false_pass_and_uses_execution_evidence():
-    import test_execution
-
+    from drissionpage_mcp.workflows import test_execution
     case = {
         "case_id": "SAVE-001",
         "case_title": "保存采购单",
@@ -65,8 +64,7 @@ def test_business_assertion_prevents_false_pass_and_uses_execution_evidence():
     ],
 )
 def test_supported_assertion_operators(operator, actual, expected):
-    import test_execution
-
+    from drissionpage_mcp.workflows import test_execution
     assertion = {"path": "value", "operator": operator}
     if expected is not None:
         assertion["value"] = expected
@@ -78,8 +76,7 @@ def test_supported_assertion_operators(operator, actual, expected):
 
 
 def test_contains_matches_nested_network_event_summary():
-    import test_execution
-
+    from drissionpage_mcp.workflows import test_execution
     response = {
         "ok": True,
         "signal": {
@@ -110,8 +107,7 @@ def test_contains_matches_nested_network_event_summary():
 
 
 def test_structured_recipe_hooks_and_cleanup_are_ordered():
-    import test_execution
-
+    from drissionpage_mcp.workflows import test_execution
     calls = []
 
     def run(action, _args):
@@ -142,8 +138,7 @@ def test_structured_recipe_hooks_and_cleanup_are_ordered():
 
 
 def test_reproduced_known_defect_is_xfailed_not_passed():
-    import test_execution
-
+    from drissionpage_mcp.workflows import test_execution
     case = {
         "case_id": "DEFECT-1",
         "known_defect": {"defect_id": "SALARY-DEL-001", "status": "open"},
@@ -164,8 +159,7 @@ def test_reproduced_known_defect_is_xfailed_not_passed():
 
 
 def test_setup_action_assertion_and_cleanup_failures_are_classified():
-    import test_execution
-
+    from drissionpage_mcp.workflows import test_execution
     setup = test_execution.execute_cases(
         [{"case_id": "SETUP", "automation_recipe": {"setup": [{"action": "reset"}], "steps": []}}],
         lambda *_: {"ok": False, "reason": "cannot reset"},
@@ -186,8 +180,7 @@ def test_setup_action_assertion_and_cleanup_failures_are_classified():
 
 
 def test_regression_detects_added_removed_status_performance_and_coverage():
-    import test_reporting
-
+    from drissionpage_mcp.workflows import test_reporting
     baseline = {
         "results": [
             {"case_id": "REMOVED", "status": "passed", "elapsed_ms": 10},
@@ -214,8 +207,7 @@ def test_regression_detects_added_removed_status_performance_and_coverage():
 
 
 def test_report_contains_execution_metrics_structured_defects_and_authoritative_coverage():
-    import test_reporting
-
+    from drissionpage_mcp.workflows import test_reporting
     execution = {
         "results": [
             {
@@ -258,8 +250,7 @@ def test_report_contains_execution_metrics_structured_defects_and_authoritative_
 
 
 def test_report_prefers_explicit_coverage_dimensions_over_legacy_top_level_total():
-    import test_reporting
-
+    from drissionpage_mcp.workflows import test_reporting
     coverage = {
         "coverage_summary": {
             "verified": 9,
@@ -278,8 +269,7 @@ def test_report_prefers_explicit_coverage_dimensions_over_legacy_top_level_total
 
 
 def test_report_renders_structured_known_defects_with_evidence():
-    import test_reporting
-
+    from drissionpage_mcp.workflows import test_reporting
     execution = {
         "results": [],
         "known_defects": [{
@@ -301,8 +291,7 @@ def test_report_renders_structured_known_defects_with_evidence():
 
 
 def test_report_separates_xfailed_known_defects_from_business_pass_rate():
-    import test_reporting
-
+    from drissionpage_mcp.workflows import test_reporting
     report = test_reporting.render_markdown({
         "results": [
             {"case_id": "PASS", "status": "passed", "steps": []},
@@ -316,8 +305,7 @@ def test_report_separates_xfailed_known_defects_from_business_pass_rate():
 
 
 def test_report_normalizes_windows_screenshot_paths_for_markdown_links():
-    import test_reporting
-
+    from drissionpage_mcp.workflows import test_reporting
     report = test_reporting.render_markdown({
         "results": [{
             "case_id": "WIN",
@@ -333,8 +321,7 @@ def test_report_normalizes_windows_screenshot_paths_for_markdown_links():
 
 
 def test_filter_recipe_quality_gate_rejects_stale_partial_match_pattern():
-    import test_execution
-
+    from drissionpage_mcp.workflows import test_execution
     reasons = test_execution.weak_recipe_reasons({
         "automation_recipe": [
             {"action": "explore_action", "args": {
@@ -358,8 +345,7 @@ def test_filter_recipe_quality_gate_rejects_stale_partial_match_pattern():
 
 
 def test_full_column_assertions_require_every_visible_row_to_match():
-    import test_execution
-
+    from drissionpage_mcp.workflows import test_execution
     case = {"case_id": "ALL", "automation_recipe": [{
         "action": "get_table_values",
         "assertions": [{"path": "values", "operator": "all_equals", "value": "冲压部门"}],
@@ -376,8 +362,7 @@ def test_full_column_assertions_require_every_visible_row_to_match():
 
 
 def test_query_filter_requires_a_successful_network_response(monkeypatch):
-    import server
-
+    from drissionpage_mcp import server
     monkeypatch.setattr(server.observe, "observe_start", lambda **_: {"ok": True})
     monkeypatch.setattr(server.filter_area, "submit_filter_area", lambda: {"ok": True, "clicked": "查询"})
     monkeypatch.setattr(server.browser_session, "get_active_frame", lambda: object())
@@ -395,8 +380,7 @@ def test_query_filter_requires_a_successful_network_response(monkeypatch):
 
 
 def test_query_filter_requires_vtable_loading_mask_to_finish(monkeypatch):
-    import server
-
+    from drissionpage_mcp import server
     monkeypatch.setattr(server.observe, "observe_start", lambda **_: {"ok": True})
     monkeypatch.setattr(server.filter_area, "submit_filter_area", lambda: {"ok": True, "clicked": "查询"})
     monkeypatch.setattr(server.observe, "observe_wait", lambda **_: {
@@ -413,8 +397,7 @@ def test_query_filter_requires_vtable_loading_mask_to_finish(monkeypatch):
 
 
 def test_query_filter_rejects_business_failure_and_summarizes_network(monkeypatch):
-    import server
-
+    from drissionpage_mcp import server
     monkeypatch.setattr(server.observe, "observe_start", lambda **_: {"ok": True})
     monkeypatch.setattr(server.filter_area, "submit_filter_area", lambda: {"ok": True})
     monkeypatch.setattr(server.observe, "observe_wait", lambda **_: {
@@ -443,8 +426,7 @@ def test_query_filter_rejects_business_failure_and_summarizes_network(monkeypatc
 
 
 def test_formal_recipe_rejects_js_and_non_vtable_coordinate_clicks():
-    import server
-
+    from drissionpage_mcp import server
     server._recipe_context.native_actions_only = True
     try:
         js_click = server._run_recipe_action("explore_action", {
@@ -461,8 +443,7 @@ def test_formal_recipe_rejects_js_and_non_vtable_coordinate_clicks():
 
 
 def test_formal_recipe_rechecks_dynamic_refs_for_coordinates_and_mutation():
-    import server
-
+    from drissionpage_mcp import server
     server._recipe_context.native_actions_only = True
     try:
         server._reset_recipe_context()
@@ -486,8 +467,7 @@ def test_formal_recipe_rechecks_dynamic_refs_for_coordinates_and_mutation():
 
 
 def test_formal_recipe_uses_drission_element_click_and_multi_click(monkeypatch):
-    import server
-
+    from drissionpage_mcp import server
     calls = []
 
     class Wait:
@@ -521,8 +501,7 @@ def test_formal_recipe_uses_drission_element_click_and_multi_click(monkeypatch):
 
 def test_native_observer_wait_uses_drission_listener_without_python_sleep(monkeypatch):
     import queue
-    import observe
-
+    from drissionpage_mcp.services import observe
     class Listener:
         def __init__(self):
             self.calls = []
@@ -552,11 +531,10 @@ def test_native_observer_wait_uses_drission_listener_without_python_sleep(monkey
 
 
 def test_run_test_cases_enables_native_mode_before_ready_gate(monkeypatch, tmp_path):
-    import config
-    import flow_evidence
-    import server
-    import test_execution
-
+    from drissionpage_mcp.core import config
+    from drissionpage_mcp.workflows import flow_evidence
+    from drissionpage_mcp import server
+    from drissionpage_mcp.workflows import test_execution
     monkeypatch.setattr(config, "SHOT_DIR", str(tmp_path))
     case_file = tmp_path / "cases.json"
     case_file.write_text(json.dumps({
@@ -589,9 +567,8 @@ def test_run_test_cases_enables_native_mode_before_ready_gate(monkeypatch, tmp_p
 
 
 def test_report_bundle_copies_execution_json_and_screenshots(monkeypatch, tmp_path):
-    import config
-    import server
-
+    from drissionpage_mcp.core import config
+    from drissionpage_mcp import server
     monkeypatch.setattr(config, "SHOT_DIR", str(tmp_path))
     screenshot = tmp_path / "source.png"
     screenshot.write_bytes(base64.b64decode(
@@ -630,8 +607,7 @@ def test_report_bundle_copies_execution_json_and_screenshots(monkeypatch, tmp_pa
      {"start": "2026/07/03", "end": "2026/07/11"}),
 ])
 def test_filter_value_evaluator_supports_page_operators(operator, values, expected):
-    import test_execution
-
+    from drissionpage_mcp.workflows import test_execution
     result = test_execution.evaluate_filter_values(values, operator, expected)
 
     assert result["ok"] is True
@@ -640,8 +616,7 @@ def test_filter_value_evaluator_supports_page_operators(operator, values, expect
 
 
 def test_filter_value_evaluator_rejects_mismatch_and_empty_result_by_default():
-    import test_execution
-
+    from drissionpage_mcp.workflows import test_execution
     mismatch = test_execution.evaluate_filter_values(["生产准备", "生产报工"], "等于", "生产报工")
     empty = test_execution.evaluate_filter_values([], "包含", "工位")
     invalid_date = test_execution.evaluate_filter_values(
@@ -661,8 +636,7 @@ def test_filter_value_evaluator_rejects_mismatch_and_empty_result_by_default():
 
 
 def test_verify_filter_query_configures_once_queries_once_and_checks_every_column(monkeypatch):
-    import server
-
+    from drissionpage_mcp import server
     configured = []
     monkeypatch.setattr(server.filter_area, "expand_filter_area", lambda: {"ok": True})
     monkeypatch.setattr(server.filter_area, "set_filter_condition", lambda field, operator, value, **kwargs: (
@@ -690,8 +664,7 @@ def test_verify_filter_query_configures_once_queries_once_and_checks_every_colum
 
 
 def test_verify_filter_query_fails_when_any_corresponding_column_mismatches(monkeypatch):
-    import server
-
+    from drissionpage_mcp import server
     monkeypatch.setattr(server.filter_area, "expand_filter_area", lambda: {"ok": True})
     monkeypatch.setattr(server.filter_area, "set_filter_condition", lambda *args, **kwargs: {"ok": True})
     monkeypatch.setattr(server, "_query_filter", lambda **kwargs: {"ok": True})
@@ -709,8 +682,7 @@ def test_verify_filter_query_fails_when_any_corresponding_column_mismatches(monk
 
 
 def test_recipe_quality_rejects_undeclared_mutation_and_malformed_assertions():
-    import test_execution
-
+    from drissionpage_mcp.workflows import test_execution
     mutation = {
         "case_id": "MUTATE",
         "automation_recipe": {"steps": [{
@@ -769,8 +741,7 @@ def test_recipe_quality_rejects_undeclared_mutation_and_malformed_assertions():
 
 
 def test_regression_classifies_direction_uses_strict_threshold_and_rejects_duplicate_ids():
-    import test_reporting
-
+    from drissionpage_mcp.workflows import test_reporting
     baseline = {
         "results": [
             {"case_id": "EXACT", "status": "passed", "elapsed_ms": 100},
@@ -820,8 +791,7 @@ def test_regression_classifies_direction_uses_strict_threshold_and_rejects_dupli
     assert added_failed["has_regressions"] is True
 
 def test_report_escapes_business_html_and_derives_xfailed_known_defect():
-    import test_reporting
-
+    from drissionpage_mcp.workflows import test_reporting
     report = test_reporting.render_markdown({
         "results": [{
             "case_id": "D001", "case_title": "<img src=x onerror=alert(1)> ![track](https://evil)",
@@ -843,9 +813,8 @@ def test_report_escapes_business_html_and_derives_xfailed_known_defect():
 
 
 def test_report_bundle_rejects_spoofed_image(monkeypatch, tmp_path):
-    import config
-    import server
-
+    from drissionpage_mcp.core import config
+    from drissionpage_mcp import server
     monkeypatch.setattr(config, "SHOT_DIR", str(tmp_path))
     forged = tmp_path / "forged.png"
     forged.write_bytes(b"\x89PNG\r\n\x1a\nnot-an-image")
@@ -871,8 +840,7 @@ def test_report_bundle_rejects_spoofed_image(monkeypatch, tmp_path):
 
 
 def test_browser_ready_gate_checks_active_frame_without_module_name(monkeypatch):
-    import server
-
+    from drissionpage_mcp import server
     calls = []
     monkeypatch.setattr(server, "connect", lambda *_: calls.append("connect") or {"ok": True})
     monkeypatch.setattr(server, "check_session", lambda: {"expired": False})
@@ -889,11 +857,10 @@ def test_browser_ready_gate_checks_active_frame_without_module_name(monkeypatch)
 
 
 def test_run_test_cases_skips_browser_when_every_case_fails_preflight(monkeypatch, tmp_path):
-    import config
-    import flow_evidence
-    import resource_store
-    import server
-
+    from drissionpage_mcp.core import config
+    from drissionpage_mcp.workflows import flow_evidence
+    from drissionpage_mcp.resources import resource_store
+    from drissionpage_mcp import server
     monkeypatch.setattr(config, "SHOT_DIR", str(tmp_path))
     monkeypatch.setattr(flow_evidence, "_active_flow", None)
     monkeypatch.setattr(flow_evidence, "_last_flow", None)
@@ -917,9 +884,8 @@ def test_run_test_cases_skips_browser_when_every_case_fails_preflight(monkeypatc
 
 
 def test_report_bundle_resolves_screenshot_relative_to_execution_file(monkeypatch, tmp_path):
-    import config
-    import server
-
+    from drissionpage_mcp.core import config
+    from drissionpage_mcp import server
     monkeypatch.setattr(config, "SHOT_DIR", str(tmp_path))
     source_dir = tmp_path / "saved-run"
     source_assets = source_dir / "assets"
@@ -952,10 +918,9 @@ def test_report_bundle_resolves_screenshot_relative_to_execution_file(monkeypatc
 
 
 def test_report_bundle_preserves_more_than_default_sanitize_limit(monkeypatch, tmp_path):
-    import config
-    import resource_store
-    import server
-
+    from drissionpage_mcp.core import config
+    from drissionpage_mcp.resources import resource_store
+    from drissionpage_mcp import server
     monkeypatch.setattr(config, "SHOT_DIR", str(tmp_path))
     execution_file = tmp_path / "large-execution.json"
     results = [
@@ -981,9 +946,8 @@ def test_report_bundle_preserves_more_than_default_sanitize_limit(monkeypatch, t
 
 
 def test_generate_report_rejects_non_object_results_and_non_list_supplements(monkeypatch, tmp_path):
-    import config
-    import server
-
+    from drissionpage_mcp.core import config
+    from drissionpage_mcp import server
     monkeypatch.setattr(config, "SHOT_DIR", str(tmp_path))
     malformed = tmp_path / "malformed.json"
     malformed.write_text(json.dumps({"results": [1]}), encoding="utf-8")
@@ -1001,8 +965,7 @@ def test_generate_report_rejects_non_object_results_and_non_list_supplements(mon
 
 
 def test_recipe_gate_requires_business_and_cleanup_assertions_per_query_window():
-    import test_execution
-
+    from drissionpage_mcp.workflows import test_execution
     root_only = test_execution.weak_recipe_reasons({
         "case_id": "ROOT",
         "automation_recipe": {"steps": [{
@@ -1047,8 +1010,7 @@ def test_recipe_gate_requires_business_and_cleanup_assertions_per_query_window()
 
 
 def test_command_validation_precedes_action_and_serialized_false_is_falsy(monkeypatch):
-    import test_execution
-
+    from drissionpage_mcp.workflows import test_execution
     calls = []
     assertions = [
         {"path": "value", "operator": "equals", "value": index}
@@ -1075,10 +1037,9 @@ def test_command_validation_precedes_action_and_serialized_false_is_falsy(monkey
 
 
 def test_all_rejected_suite_does_not_touch_browser_or_active_flow(monkeypatch, tmp_path):
-    import config
-    import flow_evidence
-    import server
-
+    from drissionpage_mcp.core import config
+    from drissionpage_mcp.workflows import flow_evidence
+    from drissionpage_mcp import server
     monkeypatch.setattr(config, "SHOT_DIR", str(tmp_path))
     case_file = tmp_path / "rejected-only.json"
     case_file.write_text(json.dumps({
@@ -1109,11 +1070,10 @@ def test_all_rejected_suite_does_not_touch_browser_or_active_flow(monkeypatch, t
 
 
 def test_run_test_cases_preserves_source_order_across_preflight(monkeypatch, tmp_path):
-    import config
-    import flow_evidence
-    import server
-    import test_execution
-
+    from drissionpage_mcp.core import config
+    from drissionpage_mcp.workflows import flow_evidence
+    from drissionpage_mcp import server
+    from drissionpage_mcp.workflows import test_execution
     monkeypatch.setattr(config, "SHOT_DIR", str(tmp_path))
     case_file = tmp_path / "ordered.json"
     business = [{
@@ -1145,8 +1105,7 @@ def test_run_test_cases_preserves_source_order_across_preflight(monkeypatch, tmp
 
 
 def test_recipe_runtime_rejects_boolean_numeric_and_string_boolean_args():
-    import server
-
+    from drissionpage_mcp import server
     timeout = server._run_recipe_action("find_elements", {"locator": "text:查询", "timeout": True})
     raw = server._run_recipe_action("get_table_values", {"column_title": "状态", "raw": "false"})
 
@@ -1155,9 +1114,8 @@ def test_recipe_runtime_rejects_boolean_numeric_and_string_boolean_args():
 
 
 def test_report_rejects_invalid_baseline_and_cross_module_supplement(monkeypatch, tmp_path):
-    import config
-    import server
-
+    from drissionpage_mcp.core import config
+    from drissionpage_mcp import server
     monkeypatch.setattr(config, "SHOT_DIR", str(tmp_path))
     current = tmp_path / "current-report.json"
     baseline = tmp_path / "bad-baseline.json"
@@ -1187,10 +1145,9 @@ def test_report_rejects_invalid_baseline_and_cross_module_supplement(monkeypatch
 
 
 def test_report_bundles_coverage_evidence_and_excludes_harness_from_business_rate(monkeypatch, tmp_path):
-    import config
-    import resource_store
-    import server
-
+    from drissionpage_mcp.core import config
+    from drissionpage_mcp.resources import resource_store
+    from drissionpage_mcp import server
     monkeypatch.setattr(config, "SHOT_DIR", str(tmp_path))
     screenshot = tmp_path / "coverage.png"
     screenshot.write_bytes(base64.b64decode(
@@ -1224,8 +1181,7 @@ def test_report_bundles_coverage_evidence_and_excludes_harness_from_business_rat
 
 
 def test_report_deduplicates_known_defect_and_regression_rejects_duplicate_coverage():
-    import test_reporting
-
+    from drissionpage_mcp.workflows import test_reporting
     report = test_reporting.render_markdown({
         "known_defects": [{"defect_id": "BUG-1", "title": "删除失败"}],
         "results": [{
@@ -1247,9 +1203,8 @@ def test_report_deduplicates_known_defect_and_regression_rejects_duplicate_cover
 
 
 def test_filter_range_rejects_lexical_bounds_and_boolean_coercion():
-    import server
-    import test_execution
-
+    from drissionpage_mcp import server
+    from drissionpage_mcp.workflows import test_execution
     lexical = test_execution.evaluate_filter_values(["B"], "范围", ["A", "Z"])
     boolean_number = test_execution.evaluate_filter_values([True], "等于", 1)
     invalid_flags = server._verify_filter_query([], allow_empty="false")

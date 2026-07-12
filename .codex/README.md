@@ -10,8 +10,8 @@ Codex reads `.codex/config.toml` in trusted projects. This project configures:
 - `drissionpage-mcp`: the project-specific DrissionPage MCP server.
 
 Codex, Claude, and Trae all call `mcp-service/launcher.py`. The launcher fixes the
-runtime directory to `mcp-service/`, so the local virtual environment and
-`configs/dp_configs.ini` remain portable with the repository.
+runtime directory to `mcp-service/`, so its local virtual environment and
+`mcp-service/configs/dp_configs.ini` remain portable with the repository.
 
 Verify from the repository root:
 
@@ -37,5 +37,6 @@ The Codex adapter skill is:
 .agents/skills/test-case-generator-dp/SKILL.md
 ```
 
-The existing `.claude/skills/test-case-generator-dp` workflow remains a
-read-only upstream reference until the shared workflow is extracted.
+The `.claude/skills/test-case-generator-dp` directory is the shared workflow
+source; the Codex adapter reads its references and scripts without duplicating
+the MCP implementation.

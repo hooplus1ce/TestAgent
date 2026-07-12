@@ -88,6 +88,11 @@ EXPECTED_PUBLIC_TOOLS = {
     "set_permission",
     "get_element_coords",
     "set_date",
+    "role_session_open",
+    "role_session_login",
+    "role_session_activate",
+    "role_session_list",
+    "role_session_close",
 }
 
 REMOVED_DUPLICATE_TOOLS = {
@@ -122,7 +127,7 @@ REMOVED_DUPLICATE_TOOLS = {
 
 
 def _tool_names():
-    import server
+    from drissionpage_mcp import server
     tools = asyncio.run(server.mcp.list_tools())
     return {t.name for t in tools}
 
@@ -135,8 +140,7 @@ def test_public_tool_surface():
 
 def test_public_tools_are_grouped_in_caps():
     """公开工具必须进入 capability 分组，避免 tools/list 与能力说明不一致。"""
-    import caps
-
+    from drissionpage_mcp.core import caps
     grouped_tools = {
         tool
         for tools in caps.CAP_GROUPS.values()
@@ -147,8 +151,7 @@ def test_public_tools_are_grouped_in_caps():
 
 def test_public_tools_include_mcp_annotations():
     """关键工具应暴露 MCP tool annotations，帮助客户端区分只读/写入风险。"""
-    import server
-
+    from drissionpage_mcp import server
     tools = {t.name: t for t in asyncio.run(server.mcp.list_tools())}
 
     assert tools["find_elements"].annotations.readOnlyHint is True
@@ -170,8 +173,7 @@ def test_public_tools_include_mcp_annotations():
 
 def test_resources_and_templates_are_exposed():
     """MCP resources 应暴露 caps/context 和证据文件读取模板。"""
-    import server
-
+    from drissionpage_mcp import server
     resources = asyncio.run(server.mcp.list_resources())
     resource_uris = {str(r.uri) for r in resources}
 
@@ -187,8 +189,7 @@ def test_resources_and_templates_are_exposed():
 
 
 def test_caps_resource_returns_json():
-    import server
-
+    from drissionpage_mcp import server
     contents = asyncio.run(server.mcp.read_resource("drissionpage-mcp://caps"))
     data = json.loads(contents[0].content)
 
@@ -197,9 +198,8 @@ def test_caps_resource_returns_json():
 
 
 def test_evidence_resource_template_reads_encoded_nested_file(monkeypatch, tmp_path):
-    import resource_store
-    import server
-
+    from drissionpage_mcp.resources import resource_store
+    from drissionpage_mcp import server
     monkeypatch.setattr(resource_store.config, "SHOT_DIR", str(tmp_path))
     nested = tmp_path / "生产动态表"
     nested.mkdir()
@@ -211,16 +211,13 @@ def test_evidence_resource_template_reads_encoded_nested_file(monkeypatch, tmp_p
     assert contents[0].content == "tag: body"
 
 
-def test_drission_ui_caps_filters_public_tools():
-    """DRISSION_UI_CAPS 应实际影响 MCP tools/list，而不只是报告能力分组。"""
+def test_drissionpage_caps_filters_public_tools():
+    """DRISSIONPAGE_MCP_CAPS 应实际影响 MCP tools/list，而不只是报告能力分组。"""
     env = os.environ.copy()
-    env.pop("DRISSIONPAGE_MCP_CAPS", None)
-    env["DRISSION_UI_CAPS"] = "core"
+    env["DRISSIONPAGE_MCP_CAPS"] = "core"
     script = """
 import asyncio, json, sys
-sys.path.insert(0, 'mcp-servers/drission-ui')
-import server
-
+from drissionpage_mcp import server
 async def main():
     tools = await server.mcp.list_tools()
     print(json.dumps(sorted(t.name for t in tools)))
@@ -244,13 +241,10 @@ asyncio.run(main())
 
 def test_every_capability_group_exposes_exact_tool_union():
     """每个分组独立启动时只暴露该组工具和常驻的能力查询工具。"""
-    import caps
-
+    from drissionpage_mcp.core import caps
     script = """
 import asyncio, json, sys
-sys.path.insert(0, 'mcp-servers/drissionpage-mcp')
-import server
-
+from drissionpage_mcp import server
 async def main():
     tools = await server.mcp.list_tools()
     print(json.dumps(sorted(t.name for t in tools)))
@@ -260,7 +254,6 @@ asyncio.run(main())
     root = os.path.dirname(os.path.dirname(__file__))
     for capability, grouped_tools in caps.CAP_GROUPS.items():
         env = os.environ.copy()
-        env.pop("DRISSION_UI_CAPS", None)
         env["DRISSIONPAGE_MCP_CAPS"] = capability
         result = subprocess.run(
             [sys.executable, "-c", script],
@@ -277,8 +270,7 @@ asyncio.run(main())
 
 def test_list_parameters_have_typed_items_schema():
     """常用 list 入参应生成精确 items schema，帮助 Agent 正确构造参数。"""
-    import server
-
+    from drissionpage_mcp import server
     tools = {t.name: t for t in asyncio.run(server.mcp.list_tools())}
     checks = [
         ("find_batch", "locators"),
@@ -294,8 +286,7 @@ def test_list_parameters_have_typed_items_schema():
 
 def test_explore_action_uses_default_observe_signals_without_listen_targets():
     """explore_action 默认观察信号不应依赖未定义局部变量。"""
-    import server
-
+    from drissionpage_mcp import server
     calls = {}
 
     with patch.object(server.observe, "observe_start", side_effect=lambda **kwargs: calls.setdefault("observe_start", kwargs) or {"ok": True}), \
@@ -312,8 +303,7 @@ def test_explore_action_uses_default_observe_signals_without_listen_targets():
 
 def test_explore_action_adds_network_signal_when_listen_targets_present():
     """传 listen_targets 时默认观察信号应包含 network。"""
-    import server
-
+    from drissionpage_mcp import server
     calls = {}
 
     with patch.object(server.observe, "observe_start", side_effect=lambda **kwargs: calls.setdefault("observe_start", kwargs) or {"ok": True}), \
@@ -330,8 +320,7 @@ def test_explore_action_adds_network_signal_when_listen_targets_present():
 
 def test_explore_action_button_target_resolves_visible_toolbar_action():
     """语义按钮目标应先扫描可见工具栏动作，再用坐标点击，避免命中文本隐藏节点。"""
-    import server
-
+    from drissionpage_mcp import server
     class FakeActions:
         def __init__(self):
             self.moves = []
@@ -372,8 +361,7 @@ def test_explore_action_button_target_resolves_visible_toolbar_action():
 
 def test_explore_action_field_target_infers_calendar_fast_mode():
     """字段目标包含“日期/时间”时，fast 模式应只等待 calendar 且不附加快照。"""
-    import server
-
+    from drissionpage_mcp import server
     calls = {}
 
     with patch.object(server.observe, "observe_start", side_effect=lambda **kwargs: calls.setdefault("observe_start", kwargs) or {"ok": True}), \
@@ -398,8 +386,7 @@ def test_explore_action_field_target_infers_calendar_fast_mode():
 
 def test_explore_action_observe_mode_none_skips_observer():
     """纯操作场景可跳过 observe_start/observe_wait，保留动作执行结果。"""
-    import server
-
+    from drissionpage_mcp import server
     class FakeActions:
         def __init__(self):
             self.clicked = False
@@ -434,8 +421,7 @@ def test_explore_action_observe_mode_none_skips_observer():
 
 def test_explore_action_capture_after_disables_snapshot_by_default():
     """capture_after 已会返回 after 模型，默认不再重复附带 snapshot_after。"""
-    import server
-
+    from drissionpage_mcp import server
     class FakeActions:
         def move_to(self, point, duration=0):
             return self
@@ -466,8 +452,7 @@ def test_explore_action_capture_after_disables_snapshot_by_default():
 
 
 def test_explore_action_routes_text_input_to_standard_input_tool():
-    import server
-
+    from drissionpage_mcp import server
     fake_tab = SimpleNamespace()
     with patch.object(server.modal, "clear_transient_overlays", return_value={"ok": True, "closed": [], "errors": []}), \
          patch.object(server.browser_session, "get_tab", return_value=fake_tab), \
@@ -487,9 +472,7 @@ def test_drissionpage_observe_wait_compacts_and_dedupes_events():
 import json
 import sys
 import time
-sys.path.insert(0, 'mcp-servers/drissionpage-mcp')
-import observe
-
+from drissionpage_mcp.services import observe
 event = {
     "type": "interactive",
     "scope": "iframe",
@@ -552,9 +535,7 @@ def test_drissionpage_set_date_tool_and_date_normalization():
 import asyncio
 import json
 import sys
-sys.path.insert(0, 'mcp-servers/drissionpage-mcp')
-import server
-
+from drissionpage_mcp import server
 async def main():
     tools = await server.mcp.list_tools()
     data = {
@@ -596,9 +577,7 @@ import json
 import sys
 from types import SimpleNamespace
 from unittest.mock import patch
-sys.path.insert(0, 'mcp-servers/drissionpage-mcp')
-import server
-
+from drissionpage_mcp import server
 class FakeElement:
     def __init__(self):
         self.click_calls = []
@@ -672,14 +651,14 @@ def test_table_facade_registered():
 
 
 def test_scan_table_routes_to_vtable_backend():
-    import server
+    from drissionpage_mcp import server
     with patch.object(server.vtable, "scan_vtable_columns", return_value={"ok": True, "columns": []}) as scan:
         assert server.scan_table(kind="vtable") == {"ok": True, "columns": [], "kind": "vtable"}
         scan.assert_called_once_with(50)
 
 
 def test_scan_table_routes_to_selected_visible_html_backend():
-    import server
+    from drissionpage_mcp import server
     tables = [{"index": 0}, {"index": 1}]
     with patch.object(server.html_table, "scan_html_table", return_value={"ok": True, "tables": tables}) as scan:
         result = server.scan_table(kind="html", table_index=1)
@@ -692,7 +671,7 @@ def test_scan_table_routes_to_selected_visible_html_backend():
 
 
 def test_scan_table_auto_falls_back_to_html_backend():
-    import server
+    from drissionpage_mcp import server
     with patch.object(server.vtable, "scan_vtable_columns", return_value={"ok": False, "reason": "no vtable"}), \
          patch.object(server.html_table, "scan_html_table", return_value={"ok": True, "tables": [{"index": 0}]}) as scan_html:
         result = server.scan_table(kind="auto")
@@ -704,7 +683,7 @@ def test_scan_table_auto_falls_back_to_html_backend():
 
 
 def test_get_table_values_routes_to_html_backend_with_scalar_values():
-    import server
+    from drissionpage_mcp import server
     backend = {"ok": True, "values": ["SO-1"], "cells": [{"row": 0, "text": "SO-1"}]}
     with patch.object(server.html_table, "get_html_table_values", return_value=backend) as get_values:
         result = server.get_table_values("订单号", kind="html")
@@ -714,8 +693,7 @@ def test_get_table_values_routes_to_html_backend_with_scalar_values():
 
 
 def test_html_table_facade_rejects_missing_index_and_raw_mode():
-    import server
-
+    from drissionpage_mcp import server
     with patch.object(server.html_table, "scan_html_table", return_value={"ok": True, "tables": []}):
         missing = server.scan_table(kind="html", table_index=0)
     raw = server.get_table_values("订单号", kind="html", raw=True)
@@ -730,8 +708,7 @@ def test_html_table_facade_rejects_missing_index_and_raw_mode():
 
 
 def test_get_all_table_data_auto_prefers_vtable_backend():
-    import server
-
+    from drissionpage_mcp import server
     with patch.object(server.page_model.vtable, "scan_vtable_columns", return_value={
         "ok": True,
         "columns": [{"title": "订单号", "col": 1, "bodyBehavior": "none"}],
@@ -748,8 +725,7 @@ def test_get_all_table_data_auto_prefers_vtable_backend():
 
 
 def test_vtable_full_read_uses_unique_leaf_headers_and_skips_controls():
-    import page_model
-
+    from drissionpage_mcp.services import page_model
     scan = {
         "ok": True,
         "columns": [
@@ -777,8 +753,7 @@ def test_vtable_full_read_uses_unique_leaf_headers_and_skips_controls():
 
 
 def test_vtable_column_resolution_rejects_duplicate_titles():
-    import server
-
+    from drissionpage_mcp import server
     with patch.object(server.vtable, "scan_vtable_columns", return_value={
         "ok": True,
         "columns": [
@@ -793,8 +768,7 @@ def test_vtable_column_resolution_rejects_duplicate_titles():
 
 
 def test_get_all_table_data_rejects_html_raw_mode():
-    import server
-
+    from drissionpage_mcp import server
     result = server.get_all_table_data(kind="html", raw=True)
 
     assert result["ok"] is False
@@ -803,8 +777,7 @@ def test_get_all_table_data_rejects_html_raw_mode():
 
 
 def test_selection_scan_rejects_negative_row_without_mutating_page():
-    import server
-
+    from drissionpage_mcp import server
     with patch.object(server.page_model, "scan_toolbar_actions") as scan_actions, \
          patch.object(server.vtable, "click_cell") as click_cell:
         result = server.scan_action_availability_by_selection(row=-1)
@@ -816,8 +789,7 @@ def test_selection_scan_rejects_negative_row_without_mutating_page():
 
 
 def test_selection_scan_does_not_click_when_before_snapshot_fails():
-    import server
-
+    from drissionpage_mcp import server
     with patch.object(server.page_model, "scan_toolbar_actions", return_value={
         "ok": False, "reason": "scan failed",
     }), patch.object(server.vtable, "click_cell") as click_cell:
@@ -829,8 +801,7 @@ def test_selection_scan_does_not_click_when_before_snapshot_fails():
 
 
 def test_html_pagination_rejects_click_without_page_transition():
-    import page_model
-
+    from drissionpage_mcp.services import page_model
     class ButtonWait:
         def clickable(self, **kwargs):
             return True
@@ -873,8 +844,7 @@ def test_html_pagination_rejects_click_without_page_transition():
 
 
 def test_scan_floats_includes_ant_calendar_by_dom_presence():
-    import page_model
-
+    from drissionpage_mcp.services import page_model
     captured_js = []
 
     def fake_run_json(target, js, default):
@@ -891,8 +861,8 @@ def test_scan_floats_includes_ant_calendar_by_dom_presence():
     with patch.object(page_model, "_targets", return_value=(object(), None, [("top", object())])), \
          patch.object(page_model, "_run_json", side_effect=fake_run_json), \
          patch.object(page_model.browser_session, "get_active_tab_name", return_value="active"), \
-         patch("observe.detect_message", return_value={}), \
-         patch("observe.detect_notification", return_value={}):
+         patch("drissionpage_mcp.services.observe.detect_message", return_value={}), \
+         patch("drissionpage_mcp.services.observe.detect_notification", return_value={}):
         result = page_model.scan_floats()
 
     assert result["count"] == 1
@@ -914,8 +884,7 @@ def test_scan_floats_includes_ant_calendar_by_dom_presence():
 
 
 def test_scan_form_fields_does_not_fall_back_to_page_for_missing_overlay_scope():
-    import page_model
-
+    from drissionpage_mcp.services import page_model
     scripts = []
 
     def capture(target, js, default):
@@ -932,8 +901,7 @@ def test_scan_form_fields_does_not_fall_back_to_page_for_missing_overlay_scope()
 
 
 def test_scan_floats_classifies_top_confirm_without_losing_flag():
-    import page_model
-
+    from drissionpage_mcp.services import page_model
     def fake_run_json(target, js, default):
         return {"ok": True, "floats": [{"type": "modal", "isConfirm": True}]}
 
@@ -948,8 +916,7 @@ def test_scan_floats_classifies_top_confirm_without_losing_flag():
 
 
 def test_scan_floats_includes_visible_vtable_filter_menu_by_display_state():
-    import page_model
-
+    from drissionpage_mcp.services import page_model
     captured_js = []
 
     def fake_run_json(target, js, default):
@@ -971,8 +938,8 @@ def test_scan_floats_includes_visible_vtable_filter_menu_by_display_state():
     with patch.object(page_model, "_targets", return_value=(object(), None, [("top", object())])), \
          patch.object(page_model, "_run_json", side_effect=fake_run_json), \
          patch.object(page_model.browser_session, "get_active_tab_name", return_value="active"), \
-         patch("observe.detect_message", return_value={}), \
-         patch("observe.detect_notification", return_value={}):
+         patch("drissionpage_mcp.services.observe.detect_message", return_value={}), \
+         patch("drissionpage_mcp.services.observe.detect_notification", return_value={}):
         result = page_model.scan_floats()
 
     assert result["count"] == 1
@@ -987,8 +954,7 @@ def test_scan_floats_includes_visible_vtable_filter_menu_by_display_state():
 
 
 def test_scan_floats_includes_visible_vtable_tooltip_and_menu_by_shown_class():
-    import page_model
-
+    from drissionpage_mcp.services import page_model
     captured_js = []
 
     def fake_run_json(target, js, default):
@@ -1024,8 +990,8 @@ def test_scan_floats_includes_visible_vtable_tooltip_and_menu_by_shown_class():
     with patch.object(page_model, "_targets", return_value=(object(), None, [("top", object())])), \
          patch.object(page_model, "_run_json", side_effect=fake_run_json), \
          patch.object(page_model.browser_session, "get_active_tab_name", return_value="active"), \
-         patch("observe.detect_message", return_value={}), \
-         patch("observe.detect_notification", return_value={}):
+         patch("drissionpage_mcp.services.observe.detect_message", return_value={}), \
+         patch("drissionpage_mcp.services.observe.detect_notification", return_value={}):
         result = page_model.scan_floats()
 
     assert result["count"] == 2
@@ -1041,8 +1007,7 @@ def test_scan_floats_includes_visible_vtable_tooltip_and_menu_by_shown_class():
 
 
 def test_observe_start_watches_vtable_filter_menu_as_overlay():
-    import observe
-
+    from drissionpage_mcp.services import observe
     assert ".vtable-filter-menu" in observe._INSTALL_OBSERVER_JS
     assert ".vtable__bubble-tooltip-element" in observe._INSTALL_OBSERVER_JS
     assert ".vtable__menu-element" in observe._INSTALL_OBSERVER_JS
@@ -1078,11 +1043,9 @@ def test_drissionpage_observer_and_snapshot_include_vtable_filter_menu():
     script = r"""
 import json
 import sys
-sys.path.insert(0, 'mcp-servers/drissionpage-mcp')
-import observe
-import page_model
-import ui_contract
-
+from drissionpage_mcp.services import observe
+from drissionpage_mcp.services import page_model
+from drissionpage_mcp.core import ui_contract
 source_consts = (page_model._COMMON_JS + "\n" + "\n".join(str(c) for c in page_model.scan_floats.__code__.co_consts) + "\n" + "\n".join(ui_contract.FLOAT_ROOTS))
 data = {
     "observer_selector": ".vtable-filter-menu" in observe._INSTALL_OBSERVER_JS,
@@ -1130,9 +1093,8 @@ print(json.dumps(data, ensure_ascii=False, sort_keys=True))
 
 
 def test_observe_snapshot_wraps_scan_floats_as_unified_overlays():
-    import observe
-    import page_model
-
+    from drissionpage_mcp.services import observe
+    from drissionpage_mcp.services import page_model
     with patch.object(page_model, "scan_floats", return_value={
         "ok": True,
         "count": 1,
@@ -1153,8 +1115,7 @@ def test_observe_snapshot_wraps_scan_floats_as_unified_overlays():
 
 
 def test_observe_start_creates_active_session():
-    import observe
-
+    from drissionpage_mcp.services import observe
     fake_tab = SimpleNamespace(url="https://example.test/top")
     fake_frame = SimpleNamespace(url="https://example.test/frame")
 
@@ -1186,8 +1147,7 @@ def test_observe_start_creates_active_session():
 
 
 def test_observer_baseline_and_ui_event_priority_are_stable():
-    import observe
-
+    from drissionpage_mcp.services import observe
     before_click = observe._observer_script(False)
     after_click = observe._observer_script(True)
     assert "var CAPTURE_EXISTING = false;" in before_click
@@ -1211,8 +1171,7 @@ def test_observer_baseline_and_ui_event_priority_are_stable():
 
 
 def test_observe_wait_attaches_snapshot_after_signal():
-    import observe
-
+    from drissionpage_mcp.services import observe
     sess = {
         "active": True,
         "sigset": {"overlay"},
@@ -1244,7 +1203,7 @@ def test_observe_wait_attaches_snapshot_after_signal():
 
 
 def test_click_table_cell_routes_to_vtable_backend_by_col():
-    import server
+    from drissionpage_mcp import server
     with patch.object(server.modal, "clear_transient_overlays", return_value={"ok": True, "closed": [], "errors": []}), \
          patch.object(server.vtable, "click_cell", return_value={"ok": True, "col": 2, "row": 1}) as click_cell:
         assert server.click_table_cell(row=1, col=2, kind="vtable") == {"ok": True, "col": 2, "row": 1, "kind": "vtable"}
@@ -1252,7 +1211,7 @@ def test_click_table_cell_routes_to_vtable_backend_by_col():
 
 
 def test_vtable_action_routes_to_backend_by_column_title():
-    import server
+    from drissionpage_mcp import server
     with patch.object(server, "_find_vtable_col", return_value=(5, None)) as find_col, \
          patch.object(server.vtable, "vtable_action", return_value={"ok": True, "action": "drag", "col": 5, "row": 2}) as action:
         result = server.vtable_action(action="drag", row=2, column_title="计划开始",
@@ -1274,7 +1233,7 @@ def test_vtable_action_routes_to_backend_by_column_title():
 
 
 def test_get_vtable_cell_render_info_routes_to_backend_by_column_title():
-    import server
+    from drissionpage_mcp import server
     with patch.object(server, "_find_vtable_col", return_value=(24, None)) as find_col, \
          patch.object(server.vtable, "get_cell_render_info", return_value={
              "ok": True,
@@ -1292,7 +1251,7 @@ def test_get_vtable_cell_render_info_routes_to_backend_by_column_title():
 
 
 def test_get_vtable_cell_icons_routes_to_backend_by_col():
-    import server
+    from drissionpage_mcp import server
     with patch.object(server.vtable, "get_cell_icons", return_value={
         "ok": True,
         "icons": [{"index": 0, "name": "edit", "viewportX": 10, "viewportY": 20}],
@@ -1306,7 +1265,7 @@ def test_get_vtable_cell_icons_routes_to_backend_by_col():
 
 
 def test_vtable_action_passes_cell_icon_index_to_backend():
-    import server
+    from drissionpage_mcp import server
     with patch.object(server.vtable, "vtable_action", return_value={
         "ok": True,
         "target": "cell-icon",
@@ -1330,7 +1289,7 @@ def test_vtable_action_passes_cell_icon_index_to_backend():
 
 
 def test_hover_table_cell_routes_to_vtable_action():
-    import server
+    from drissionpage_mcp import server
     with patch.object(server.vtable, "vtable_action", return_value={"ok": True, "action": "hover", "col": 2, "row": 1}) as action:
         assert server.hover_table_cell(row=1, col=2, kind="vtable", duration=0.2) == {
             "ok": True,
@@ -1347,10 +1306,8 @@ def test_drissionpage_vtable_action_tool_is_public_and_grouped():
 import asyncio
 import json
 import sys
-sys.path.insert(0, 'mcp-servers/drissionpage-mcp')
-import caps
-import server
-
+from drissionpage_mcp.core import caps
+from drissionpage_mcp import server
 async def main():
     tools = await server.mcp.list_tools()
     names = {tool.name for tool in tools}
@@ -1383,8 +1340,7 @@ asyncio.run(main())
 
 def test_write_synchronized_serializes():
     """write_synchronized 装饰器应串行化写操作。"""
-    import server
-
+    from drissionpage_mcp import server
     results = []
 
     @server.write_synchronized
@@ -1408,8 +1364,7 @@ def test_write_synchronized_serializes():
 
 def test_synchronized_returns_value():
     """write_synchronized 不改变函数返回值。"""
-    import server
-
+    from drissionpage_mcp import server
     @server.write_synchronized
     def add(a, b):
         return a + b
@@ -1419,8 +1374,7 @@ def test_synchronized_returns_value():
 
 def test_write_owner_can_reenter_through_read_tool():
     """执行套件持有写锁时必须能调用只读断言工具，不能自锁。"""
-    import server
-
+    from drissionpage_mcp import server
     result = []
 
     @server.read_synchronized
@@ -1486,8 +1440,7 @@ class _FakeListen:
 
 
 def test_scan_controls_uses_drission_viewport_click_point():
-    import server
-
+    from drissionpage_mcp import server
     class FakeElement:
         tag = "button"
         text = "查 询"
@@ -1512,8 +1465,7 @@ def test_scan_controls_uses_drission_viewport_click_point():
 
 
 def test_listen_start_sets_http_listener_state_for_drissionpage_42():
-    import server
-
+    from drissionpage_mcp import server
     fake_listen = _FakeListen()
     fake_tab = SimpleNamespace(listen=fake_listen)
 
@@ -1532,8 +1484,7 @@ def test_listen_start_sets_http_listener_state_for_drissionpage_42():
 
 
 def test_listen_start_falls_back_to_get_post_for_unknown_method():
-    import server
-
+    from drissionpage_mcp import server
     fake_listen = _FakeListen()
     fake_tab = SimpleNamespace(listen=fake_listen)
 
@@ -1546,8 +1497,7 @@ def test_listen_start_falls_back_to_get_post_for_unknown_method():
 
 
 def test_listen_wait_passes_fit_count_to_drissionpage():
-    import server
-
+    from drissionpage_mcp import server
     fake_listen = _FakeListen(wait_return=None)
     fake_tab = SimpleNamespace(listen=fake_listen)
 
@@ -1559,8 +1509,7 @@ def test_listen_wait_passes_fit_count_to_drissionpage():
 
 
 def test_listen_ws_start_sets_websocket_listener_state_for_drissionpage_42():
-    import server
-
+    from drissionpage_mcp import server
     fake_listen = _FakeListen()
     fake_tab = SimpleNamespace(listen=fake_listen)
 
@@ -1579,8 +1528,7 @@ def test_listen_ws_start_sets_websocket_listener_state_for_drissionpage_42():
 
 
 def test_network_record_start_sets_http_listener_state():
-    import server
-
+    from drissionpage_mcp import server
     fake_listen = _FakeListen()
     fake_tab = SimpleNamespace(listen=fake_listen)
 
@@ -1600,8 +1548,7 @@ def test_network_record_start_sets_http_listener_state():
 
 
 def test_network_record_stop_returns_packet_timeline():
-    import server
-
+    from drissionpage_mcp import server
     packet = SimpleNamespace(
         url="https://example.test/gateway",
         method="POST",
@@ -1625,8 +1572,7 @@ def test_network_record_stop_returns_packet_timeline():
 
 
 def test_browser_console_messages_collects_and_filters():
-    import server
-
+    from drissionpage_mcp import server
     class FakeConsole:
         def __init__(self):
             self.listening = False
@@ -1666,8 +1612,7 @@ def test_browser_console_messages_collects_and_filters():
 
 
 def test_browser_get_element_state_reads_only_requested_drission_property():
-    import server
-
+    from drissionpage_mcp import server
     element = SimpleNamespace(states=SimpleNamespace(is_displayed=True))
     with patch.object(server.browser_session, "find", return_value=element):
         result = server.browser_get_element_state("tag:body", state="displayed")
@@ -1678,8 +1623,7 @@ def test_browser_get_element_state_reads_only_requested_drission_property():
 
 
 def test_browser_get_element_state_derives_and_normalizes_all_states():
-    import server
-
+    from drissionpage_mcp import server
     states = SimpleNamespace(
         is_displayed=False,
         is_enabled=False,
@@ -1705,8 +1649,7 @@ def test_browser_get_element_state_derives_and_normalizes_all_states():
 
 
 def test_click_xy_cleans_transient_overlays_before_click():
-    import server
-
+    from drissionpage_mcp import server
     class FakeActions:
         def __init__(self):
             self.moves = []
@@ -1735,8 +1678,7 @@ def test_click_xy_cleans_transient_overlays_before_click():
 
 
 def test_click_text_locator_falls_back_to_js_after_fast_native_failure():
-    import server
-
+    from drissionpage_mcp import server
     class FakeElement:
         def __init__(self):
             self.click_kwargs = None
@@ -1767,8 +1709,7 @@ def test_click_text_locator_falls_back_to_js_after_fast_native_failure():
 
 
 def test_click_text_locator_prefers_clickable_xpath_before_inner_text():
-    import server
-
+    from drissionpage_mcp import server
     class FakeElement:
         def click(self, **kwargs):
             return self
@@ -1786,8 +1727,7 @@ def test_click_text_locator_prefers_clickable_xpath_before_inner_text():
 
 
 def test_click_xy_rejects_invalid_repeat_without_browser_side_effects():
-    import server
-
+    from drissionpage_mcp import server
     with patch.object(server.browser_session, "get_tab") as get_tab:
         result = server.click_xy(10, 20, times=0)
 
@@ -1796,8 +1736,7 @@ def test_click_xy_rejects_invalid_repeat_without_browser_side_effects():
 
 
 def test_click_xy_returns_structured_action_failure():
-    import server
-
+    from drissionpage_mcp import server
     actions = MagicMock()
     actions.move_to.side_effect = RuntimeError("detached")
     with patch.object(server.modal, "clear_transient_overlays", return_value={"ok": True, "closed": [], "errors": []}), \
@@ -1808,8 +1747,7 @@ def test_click_xy_returns_structured_action_failure():
 
 
 def test_browser_scroll_falls_back_to_top_with_matching_scroll_scope():
-    import server
-
+    from drissionpage_mcp import server
     element = SimpleNamespace()
     top = SimpleNamespace(scroll=MagicMock(), ele=MagicMock(return_value=element))
     frame = SimpleNamespace(scroll=MagicMock(), ele=MagicMock(return_value=None))
@@ -1825,8 +1763,7 @@ def test_browser_scroll_falls_back_to_top_with_matching_scroll_scope():
 
 
 def test_browser_save_pdf_handles_drission_bytes_return_without_leaking_payload(tmp_path):
-    import server
-
+    from drissionpage_mcp import server
     payload = b"%PDF-current-api"
 
     def save(path, name, as_pdf):
@@ -1844,8 +1781,7 @@ def test_browser_save_pdf_handles_drission_bytes_return_without_leaking_payload(
 
 
 def test_browser_scroll_rejects_invalid_arguments_before_connecting():
-    import server
-
+    from drissionpage_mcp import server
     with patch.object(server.browser_session, "get_tab") as get_tab:
         invalid_pixel = server.browser_scroll(direction="down", pixel=-1)
         missing_location = server.browser_scroll(direction="location", x=None, y=0)
@@ -1856,8 +1792,7 @@ def test_browser_scroll_rejects_invalid_arguments_before_connecting():
 
 
 def test_set_permission_passes_explicit_allow_value_and_rejects_attributes():
-    import server
-
+    from drissionpage_mcp import server
     permission = MagicMock()
     browser = SimpleNamespace(set=SimpleNamespace(perm=SimpleNamespace(notifications=permission)))
     with patch.object(server.browser_session, "get_browser", return_value=browser) as get_browser:
@@ -1871,8 +1806,7 @@ def test_set_permission_passes_explicit_allow_value_and_rejects_attributes():
 
 
 def test_browser_save_pdf_verifies_created_file_and_sanitizes_name(tmp_path):
-    import server
-
+    from drissionpage_mcp import server
     calls = []
 
     def save(path, name, as_pdf):
@@ -1891,8 +1825,7 @@ def test_browser_save_pdf_verifies_created_file_and_sanitizes_name(tmp_path):
 
 
 def test_browser_save_pdf_rejects_missing_output_file(tmp_path):
-    import server
-
+    from drissionpage_mcp import server
     fake = SimpleNamespace(save=lambda **_: str(tmp_path / "missing.pdf"))
     with patch.object(server.browser_session, "get_tab", return_value=fake):
         result = server.browser_save_pdf(path=str(tmp_path), filename="missing.pdf")
@@ -1901,8 +1834,7 @@ def test_browser_save_pdf_rejects_missing_output_file(tmp_path):
 
 
 def test_browser_press_key_validates_before_accessing_browser():
-    import server
-
+    from drissionpage_mcp import server
     with patch.object(server.browser_session, "get_tab") as get_tab:
         bad_modifier = server.browser_press_key("a", modifiers=["Enter"])
         bad_interval = server.browser_press_key("a", interval=-0.1)
@@ -1913,8 +1845,7 @@ def test_browser_press_key_validates_before_accessing_browser():
 
 
 def test_press_key_releases_modifiers_when_main_key_release_fails():
-    import server
-
+    from drissionpage_mcp import server
     class Actions:
         def __init__(self):
             self.events = []
@@ -1943,8 +1874,7 @@ def test_press_key_releases_modifiers_when_main_key_release_fails():
 
 
 def test_browser_press_key_types_plain_character_in_active_frame():
-    import server
-
+    from drissionpage_mcp import server
     actions = MagicMock()
     tab = SimpleNamespace(actions=MagicMock())
     frame = SimpleNamespace(actions=actions)
@@ -1957,8 +1887,7 @@ def test_browser_press_key_types_plain_character_in_active_frame():
 
 
 def test_browser_tabs_rejects_invalid_action_before_connecting():
-    import server
-
+    from drissionpage_mcp import server
     with patch.object(server.browser_session, "get_browser") as get_browser:
         result = server.browser_tabs(action="destroy")
 
@@ -1967,8 +1896,7 @@ def test_browser_tabs_rejects_invalid_action_before_connecting():
 
 
 def test_browser_tabs_closing_current_prefers_business_tab():
-    import server
-
+    from drissionpage_mcp import server
     current = SimpleNamespace(tab_id="temporary")
     business = SimpleNamespace(
         tab_id="business", url="https://demo19-scm.hoolinks.com/", title="诺贝科技",
@@ -1990,8 +1918,7 @@ def test_browser_tabs_closing_current_prefers_business_tab():
 
 
 def test_browser_tabs_lists_stable_zero_based_indexes():
-    import server
-
+    from drissionpage_mcp import server
     tabs = [{"tab_id": "a"}, {"tab_id": "b"}]
     with patch.object(server.browser_session, "get_browser", return_value=object()), \
          patch.object(server.browser_session, "list_tabs", return_value=tabs):
@@ -2002,8 +1929,7 @@ def test_browser_tabs_lists_stable_zero_based_indexes():
 
 
 def test_download_by_browser_returns_json_safe_absolute_path(tmp_path):
-    import server
-
+    from drissionpage_mcp import server
     downloaded = tmp_path / "proof.txt"
     downloaded.write_text("proof", encoding="utf-8")
     mission = SimpleNamespace(
@@ -2032,8 +1958,7 @@ def test_download_by_browser_returns_json_safe_absolute_path(tmp_path):
 
 
 def test_download_by_browser_rejects_invalid_input_before_browser_access():
-    import server
-
+    from drissionpage_mcp import server
     with patch.object(server.browser_session, "get_tab") as get_tab:
         empty_url = server.download_by_browser("")
         invalid_policy = server.download_by_browser("https://example.test/file", file_exists="replace")

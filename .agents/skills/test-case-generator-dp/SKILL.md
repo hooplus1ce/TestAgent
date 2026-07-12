@@ -22,6 +22,14 @@ Use the project Codex MCP configuration in `.codex/config.toml`.
 Before generating test cases, confirm the active Codex session has loaded
 `drissionpage-mcp`. In the TUI use `/mcp`; from a shell use `codex mcp list`.
 
+`mcp-service/` is the only MCP implementation in this repository. Codex starts
+it through `mcp-service/launcher.py`; do not import service modules directly or
+construct another MCP command. Browser settings come from
+`mcp-service/configs/dp_configs.ini`, and local credentials come from the MCP
+process environment. `DRISSIONPAGE_MCP_CAPS` is the only capability selector;
+full test generation needs at least `core,vtable,filter,observe,network,workflow`,
+plus `roles` for multi-account approval regression.
+
 ## Reference Files
 
 Before running a full generation workflow, read the relevant upstream reference
@@ -65,7 +73,7 @@ Read only the references needed for the requested area when the task is narrow.
    observe_start(...) -> action -> observe_wait(...)
    ```
 
-   Use `scan_floats` / `observe_snapshot` for visible VTable overlays too:
+   Use `observe_snapshot(detail="full")` for visible VTable overlays too:
    column filter menus, toolbar tooltips, and column-setting menus are exposed
    as structured overlays; hidden VTable overlay DOM should not be treated as
    visible behavior.
@@ -108,6 +116,20 @@ artifacts. Generate a Markdown report with
 Use `compare_regression_report` for a direct current versus baseline comparison.
 Do not overwrite a historical baseline automatically.
 
+For role/department/permission and approval-flow regression, keep each account
+in an isolated BrowserContext and execute actors sequentially:
+
+```text
+role_session_open -> role_session_login -> role_session_activate
+```
+
+Use stable role IDs such as `requester`, `dept_manager`, and
+`finance_approver`. Credentials must be supplied through the derived
+`HL_SCM_ROLE_<ROLE_ID>_USERNAME` and `HL_SCM_ROLE_<ROLE_ID>_USERPWD`
+environment variables. Never place passwords in a recipe, test case, skill, or
+MCP JSON file. Activate the required role before every actor-specific business
+step, and close all role sessions in `cleanup`.
+
 Known-defect reproduction must never count as a normal pass. Mark an executable
 known-defect case as `xfailed`, or keep it as evidence plus a defect sidecar when
 the product fix path would make deterministic cleanup impossible. Such a case
@@ -130,7 +152,8 @@ branches are safe.
 
 ## Current Boundary
 
-This adapter keeps browser operation, evidence capture, execution and reporting
-in `drissionpage-mcp`; the skill owns coverage policy and user-facing Chinese
-business wording. The old `drission-ui-mcp` command is a compatibility entry
-point to the same MCP core and must not be treated as a second implementation.
+This adapter keeps browser operation, role isolation, evidence capture,
+execution and reporting in the single `mcp-service` implementation exposed as
+`drissionpage-mcp`; the skill owns coverage policy and user-facing Chinese
+business wording. No legacy MCP command or alternate implementation is
+supported.

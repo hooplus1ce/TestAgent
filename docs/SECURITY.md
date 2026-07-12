@@ -1,6 +1,6 @@
-# drission-ui MCP 安全边界声明
+# drissionpage-mcp 安全边界声明
 
-⚠️ **重要提示：drission-ui MCP 不是安全边界**
+⚠️ **重要提示：drissionpage-mcp 不是安全边界**
 
 本工具提供的以下措施仅为便利性质，**不构成安全保证**：
 
@@ -8,7 +8,7 @@
 
 ## 1. 不是安全边界的功能
 
-### `DRISSION_UI_CAPS` 能力分组
+### `DRISSIONPAGE_MCP_CAPS` 能力分组
 - **目的**：减少 LLM 上下文 token 消耗，按需暴露工具
 - **不是**：安全沙箱或权限控制机制
 - **注意**：即使某个工具不在启用分组中，若 LLM 知道工具名称仍可能被调用（取决于 MCP 客户端实现）

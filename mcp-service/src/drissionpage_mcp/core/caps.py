@@ -97,7 +97,7 @@ CAP_GROUPS = {
 
 def get_enabled_caps() -> set[str]:
     """从环境变量获取启用的能力分组"""
-    caps_env = os.environ.get("DRISSIONPAGE_MCP_CAPS") or os.environ.get("DRISSION_UI_CAPS", "")
+    caps_env = os.environ.get("DRISSIONPAGE_MCP_CAPS", "")
     if not caps_env:
         # 默认暴露全部工具；需要裁剪时显式设置 DRISSIONPAGE_MCP_CAPS=core,vtable 等。
         return set(CAP_GROUPS.keys())

@@ -65,7 +65,7 @@ class _FakeTarget:
 
 def test_no_modal_returns_none():
     """target 无任何弹窗元素 → none。"""
-    import modal
+    from drissionpage_mcp.services import modal
     assert modal._detect_in_target(_FakeTarget()) == {"type": "none"}
 
 
@@ -74,7 +74,7 @@ def test_modal_wrap_hidden_returns_none():
 
     React 组件卸载不彻底时 ant-modal 残留但 wrap 已隐藏，这是最可靠的关闭判定。
     """
-    import modal
+    from drissionpage_mcp.services import modal
     t = _FakeTarget(
         elements={"c:.ant-modal-content": _FakeEle(text="某弹窗")},
         run_js_return='{"type":"none"}',  # wrap display:none
@@ -84,7 +84,7 @@ def test_modal_wrap_hidden_returns_none():
 
 def test_modal_ghost_not_displayed_returns_none():
     """modal 存在但 is_displayed=False（ghost 元素，DP 缓存未 GC）→ 判为已关闭。"""
-    import modal
+    from drissionpage_mcp.services import modal
     t = _FakeTarget(
         elements={"c:.ant-modal-content": _FakeEle(is_displayed=False)},
         run_js_return='{"type":"none"}',
@@ -94,7 +94,7 @@ def test_modal_ghost_not_displayed_returns_none():
 
 def test_confirm_modal_classified():
     """含 ant-confirm-body → type=confirm，携带 title/content/buttons/hasClose。"""
-    import modal
+    from drissionpage_mcp.services import modal
     t = _FakeTarget(run_js_return=(
         '{"type":"confirm","title":"确认删除","content":"确定要删除吗？",'
         '"buttons":["取消","确定"],"hasClose":true}'
@@ -108,9 +108,8 @@ def test_confirm_modal_classified():
 
 
 def test_modal_detector_injects_fixed_contract_and_topmost_selection():
-    import modal
-    import ui_contract
-
+    from drissionpage_mcp.services import modal
+    from drissionpage_mcp.core import ui_contract
     captured = []
     target = _FakeTarget(run_js_return=lambda script: captured.append(script) or '{"type":"none"}')
     assert modal._detect_in_target(target) == {"type": "none"}
@@ -130,7 +129,7 @@ def test_modal_detector_injects_fixed_contract_and_topmost_selection():
 
 def test_interactive_modal_when_no_confirm_body():
     """modal 无 ant-confirm-body → type=interactive。"""
-    import modal
+    from drissionpage_mcp.services import modal
     t = _FakeTarget(run_js_return=(
         '{"type":"interactive","title":"编辑","content":"表单",'
         '"buttons":[],"hasClose":false}'
@@ -142,7 +141,7 @@ def test_interactive_modal_when_no_confirm_body():
 
 def test_notification_detected():
     """ant-notification-notice → type=notification，message 取 message 字段。"""
-    import modal
+    from drissionpage_mcp.services import modal
     t = _FakeTarget(run_js_return='{"type":"notification","message":"保存成功"}')
     info = modal._detect_in_target(t)
     assert info["type"] == "notification"
@@ -151,7 +150,7 @@ def test_notification_detected():
 
 def test_notification_falls_back_to_description():
     """message 元素缺失时，notification 的 message 取 description。"""
-    import modal
+    from drissionpage_mcp.services import modal
     t = _FakeTarget(run_js_return='{"type":"notification","message":"仅描述"}')
     info = modal._detect_in_target(t)
     assert info["type"] == "notification"
@@ -160,7 +159,7 @@ def test_notification_falls_back_to_description():
 
 def test_message_notice_detected():
     """ant-message-notice → type=message。"""
-    import modal
+    from drissionpage_mcp.services import modal
     t = _FakeTarget(run_js_return='{"type":"message","message":"操作成功"}')
     info = modal._detect_in_target(t)
     assert info["type"] == "message"
@@ -171,7 +170,7 @@ def test_message_notice_detected():
 
 def test_detect_modal_iframe_scoped():
     """iframe 内有业务弹窗 → scope=iframe，不查 top。"""
-    import modal
+    from drissionpage_mcp.services import modal
     iframe_t = _FakeTarget(run_js_return='{"type":"message","message":"iframe内消息"}')
     with patch.object(modal.browser_session, "get_tab_ro", return_value=_FakeTarget()), \
          patch.object(modal.browser_session, "get_active_frame_ro", return_value=iframe_t):
@@ -182,7 +181,7 @@ def test_detect_modal_iframe_scoped():
 
 def test_detect_modal_top_confirm_renamed():
     """iframe 无弹窗、top 有 confirm → 重命名为 system_confirm，scope=top。"""
-    import modal
+    from drissionpage_mcp.services import modal
     top_t = _FakeTarget(run_js_return=(
         '{"type":"confirm","title":"","content":"","buttons":[],"hasClose":false}'
     ))
@@ -195,7 +194,7 @@ def test_detect_modal_top_confirm_renamed():
 
 def test_detect_modal_none_when_clean():
     """iframe 与 top 均无弹窗 → none，含 waited。"""
-    import modal
+    from drissionpage_mcp.services import modal
     with patch.object(modal.browser_session, "get_tab_ro", return_value=_FakeTarget()), \
          patch.object(modal.browser_session, "get_active_frame_ro", return_value=None):
         info = modal.detect_modal()
@@ -205,7 +204,7 @@ def test_detect_modal_none_when_clean():
 
 def test_detect_modal_top_notification_scoped():
     """top 层 notification/message 也作为可观察反馈返回。"""
-    import modal
+    from drissionpage_mcp.services import modal
     top_t = _FakeTarget(run_js_return='{"type":"notification","message":"顶部通知"}')
     with patch.object(modal.browser_session, "get_tab_ro", return_value=top_t), \
          patch.object(modal.browser_session, "get_active_frame_ro", return_value=None):
@@ -218,7 +217,7 @@ def test_detect_modal_top_notification_scoped():
 
 def test_close_modal_nothing_to_close():
     """无弹窗时返回 ok=True, closed=[], errors=[]。"""
-    import modal
+    from drissionpage_mcp.services import modal
     with patch.object(modal.browser_session, "get_tab", return_value=_FakeTarget()), \
          patch.object(modal.browser_session, "get_active_frame", return_value=None):
         result = modal.close_modal()
@@ -229,7 +228,7 @@ def test_close_modal_nothing_to_close():
 
 def test_close_modal_hidden_modal_treated_as_closed():
     """隐藏残留 modal（如 display:none）不应尝试点击关闭，也不应报错。"""
-    import modal
+    from drissionpage_mcp.services import modal
     hidden_modal = _FakeEle(children={})
     top_t = _FakeTarget(
         elements={"c:.ant-modal-content": hidden_modal},
@@ -247,8 +246,7 @@ def test_close_modal_hidden_modal_treated_as_closed():
 
 def test_clear_transient_overlays_scans_iframe_and_top():
     """点击前清理只用 DrissionPage 元素定位和原生关闭按钮。"""
-    import modal
-
+    from drissionpage_mcp.services import modal
     class _Wait:
         def clickable(self, **_kwargs):
             return True

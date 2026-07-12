@@ -34,30 +34,30 @@ class _FakeTab:
 
 
 def test_js_args_int():
-    import vtable
+    from drissionpage_mcp.services import vtable
     s = vtable._js_args(1, 2)
     assert s == "[1, 2]"
 
 
 def test_js_args_string_and_bool():
-    import vtable
+    from drissionpage_mcp.services import vtable
     s = vtable._js_args("制令单号", True)
     assert json.loads(s) == ["制令单号", True]
 
 
 def test_js_args_empty():
-    import vtable
+    from drissionpage_mcp.services import vtable
     assert vtable._js_args() == "[]"
 
 
 def test_js_args_negative_and_float():
-    import vtable
+    from drissionpage_mcp.services import vtable
     s = vtable._js_args(-1, 3.14)
     assert json.loads(s) == [-1, 3.14]
 
 
 def test_js_args_special_chars():
-    import vtable
+    from drissionpage_mcp.services import vtable
     s = vtable._js_args("含'引号\"和\\斜杠")
     # 确保序列化后是合法 JSON
     parsed = json.loads(s)
@@ -65,8 +65,7 @@ def test_js_args_special_chars():
 
 
 def test_is_loading_complete_waits_for_visible_mask_and_visible_vtable_canvas():
-    import vtable
-
+    from drissionpage_mcp.services import vtable
     calls = []
 
     class LoadingWait:
@@ -109,8 +108,7 @@ def test_is_loading_complete_waits_for_visible_mask_and_visible_vtable_canvas():
 
 
 def test_is_loading_complete_skips_mask_wait_when_already_absent():
-    import vtable
-
+    from drissionpage_mcp.services import vtable
     calls = []
 
     class CanvasWait:
@@ -137,8 +135,7 @@ def test_is_loading_complete_skips_mask_wait_when_already_absent():
 
 
 def test_is_loading_complete_rejects_canvas_that_never_stabilizes():
-    import vtable
-
+    from drissionpage_mcp.services import vtable
     canvas_wait = type("CanvasWait", (), {"stop_moving": lambda self, **kwargs: False})()
     canvas = type("Canvas", (), {
         "states": type("States", (), {"is_displayed": True})(),
@@ -156,7 +153,7 @@ def test_is_loading_complete_rejects_canvas_that_never_stabilizes():
 
 
 def test_vtable_action_click_uses_visible_cell_coordinates():
-    import vtable
+    from drissionpage_mcp.services import vtable
     fake_tab = _FakeTab()
 
     with patch.object(vtable, "_ensure_vtable", return_value=True), \
@@ -184,7 +181,7 @@ def test_vtable_action_click_uses_visible_cell_coordinates():
 
 
 def test_vtable_action_header_icon_scrolls_before_resolving_icon_point():
-    import vtable
+    from drissionpage_mcp.services import vtable
     fake_tab = _FakeTab()
 
     with patch.object(vtable, "_ensure_vtable", return_value=True), \
@@ -213,7 +210,7 @@ def test_vtable_action_header_icon_scrolls_before_resolving_icon_point():
 
 
 def test_vtable_action_drag_supports_relative_destination():
-    import vtable
+    from drissionpage_mcp.services import vtable
     fake_tab = _FakeTab()
 
     with patch.object(vtable, "_ensure_vtable", return_value=True), \
@@ -242,8 +239,7 @@ def test_vtable_action_drag_supports_relative_destination():
 
 
 def test_get_cell_render_info_scrolls_and_returns_colors():
-    import vtable
-
+    from drissionpage_mcp.services import vtable
     payload = {
         "ok": True,
         "col": 24,
@@ -270,8 +266,7 @@ def test_get_cell_render_info_scrolls_and_returns_colors():
 
 
 def test_get_cell_icons_returns_top_viewport_icons():
-    import vtable
-
+    from drissionpage_mcp.services import vtable
     payload = {
         "ok": True,
         "col": 8,
@@ -292,7 +287,7 @@ def test_get_cell_icons_returns_top_viewport_icons():
 
 
 def test_vtable_action_cell_icon_clicks_icon_by_index():
-    import vtable
+    from drissionpage_mcp.services import vtable
     fake_tab = _FakeTab()
 
     with patch.object(vtable, "_ensure_vtable", return_value=True), \
@@ -320,8 +315,7 @@ def test_vtable_action_cell_icon_clicks_icon_by_index():
 
 
 def test_get_cell_rect_stops_when_scroll_fails():
-    import vtable
-
+    from drissionpage_mcp.services import vtable
     with patch.object(vtable, "_ensure_vtable", return_value=True), \
          patch.object(vtable, "scroll_to_cell", return_value={"ok": False, "reason": "out of range"}) as scroll, \
          patch.object(vtable, "_wait_cell_center_stable") as wait_center:
@@ -333,8 +327,7 @@ def test_get_cell_rect_stops_when_scroll_fails():
 
 
 def test_get_columns_values_propagates_header_row_count():
-    import vtable
-
+    from drissionpage_mcp.services import vtable
     with patch.object(vtable, "_ensure_vtable", return_value=True), \
          patch.object(vtable, "_run", return_value={
              "values": {"订单号": ["SO-1"]}, "missing": [], "headerRows": 2,
@@ -346,8 +339,7 @@ def test_get_columns_values_propagates_header_row_count():
 
 
 def test_match_icon_rejects_fractional_index():
-    import vtable
-
+    from drissionpage_mcp.services import vtable
     icon, reason = vtable._match_icon([{"name": "edit"}], icon_index=0.5)
 
     assert icon is None

@@ -353,6 +353,34 @@ wheels = [
 ]
 
 [[package]]
+name = "drissionpage-mcp-refactored"
+version = "0.1.0"
+source = { editable = "mcp-service" }
+dependencies = [
+    { name = "ddddocr" },
+    { name = "drissionpage" },
+    { name = "httpx" },
+    { name = "loguru" },
+    { name = "mcp", extra = ["cli"] },
+    { name = "openpyxl" },
+    { name = "regex" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "ddddocr", specifier = ">=1.6.1" },
+    { name = "drissionpage", specifier = ">=4.2.0b20" },
+    { name = "httpx", specifier = ">=0.28.1" },
+    { name = "loguru", specifier = ">=0.7.3" },
+    { name = "mcp", extras = ["cli"], specifier = ">=1.28.1,<2" },
+    { name = "openpyxl", specifier = ">=3.1.5" },
+    { name = "regex", specifier = ">=2024.11.6" },
+]
+
+[package.metadata.requires-dev]
+dev = [{ name = "pytest", specifier = ">=8.0" }]
+
+[[package]]
 name = "drissionrecord"
 version = "2.0.1"
 source = { registry = "https://mirrors.aliyun.com/pypi/simple/" }
@@ -1516,15 +1544,9 @@ wheels = [
 [[package]]
 name = "testagent"
 version = "0.1.0"
-source = { editable = "." }
+source = { virtual = "." }
 dependencies = [
-    { name = "ddddocr" },
-    { name = "drissionpage" },
-    { name = "httpx" },
-    { name = "loguru" },
-    { name = "mcp", extra = ["cli"] },
-    { name = "openpyxl" },
-    { name = "regex" },
+    { name = "drissionpage-mcp-refactored" },
 ]
 
 [package.dev-dependencies]
@@ -1533,15 +1555,7 @@ dev = [
 ]
 
 [package.metadata]
-requires-dist = [
-    { name = "ddddocr", specifier = ">=1.6.1" },
-    { name = "drissionpage", specifier = ">=4.2.0b20" },
-    { name = "httpx", specifier = ">=0.28.1" },
-    { name = "loguru", specifier = ">=0.7.3" },
-    { name = "mcp", extras = ["cli"], specifier = ">=1.28.1,<2" },
-    { name = "openpyxl", specifier = ">=3.1.5" },
-    { name = "regex", specifier = ">=2024.11.6" },
-]
+requires-dist = [{ name = "drissionpage-mcp-refactored", editable = "mcp-service" }]
 
 [package.metadata.requires-dev]
 dev = [{ name = "pytest", specifier = ">=8.0" }]

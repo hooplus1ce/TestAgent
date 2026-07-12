@@ -7,5 +7,5 @@ dependencies:
   tools:
     - type: "mcp"
       value: "drissionpage-mcp"
-      description: "Project-specific DrissionPage MCP server for SCM/MOM/ERP browser automation."
+      description: "The repository's single mcp-service implementation for SCM/MOM/ERP browser automation and role-based regression."
       transport: "stdio"

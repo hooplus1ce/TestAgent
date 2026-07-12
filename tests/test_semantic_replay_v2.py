@@ -74,8 +74,7 @@ def _without_observation(server):
 
 
 def test_explore_action_inputs_semantic_field_target_without_locator():
-    import server
-
+    from drissionpage_mcp import server
     fake_tab = SimpleNamespace()
     cleanup, attach, screenshot = _without_observation(server)
     with cleanup, attach, screenshot, \
@@ -99,8 +98,7 @@ def test_explore_action_inputs_semantic_field_target_without_locator():
 
 
 def test_set_field_value_prefers_latest_visible_overlay_field_in_iframe():
-    import server
-
+    from drissionpage_mcp import server
     older_input = _Input("OLD")
     latest_input = _Input()
     frame = _Context(
@@ -125,8 +123,7 @@ def test_set_field_value_prefers_latest_visible_overlay_field_in_iframe():
 
 
 def test_semantic_button_prefers_latest_visible_modal_stable_xpath():
-    import server
-
+    from drissionpage_mcp import server
     modal_data = {
         "ok": True,
         "overlays": [
@@ -160,8 +157,7 @@ def test_semantic_button_prefers_latest_visible_modal_stable_xpath():
 
 
 def test_semantic_dropdown_option_uses_stable_xpath_and_explicit_modal_never_falls_back():
-    import server
-
+    from drissionpage_mcp import server
     dropdown = {
         "ok": True,
         "overlays": [{
@@ -195,8 +191,7 @@ def test_semantic_dropdown_option_uses_stable_xpath_and_explicit_modal_never_fal
 
 
 def test_find_vtable_row_requires_unique_value_and_returns_canvas_row():
-    import server
-
+    from drissionpage_mcp import server
     with patch.object(server, "get_table_values", return_value={
         "ok": True, "kind": "vtable", "values": ["SO-1", "SO-2", "SO-3"],
         "header_rows": 2,
@@ -225,8 +220,7 @@ def test_find_vtable_row_requires_unique_value_and_returns_canvas_row():
 
 
 def test_recipe_dispatcher_saves_dynamic_row_and_resolves_later_reference():
-    import server
-
+    from drissionpage_mcp import server
     server._reset_recipe_context()
     with patch.object(server, "find_vtable_row", return_value={
         "ok": True, "row": 7, "column_title": "采购单号", "value": "PO-7", "token": "secret",
@@ -250,8 +244,7 @@ def test_recipe_dispatcher_saves_dynamic_row_and_resolves_later_reference():
 
 
 def test_recipe_dispatcher_rejects_missing_dynamic_reference():
-    import server
-
+    from drissionpage_mcp import server
     server._reset_recipe_context()
     result = server._run_recipe_action("vtable_action", {
         "action": "click", "row": {"$ref": "missing.row"}, "col": 2,
@@ -262,8 +255,7 @@ def test_recipe_dispatcher_rejects_missing_dynamic_reference():
 
 
 def test_vtable_row_business_reads_are_dynamic_and_aligned():
-    import server
-
+    from drissionpage_mcp import server
     columns = {
         "备注": ["A", "E2E-SALARY-1", "B"],
         "生产数量": ["5", "2", "9"],
@@ -288,8 +280,7 @@ def test_vtable_row_business_reads_are_dynamic_and_aligned():
 
 
 def test_vtable_row_business_read_rejects_table_change_after_lookup():
-    import server
-
+    from drissionpage_mcp import server
     with patch.object(server, "get_table_values", return_value={
         "ok": True, "kind": "vtable", "values": ["A", "E2E-SALARY-1"],
         "header_rows": 1,

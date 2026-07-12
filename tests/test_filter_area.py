@@ -97,8 +97,7 @@ class _FakeFrame:
 
 
 def test_select_date_range_finds_query_item_and_calendar_inside_iframe():
-    import filter_area
-
+    from drissionpage_mcp.services import filter_area
     row = _FakeRow()
     cell = _FakeDateCell()
     frame = _FakeFrame(row, _FakeCalendar(cell))
@@ -123,23 +122,20 @@ class _FakeSearchButton:
 
 
 def test_filter_search_button_supports_icon_only_markup():
-    import filter_area
-
+    from drissionpage_mcp.services import filter_area
     icon = object()
     with patch.object(filter_area.browser_session, "ele_with_fallback", return_value=icon):
         assert filter_area._is_filter_search_button(_FakeSearchButton()) is True
 
 
 def test_filter_search_button_does_not_treat_other_icon_as_query():
-    import filter_area
-
+    from drissionpage_mcp.services import filter_area
     with patch.object(filter_area.browser_session, "ele_with_fallback", return_value=None):
         assert filter_area._is_filter_search_button(_FakeSearchButton()) is False
 
 
 def test_reset_filter_area_can_defer_requery_for_filter_verification():
-    import filter_area
-
+    from drissionpage_mcp.services import filter_area
     states = type("States", (), {"is_displayed": True})()
     reset_button = type("Button", (), {"states": states, "text": "重置"})()
     search_button = type("Button", (), {"states": states, "text": ""})()
@@ -160,8 +156,7 @@ def test_reset_filter_area_can_defer_requery_for_filter_verification():
 
 
 def test_set_filter_condition_skips_unchanged_operator_dropdown():
-    import filter_area
-
+    from drissionpage_mcp.services import filter_area
     class Wait:
         def clickable(self, **kwargs):
             return True

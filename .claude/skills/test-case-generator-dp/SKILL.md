@@ -30,6 +30,14 @@ description: 为 WMS/MOM/ERP 等企业系统迭代生成测试用例（DrissionP
 
 ## 1. 系统接入与工具
 
+### 唯一服务与配置契约
+
+- 本项目只允许使用 `mcp-service/` 中的实现，对外服务名固定为 `drissionpage-mcp`。
+- Claude、Codex、Trae 均通过 `mcp-service/launcher.py` 启动；Skill 不直接导入服务模块，也不拼装其他启动命令。
+- 浏览器配置只读取 `mcp-service/configs/dp_configs.ini`，其中 `../dp_profile` 指向项目根浏览器数据目录。
+- 账号密码只通过 MCP 进程环境变量注入，禁止写入 Skill、用例 JSON、`.mcp.json` 或自动化配方。
+- 能力裁剪只使用 `DRISSIONPAGE_MCP_CAPS`。完整探索至少启用 `core,vtable,filter,observe,network,workflow`；审批回归还必须启用 `roles`。
+
 ### 浏览器连接入口
 当用户说“连接浏览器”、开始生成用例，或任何真实页面探索前，必须执行完整 Browser Ready Gate；不要只调用 `connect()` 后继续。
 
@@ -45,8 +53,22 @@ description: 为 WMS/MOM/ERP 等企业系统迭代生成测试用例（DrissionP
 ### Session 维持
 - 首次登录或会话过期：直接 `refresh_session()`（内部完成 OCR + HTTP 登录 + Cookie 注入 → 导航 SCM Admin），每次重新获取新 cookie，不再缓存
 
+### 多角色权限与审批回归
+
+不同部门、角色和权限账号必须使用独立 BrowserContext，按审批业务顺序串行切换，不共享 Cookie、localStorage 或登录态：
+
+```text
+role_session_open(role_id) -> role_session_login(role_id)
+role_session_activate(requester) -> 创建并提交单据
+role_session_activate(dept_manager) -> 查询待办并审批
+role_session_activate(requester) -> 验证结果与可见权限
+role_session_close(role_id) -> cleanup
+```
+
+`role_id` 使用稳定英文逻辑名，如 `requester`、`dept_manager`、`finance_approver`。服务会读取对应的 `HL_SCM_ROLE_<ROLE_ID>_USERNAME` 与 `HL_SCM_ROLE_<ROLE_ID>_USERPWD`。每个角色的首个业务动作前必须调用 `role_session_activate`；`automation_recipe.cleanup` 必须关闭所有已创建角色会话。账号只解决身份登录，正式回归还必须固定账号所属部门、权限矩阵、审批模板/路由、测试数据夹具和每个节点的业务断言。
+
 ### 工具集
-所有浏览器原子操作由 `drissionpage-mcp` MCP 提供：点击/输入/截图/浮窗检测(`scan_floats`)/VTable 操作/网络监听/筛选区操作/元素坐标获取(`get_element_coords`)/坐标点击(`click_xy`)。AI 只需调用工具并编排顺序，无需关心内部实现。
+所有浏览器原子操作由 `drissionpage-mcp` MCP 提供：点击/输入/截图/浮层快照(`observe_snapshot`)/VTable 操作/网络监听/筛选区操作/元素坐标获取(`get_element_coords`)/坐标点击(`click_xy`)。AI 只需调用工具并编排顺序，无需关心内部实现。
 
 系统配置与环境信息见 `references/scm-access.md`。
 
@@ -102,15 +124,15 @@ description: 为 WMS/MOM/ERP 等企业系统迭代生成测试用例（DrissionP
 **核心原则**：不一次性生成全部用例，通过对话按用户指示逐步覆盖各区域。
 ```
 用户 → 指令（如「测一下批量排产按钮」）
-  Agent → 执行（scan_floats / click 或 vtable_action 或 click_table_cell / scan_floats / listen_wait）
+  Agent → 执行（observe_start / click 或 vtable_action 或 click_table_cell / observe_wait）
   Agent → 汇报结果 + 询问下一步
 用户 → 继续或调整方向
 ```
 
-**每次 `click`/`vtable_action`/`click_table_cell`/`click_xy` 后 MUST 使用 `scan_floats()` 检测页面变化**，它能捕获所有类型的浮窗（含短寿命 toast）+ 表格数据变化 + 页签切换。
+**每次 `click`/`vtable_action`/`click_table_cell`/`click_xy` 前 MUST 调用 `observe_start`，动作后 MUST 调用 `observe_wait`**，以捕获短寿命 toast、浮窗、接口、页签和 URL 变化。
 
 需要抓接口时单独使用 `listen_start` / `listen_wait` 做接口断言。
-只有在 `scan_floats` 返回结果不够明确（如需区分弹窗子类型）时才使用 `observe_start`/`observe_wait`。
+需要读取当前已存在浮层的完整结构时，调用 `observe_snapshot(only_visible=True, include_table_data=True, detail="full")`。
 
 **断点续传**：每完成一个区域，调用 `scripts/load-exploration-state.py` 保存进度。
 
@@ -171,33 +193,30 @@ VTable 是 canvas 渲染，无真实 DOM 节点。所有点击走坐标，工具
 ### 弹窗检测
 详见 `references/modal-types.md`。
 
-**优先使用 `scan_floats(only_visible=True, include_table_data=True)`** 进行综合浮窗检测，一次调用即可获取所有可见浮窗（模态框/抽屉/弹出框/消息/通知、VTable 列头筛选、工具栏提示、列设置菜单等）的结构化信息，包括标题、类型、中心坐标、关闭按钮、操作按钮、表单字段、表格数据。
+**优先使用 `observe_snapshot(only_visible=True, include_table_data=True, detail="full")`** 读取当前所有可见浮窗（模态框/抽屉/弹出框/消息/通知、VTable 列头筛选、工具栏提示、列设置菜单等）的结构化信息，包括标题、类型、中心坐标、关闭按钮、操作按钮、表单字段和表格数据。
 
-点击后如需捕获短寿命 toast（如「操作成功」），`scan_floats` 内部已集成 toast 检测，无需额外调用。
-仅在只需知道「有无弹窗」而不需要详细结构时使用 `observe_start`/`observe_wait`。
+点击后如需捕获短寿命 toast（如「操作成功」），必须在点击前启动 `observe_start(signals=["modal","notification","message",...])`，点击后用 `observe_wait` 读取首个信号。
 
-VTable 列头筛选、工具栏提示、列设置菜单由 `scan_floats` / `observe_snapshot` 返回；单元格编辑器、虚拟下拉等特殊浮层必须通过 `drissionpage-mcp` 的 VTable facade 处理。若当前工具无法返回结构化结果，记录工具缺口并降级生成低级展示类用例，不在 skill 中内联 raw JS。
+VTable 列头筛选、工具栏提示、列设置菜单由 `observe_snapshot` 返回；单元格编辑器、虚拟下拉等特殊浮层必须通过 `drissionpage-mcp` 的 VTable facade 处理。若当前工具无法返回结构化结果，记录工具缺口并降级生成低级展示类用例，不在 skill 中内联 raw JS。
 
 ### 弹窗交互策略
-**与弹窗交互前 MUST 先用 `scan_floats` 获取弹窗结构化信息**，如需更详细 DOM 层级再用 `dom_tree`。
+**与弹窗交互前 MUST 先用 `observe_snapshot(detail="full")` 获取弹窗结构化信息**，如需更详细 DOM 层级再用 `dom_tree`。
 
-原因：SCM 系统大量使用自定义封装的弹窗组件。先通过 `scan_floats` 拿到弹窗内按钮、字段的标题/坐标/定位符后，再选择稳定的交互目标执行操作，可避免盲目猜测导致点击无效。
+原因：SCM 系统大量使用自定义封装的弹窗组件。先通过 `observe_snapshot` 拿到弹窗内按钮、字段的标题/坐标/定位符后，再选择稳定的交互目标执行操作，可避免盲目猜测导致点击无效。
 
 流程：
 ```
-click → scan_floats → 确认弹窗存在并获取结构化信息
+observe_start → click → observe_wait → 确认弹窗信号
   ↓
 点击按钮/输入字段（用返回的 center 坐标或 selectorHint）
   ↓
-scan_floats → 确认弹窗状态变化（关闭/新内容/消息反馈）
+observe_snapshot(detail="full") → 确认当前弹窗结构和状态
 ```
 
 ### 坐标系统
-所有元素坐标统一使用 `rect.viewport_midpoint`（视口中心点），已自动叠加 iframe 偏移，返回的坐标可直接用于 `click_xy` 或 `tab.actions.move_to()`。
+所有元素坐标由 MCP 工具统一换算为顶层视口坐标，已自动叠加 iframe 偏移。Skill 不读取 ChromiumElement，也不直接调用 DrissionPage actions API。
 
-获取坐标的两种方式：
-- `get_element_coords(xpath, index, timeout)` — 传入 XPath 定位符，返回 `{cx, cy}`
-- `get_element_center(el)` — 传入已获取的 ChromiumElement，返回 `{cx, cy}`
+需要显式坐标时只调用 `get_element_coords(xpath, index, timeout)`，再把返回的 `{cx, cy}` 传给 `click_xy`。
 
 双击等多次点击通过 `click_xy(x, y, times=N)` 的 `times` 参数实现。
 
@@ -211,6 +230,7 @@ scan_floats → 确认弹窗状态变化（关闭/新内容/消息反馈）
 | 异常 | 处理 |
 |---|---|
 | MCP 服务器未注册 | 检查 `.mcp.json`；`claude mcp list` 应见 `drissionpage-mcp` |
+| 角色登录失败 | 检查对应 `HL_SCM_ROLE_<ROLE_ID>_USERNAME/USERPWD` 是否注入 MCP 进程，并确认 `roles` capability 已启用 |
 | 浏览器连接失败 | 检查 `http://localhost:9222/json`；确认 Chrome 以 9222 启动 |
 | `scan_table` 失败 | `get_active_frame()` 确认 iframe；仍失败按截图/DOM 降级生成低级用例 |
 | `enter_module` iframe 未就绪 | 重新调用 `enter_module`；检查菜单文本匹配 |
@@ -221,6 +241,7 @@ scan_floats → 确认弹窗状态变化（关闭/新内容/消息反馈）
 ## 5. 自检清单
 
 - [ ] `drissionpage-mcp` MCP 可用
+- [ ] 当前 MCP 由 `mcp-service/launcher.py` 启动，未使用其他入口
 - [ ] 浏览器可连接（port 9222）
 - [ ] Browser Ready Gate 完成：`connect` 成功、待测页已打开、最终 `check_session` 通过、`get_active_frame` 返回 `ok=true`
 - [ ] 用户已确认变量配置
@@ -230,5 +251,6 @@ scan_floats → 确认弹窗状态变化（关闭/新内容/消息反馈）
 - [ ] 已向用户说明 `待验证` / `需用户确认` / `工具缺口` 项
 - [ ] 每条用例通过质量门禁
 - [ ] 每条正式用例均有完整 `automation_recipe` 和真实业务断言，并已真实试运行通过
+- [ ] 多角色用例在每个业务动作前激活正确角色，并在 cleanup 关闭全部角色会话
 - [ ] 报告中的截图均来自本次执行，覆盖率分母包含已识别需求、风险和页面资产
-- [ ] 每次点击后使用 `scan_floats()` 检测页面变化，捕获浮窗/toast/页签切换
+- [ ] 每次点击前后使用 `observe_start` / `observe_wait` 捕获浮窗、toast、接口和页签切换

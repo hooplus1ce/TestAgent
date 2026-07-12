@@ -1,32 +1,22 @@
 [project]
 name = "testagent"
 version = "0.1.0"
-description = "drission-ui MCP server: structured browser automation tools for WMS/MOM/ERP testing"
+description = "Enterprise test automation project using the refactored DrissionPage MCP service"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "ddddocr>=1.6.1",
-    "drissionpage>=4.2.0b20",
-    "httpx>=0.28.1",
-    "loguru>=0.7.3",
-    "mcp[cli]>=1.28.1,<2",
-    "openpyxl>=3.1.5",
-    "regex>=2024.11.6",
+    "drissionpage-mcp-refactored",
 ]
 
-[project.scripts]
-drission-ui-mcp = "drission_ui_mcp:main"
-drissionpage-mcp = "drissionpage_mcp:main"
-
 [tool.uv]
-package = true
+package = false
+
+[tool.uv.sources]
+drissionpage-mcp-refactored = { path = "mcp-service", editable = true }
 
 [[tool.uv.index]]
 url = "https://mirrors.aliyun.com/pypi/simple/"
 default = true
-
-[tool.setuptools]
-py-modules = ["drission_ui_mcp", "drissionpage_mcp"]
 
 [dependency-groups]
 dev = [
@@ -34,5 +24,5 @@ dev = [
 ]
 
 [tool.pytest.ini_options]
-pythonpath = ["mcp-servers/drissionpage-mcp"]
+pythonpath = ["mcp-service/src"]
 testpaths = ["tests"]

@@ -24,13 +24,12 @@ def _observed_result(message="保存成功"):
 
 
 def test_evidence_to_case_execution_report_and_regression(monkeypatch, tmp_path):
-    import config
-    import flow_evidence
-    import resource_store
-    import test_execution
-    import test_reporting
-    import testcase_generation
-
+    from drissionpage_mcp.core import config
+    from drissionpage_mcp.workflows import flow_evidence
+    from drissionpage_mcp.resources import resource_store
+    from drissionpage_mcp.workflows import test_execution
+    from drissionpage_mcp.workflows import test_reporting
+    from drissionpage_mcp.workflows import testcase_generation
     monkeypatch.setattr(config, "SHOT_DIR", str(tmp_path))
     resource_store.clear_module()
     monkeypatch.setattr(flow_evidence, "_active_flow", None)
@@ -100,16 +99,14 @@ def test_evidence_to_case_execution_report_and_regression(monkeypatch, tmp_path)
 
 
 def test_execution_marks_missing_recipe_as_skipped():
-    import test_execution
-
+    from drissionpage_mcp.workflows import test_execution
     execution = test_execution.execute_cases([{"case_id": "I001"}], lambda *_: {"ok": True})
     assert execution["results"] == [{"case_id": "I001", "case_title": "", "status": "skipped", "reason": "missing automation_recipe", "steps": []}]
 
 
 def test_resource_store_reads_absolute_path_inside_resource_root(monkeypatch, tmp_path):
-    import config
-    import resource_store
-
+    from drissionpage_mcp.core import config
+    from drissionpage_mcp.resources import resource_store
     monkeypatch.setattr(config, "SHOT_DIR", str(tmp_path))
     target = tmp_path / "result.json"
     target.write_text(json.dumps({"ok": True}), encoding="utf-8")
@@ -117,10 +114,9 @@ def test_resource_store_reads_absolute_path_inside_resource_root(monkeypatch, tm
 
 
 def test_flow_stop_persists_cleanup_boundary_for_destructive_replay(monkeypatch, tmp_path):
-    import config
-    import flow_evidence
-    import resource_store
-
+    from drissionpage_mcp.core import config
+    from drissionpage_mcp.workflows import flow_evidence
+    from drissionpage_mcp.resources import resource_store
     monkeypatch.setattr(config, "SHOT_DIR", str(tmp_path))
     resource_store.clear_module()
     monkeypatch.setattr(flow_evidence, "_active_flow", None)
@@ -145,11 +141,10 @@ def test_flow_stop_persists_cleanup_boundary_for_destructive_replay(monkeypatch,
 
 
 def test_mcp_tools_chain_evidence_to_markdown_report(monkeypatch, tmp_path):
-    import config
-    import flow_evidence
-    import resource_store
-    import server
-
+    from drissionpage_mcp.core import config
+    from drissionpage_mcp.workflows import flow_evidence
+    from drissionpage_mcp.resources import resource_store
+    from drissionpage_mcp import server
     monkeypatch.setattr(config, "SHOT_DIR", str(tmp_path))
     resource_store.clear_module()
     monkeypatch.setattr(flow_evidence, "_active_flow", None)
@@ -204,10 +199,9 @@ def test_mcp_tools_chain_evidence_to_markdown_report(monkeypatch, tmp_path):
 
 
 def test_generate_report_merges_supplemental_xfailed_execution(monkeypatch, tmp_path):
-    import config
-    import resource_store
-    import server
-
+    from drissionpage_mcp.core import config
+    from drissionpage_mcp.resources import resource_store
+    from drissionpage_mcp import server
     monkeypatch.setattr(config, "SHOT_DIR", str(tmp_path))
     current = tmp_path / "current.json"
     supplemental = tmp_path / "defect.json"
@@ -230,8 +224,7 @@ def test_generate_report_merges_supplemental_xfailed_execution(monkeypatch, tmp_
 
 
 def test_flow_sanitize_redacts_authorization_userinfo_and_nested_json():
-    import flow_evidence
-
+    from drissionpage_mcp.workflows import flow_evidence
     sanitized = flow_evidence.sanitize({
         "auth_url": "https://example.test/a?authorization=Basic%20abc&name=order",
         "url": "https://user:pass@example.test/a?token=abc#session=xyz",
@@ -250,10 +243,9 @@ def test_flow_sanitize_redacts_authorization_userinfo_and_nested_json():
 
 
 def test_flow_recording_enforces_page_and_step_limits(monkeypatch, tmp_path):
-    import config
-    import flow_evidence
-    import resource_store
-
+    from drissionpage_mcp.core import config
+    from drissionpage_mcp.workflows import flow_evidence
+    from drissionpage_mcp.resources import resource_store
     monkeypatch.setattr(config, "SHOT_DIR", str(tmp_path))
     monkeypatch.setattr(flow_evidence, "_MAX_PAGE_STATES", 1)
     monkeypatch.setattr(flow_evidence, "_MAX_STEPS", 1)
@@ -282,10 +274,9 @@ def test_flow_recording_enforces_page_and_step_limits(monkeypatch, tmp_path):
 
 
 def test_flow_preserves_distinct_raw_network_packets(monkeypatch, tmp_path):
-    import config
-    import flow_evidence
-    import resource_store
-
+    from drissionpage_mcp.core import config
+    from drissionpage_mcp.workflows import flow_evidence
+    from drissionpage_mcp.resources import resource_store
     monkeypatch.setattr(config, "SHOT_DIR", str(tmp_path))
     monkeypatch.setattr(flow_evidence, "_active_flow", None)
     monkeypatch.setattr(flow_evidence, "_last_flow", None)
@@ -319,10 +310,9 @@ def test_flow_preserves_distinct_raw_network_packets(monkeypatch, tmp_path):
 
 
 def test_flow_marks_observer_start_failure_and_rejects_fractional_cleanup(monkeypatch, tmp_path):
-    import config
-    import flow_evidence
-    import resource_store
-
+    from drissionpage_mcp.core import config
+    from drissionpage_mcp.workflows import flow_evidence
+    from drissionpage_mcp.resources import resource_store
     monkeypatch.setattr(config, "SHOT_DIR", str(tmp_path))
     monkeypatch.setattr(flow_evidence, "_active_flow", None)
     monkeypatch.setattr(flow_evidence, "_last_flow", None)

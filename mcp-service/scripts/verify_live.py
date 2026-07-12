@@ -90,7 +90,7 @@ except Exception as e:
 
 print("\n==== 11. e2e 写路径 (HL_E2E=1 启用，会点击/导航，非只读) ====")
 if os.environ.get("HL_E2E", "").lower() in ("1", "true", "yes"):
-    import server
+    from drissionpage_mcp import server
     # 覆盖曾因缺 import time 而 NameError 的路径：enter_module / reset_to_initial / screenshot(无path)
     mod = os.environ.get("HL_E2E_MODULE", "")
     if mod:

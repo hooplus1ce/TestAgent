@@ -8,7 +8,7 @@
     result = get_iframe_floats()
 
     # 指定已有的 frame:
-    from browser_session import get_active_frame
+    from drissionpage_mcp.services.browser_session import get_active_frame
     fr = get_active_frame()
     result = get_iframe_floats(iframe_active=fr)
 

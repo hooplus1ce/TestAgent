@@ -4,8 +4,7 @@ from unittest.mock import patch
 
 
 def test_get_html_table_values_returns_scalar_values_and_cell_metadata():
-    import html_table
-
+    from drissionpage_mcp.services import html_table
     payload = {
         "values": ["SO-1", "SO-2"],
         "cells": [
@@ -28,8 +27,7 @@ def test_get_html_table_values_returns_scalar_values_and_cell_metadata():
 
 
 def test_visible_table_wrappers_maps_only_uncovered_dom_indexes():
-    import html_table
-
+    from drissionpage_mcp.services import html_table
     hidden = object()
     covered = object()
     visible = object()
@@ -47,8 +45,7 @@ def test_visible_table_wrappers_maps_only_uncovered_dom_indexes():
 
 
 def test_business_rows_excludes_placeholder_expanded_and_measure_rows():
-    import html_table
-
+    from drissionpage_mcp.services import html_table
     business_row = object()
 
     class Body:
@@ -78,8 +75,7 @@ def test_business_rows_excludes_placeholder_expanded_and_measure_rows():
 
 
 def test_row_selection_rejects_negative_index_before_browser_lookup():
-    import html_table
-
+    from drissionpage_mcp.services import html_table
     with patch.object(html_table, "_get_frame") as get_frame:
         result = html_table.click_html_row_selection(row=-1)
 

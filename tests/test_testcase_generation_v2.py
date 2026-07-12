@@ -1,7 +1,6 @@
 """Focused tests for scenario-level, evidence-driven testcase generation."""
 
-import testcase_generation
-
+from drissionpage_mcp.workflows import testcase_generation
 
 def _step(sequence, action, args, observation=None, element=None):
     return {

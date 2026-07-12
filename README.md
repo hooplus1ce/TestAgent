@@ -1,392 +1,55 @@
-<!-- sheeep-source
-{
-  "version": 1,
-  "type": "page",
-  "title": "TestAgent",
-  "icon": {
-    "type": "emoji",
-    "value": "🐑"
-  },
-  "cover": null,
-  "created": "2026-07-08T14:52:25.725Z",
-  "modified": "2026-07-08T14:52:25.725Z",
-  "blocks": [
-    {
-      "id": "md-heading-1",
-      "type": "heading",
-      "props": {
-        "textColor": "default",
-        "backgroundColor": "default",
-        "textAlignment": "left",
-        "level": 1
-      },
-      "content": [
-        {
-          "type": "text",
-          "text": "TestAgent",
-          "styles": {}
-        }
-      ],
-      "children": []
-    },
-    {
-      "id": "md-paragraph-2",
-      "type": "paragraph",
-      "props": {
-        "textColor": "default",
-        "backgroundColor": "default",
-        "textAlignment": "left"
-      },
-      "content": [
-        {
-          "type": "text",
-          "text": "基于 MCP（Model Context Protocol）+ DrissionPage 的企业系统（WMS/MOM/ERP）AI 驱动自动化测试工具集。",
-          "styles": {}
-        }
-      ],
-      "children": []
-    },
-    {
-      "id": "md-heading-3",
-      "type": "heading",
-      "props": {
-        "textColor": "default",
-        "backgroundColor": "default",
-        "textAlignment": "left",
-        "level": 2
-      },
-      "content": [
-        {
-          "type": "text",
-          "text": "组成",
-          "styles": {}
-        }
-      ],
-      "children": []
-    },
-    {
-      "id": "md-bullet-4",
-      "type": "bulletListItem",
-      "props": {
-        "textColor": "default",
-        "backgroundColor": "default",
-        "textAlignment": "left"
-      },
-      "content": [
-        {
-          "type": "text",
-          "text": "mcp-servers/drission-ui/ — drission-ui MCP 服务器：把 DrissionPage 浏览器自动化封装成一组精简的结构化 MCP 工具，供 AI 驱动的 UI 测试技能调用。详见 mcp-servers/drission-ui/README.md。",
-          "styles": {}
-        }
-      ],
-      "children": []
-    },
-    {
-      "id": "md-bullet-5",
-      "type": "bulletListItem",
-      "props": {
-        "textColor": "default",
-        "backgroundColor": "default",
-        "textAlignment": "left"
-      },
-      "content": [
-        {
-          "type": "text",
-          "text": ".claude/skills/ — 测试用例生成技能（test-case-generator-dp、test-case-generator-optimized）。",
-          "styles": {}
-        }
-      ],
-      "children": []
-    },
-    {
-      "id": "md-bullet-6",
-      "type": "bulletListItem",
-      "props": {
-        "textColor": "default",
-        "backgroundColor": "default",
-        "textAlignment": "left"
-      },
-      "content": [
-        {
-          "type": "text",
-          "text": "tests/ — 单元测试。",
-          "styles": {}
-        }
-      ],
-      "children": []
-    },
-    {
-      "id": "md-heading-7",
-      "type": "heading",
-      "props": {
-        "textColor": "default",
-        "backgroundColor": "default",
-        "textAlignment": "left",
-        "level": 2
-      },
-      "content": [
-        {
-          "type": "text",
-          "text": "快速开始",
-          "styles": {}
-        }
-      ],
-      "children": []
-    },
-    {
-      "id": "md-paragraph-8",
-      "type": "paragraph",
-      "props": {
-        "textColor": "default",
-        "backgroundColor": "default",
-        "textAlignment": "left"
-      },
-      "content": [
-        {
-          "type": "text",
-          "text": "完整项目使用流程见 项目使用说明.md。",
-          "styles": {}
-        }
-      ],
-      "children": []
-    },
-    {
-      "id": "md-paragraph-9",
-      "type": "paragraph",
-      "props": {
-        "textColor": "default",
-        "backgroundColor": "default",
-        "textAlignment": "left"
-      },
-      "content": [
-        {
-          "type": "text",
-          "text": "powershell",
-          "styles": {}
-        }
-      ],
-      "children": []
-    },
-    {
-      "id": "md-heading-10",
-      "type": "heading",
-      "props": {
-        "textColor": "default",
-        "backgroundColor": "default",
-        "textAlignment": "left",
-        "level": 1
-      },
-      "content": [
-        {
-          "type": "text",
-          "text": "1. 安装依赖",
-          "styles": {}
-        }
-      ],
-      "children": []
-    },
-    {
-      "id": "md-paragraph-11",
-      "type": "paragraph",
-      "props": {
-        "textColor": "default",
-        "backgroundColor": "default",
-        "textAlignment": "left"
-      },
-      "content": [
-        {
-          "type": "text",
-          "text": "uv sync",
-          "styles": {}
-        }
-      ],
-      "children": []
-    },
-    {
-      "id": "md-heading-12",
-      "type": "heading",
-      "props": {
-        "textColor": "default",
-        "backgroundColor": "default",
-        "textAlignment": "left",
-        "level": 1
-      },
-      "content": [
-        {
-          "type": "text",
-          "text": "2. 以远程调试端口启动 Chrome",
-          "styles": {}
-        }
-      ],
-      "children": []
-    },
-    {
-      "id": "md-paragraph-13",
-      "type": "paragraph",
-      "props": {
-        "textColor": "default",
-        "backgroundColor": "default",
-        "textAlignment": "left"
-      },
-      "content": [
-        {
-          "type": "text",
-          "text": "chrome --remote-debugging-port=9222",
-          "styles": {}
-        }
-      ],
-      "children": []
-    },
-    {
-      "id": "md-heading-14",
-      "type": "heading",
-      "props": {
-        "textColor": "default",
-        "backgroundColor": "default",
-        "textAlignment": "left",
-        "level": 1
-      },
-      "content": [
-        {
-          "type": "text",
-          "text": "3. 注册 MCP 服务器（项目根 .mcp.json 已配置）",
-          "styles": {}
-        }
-      ],
-      "children": []
-    },
-    {
-      "id": "md-heading-15",
-      "type": "heading",
-      "props": {
-        "textColor": "default",
-        "backgroundColor": "default",
-        "textAlignment": "left",
-        "level": 1
-      },
-      "content": [
-        {
-          "type": "text",
-          "text": "Claude Code 会自动加载",
-          "styles": {}
-        }
-      ],
-      "children": []
-    },
-    {
-      "id": "md-heading-16",
-      "type": "heading",
-      "props": {
-        "textColor": "default",
-        "backgroundColor": "default",
-        "textAlignment": "left",
-        "level": 1
-      },
-      "content": [
-        {
-          "type": "text",
-          "text": "4. 跑单元测试",
-          "styles": {}
-        }
-      ],
-      "children": []
-    },
-    {
-      "id": "md-paragraph-17",
-      "type": "paragraph",
-      "props": {
-        "textColor": "default",
-        "backgroundColor": "default",
-        "textAlignment": "left"
-      },
-      "content": [
-        {
-          "type": "text",
-          "text": "uv run pytest tests/ -v",
-          "styles": {}
-        }
-      ],
-      "children": []
-    },
-    {
-      "id": "md-heading-18",
-      "type": "heading",
-      "props": {
-        "textColor": "default",
-        "backgroundColor": "default",
-        "textAlignment": "left",
-        "level": 2
-      },
-      "content": [
-        {
-          "type": "text",
-          "text": "配置",
-          "styles": {}
-        }
-      ],
-      "children": []
-    },
-    {
-      "id": "md-paragraph-19",
-      "type": "paragraph",
-      "props": {
-        "textColor": "default",
-        "backgroundColor": "default",
-        "textAlignment": "left"
-      },
-      "content": [
-        {
-          "type": "text",
-          "text": "通过环境变量覆盖默认配置（URL/域名/端口等），详见 mcp-servers/drission-ui/README.md。",
-          "styles": {}
-        }
-      ],
-      "children": []
-    }
-  ],
-  "comments": []
-}
--->
-
-> This README is auto-generated by Sheeep from the embedded source block.
-> Edit it in the Sheeep editor, not in GitHub or a plain text editor.
-
 # TestAgent
 
-# TestAgent
+基于 MCP 和 DrissionPage 的 SCM/WMS/MOM/ERP Web 自动化测试项目。
 
-基于 MCP（Model Context Protocol）+ DrissionPage 的企业系统（WMS/MOM/ERP）AI 驱动自动化测试工具集。
+## 项目结构
 
-## 组成
+- `mcp-service/`：项目唯一的 DrissionPage MCP 实现，采用 Python `src/` 布局。
+- `.claude/skills/test-case-generator-dp/`：测试策略、覆盖模型、字段规范和 Excel 导出脚本。
+- `.agents/skills/test-case-generator-dp/`：Codex Skill 适配层。
+- `tests/`：面向 `mcp-service/src/drissionpage_mcp` 的完整回归测试。
+- `test_cases/`：项目级测试用例 JSON 和导出结果。
 
-- mcp-servers/drission-ui/ — drission-ui MCP 服务器：把 DrissionPage 浏览器自动化封装成一组精简的结构化 MCP 工具，供 AI 驱动的 UI 测试技能调用。详见 mcp-servers/drission-ui/README.md。
-
-- .claude/skills/ — 测试用例生成技能（test-case-generator-dp、test-case-generator-optimized）。
-
-- tests/ — 单元测试。
+不存在其他 MCP 实现或兼容启动入口。Claude、Codex 和 Trae 都以
+`mcp-service/launcher.py` 作为统一入口，对外服务名为 `drissionpage-mcp`。
 
 ## 快速开始
 
-完整项目使用流程见 项目使用说明.md。
+同步独立 MCP 环境：
 
-powershell
+```bash
+uv sync --project mcp-service --all-groups
+```
 
-# 1. 安装依赖
+检查可迁移的浏览器基线配置：
 
-uv sync
+```bash
+sed -n '1,120p' mcp-service/configs/dp_configs.ini
+```
 
-# 2. 以远程调试端口启动 Chrome
+`dp_configs.ini` 中的 `../dp_profile` 复用项目根目录的浏览器用户数据。
+机器差异和账号密码通过 MCP 进程环境变量注入，不写入仓库配置。
 
-chrome --remote-debugging-port=9222
+项目已有以下 Agent 配置：
 
-# 3. 注册 MCP 服务器（项目根 .mcp.json 已配置）
+- Claude：`.mcp.json`
+- Codex：`.codex/config.toml`
+- Trae：`.trae/mcp.json`
 
-# Claude Code 会自动加载
+修改配置后重启对应 Agent 会话，再检查 `drissionpage-mcp` 是否加载。
 
-# 4. 跑单元测试
+## 验证
 
-uv run pytest tests/ -v
+```bash
+uv run pytest -q
+uv run --project mcp-service pytest -q mcp-service/tests
+```
 
-## 配置
+手动启动 stdio 服务：
 
-通过环境变量覆盖默认配置（URL/域名/端口等），详见 mcp-servers/drission-ui/README.md。
+```bash
+uv run --project mcp-service python mcp-service/launcher.py
+```
+
+完整使用说明见 [docs/项目使用说明.md](docs/项目使用说明.md)，服务架构与工具说明见
+[mcp-service/README.md](mcp-service/README.md)。

@@ -1,8 +1,7 @@
 # drissionpage-mcp-refactored
 
-独立的 DrissionPage MCP stdio 服务，按 Python `src/` 布局重组自当前的
-`mcp-servers/drissionpage-mcp`。原服务目录和根依赖保持不变；项目内各 Agent 配置统一
-通过本目录的 launcher 启动新服务。
+项目唯一的 DrissionPage MCP stdio 服务，使用 Python `src/` 布局。项目内各 Agent
+配置统一通过本目录的 launcher 启动，不存在其他兼容入口或第二套 MCP 实现。
 
 ## Layout
 
