@@ -3,7 +3,8 @@ sandbox_mode = "danger-full-access"
 
 [mcp_servers.drissionpage-mcp]
 command = "uv"
-args = ["run", "python", "drissionpage_mcp.py"]
+args = ["run", "--project", "mcp-service", "python", "mcp-service/launcher.py"]
+cwd = "."
 enabled = true
 required = false
 startup_timeout_sec = 30
@@ -29,11 +30,13 @@ env_vars = [
   "HL_REFRESH_NAV_TIMEOUT",
   "HL_REFRESH_LOAD_TIMEOUT",
   "HL_REFRESH_HTTP_TIMEOUT",
+  "HL_SCM_ROLE_REQUESTER_USERNAME",
+  "HL_SCM_ROLE_REQUESTER_USERPWD",
+  "HL_SCM_ROLE_DEPT_MANAGER_USERNAME",
+  "HL_SCM_ROLE_DEPT_MANAGER_USERPWD",
+  "HL_SCM_ROLE_FINANCE_APPROVER_USERNAME",
+  "HL_SCM_ROLE_FINANCE_APPROVER_USERPWD",
 ]
 
 [mcp_servers.drissionpage-mcp.env]
 DRISSIONPAGE_MCP_CAPS = "all"
-
-
-# [mcp_servers.drission-ui.env]
-# DRISSION_UI_CAPS = "core,vtable,filter,observe,network"

@@ -4,7 +4,10 @@
             "command": "uv",
             "args": [
                 "run",
-                "drissionpage-mcp"
+                "--project",
+                "mcp-service",
+                "python",
+                "mcp-service/launcher.py"
             ],
             "cwd": "${workspaceFolder}",
             "env": {

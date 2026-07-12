@@ -1,0 +1,36 @@
+[project]
+name = "drissionpage-mcp-refactored"
+version = "0.1.0"
+description = "Structured DrissionPage MCP server for UI testing"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "ddddocr>=1.6.1",
+    "drissionpage>=4.2.0b20",
+    "httpx>=0.28.1",
+    "loguru>=0.7.3",
+    "mcp[cli]>=1.28.1,<2",
+    "openpyxl>=3.1.5",
+    "regex>=2024.11.6",
+]
+
+[project.scripts]
+drissionpage-mcp-refactored = "drissionpage_mcp.__main__:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+drissionpage_mcp = ["assets/js/*.js"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
