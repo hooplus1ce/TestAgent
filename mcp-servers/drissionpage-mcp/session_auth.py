@@ -12,6 +12,7 @@ from urllib.parse import urlparse
 
 import browser_session
 import config
+import ui_contract
 
 logger = logging.getLogger("drissionpage-mcp")
 
@@ -175,8 +176,8 @@ def check_session():
     tab = browser_session.get_tab()
     confirm_wrapper = browser_session.ele_with_fallback(
         tab,
-        'css:.ant-modal-content .ant-confirm-body-wrapper',
-        'xpath://*[contains(@class, "ant-modal-content")]//*[contains(@class, "ant-confirm-body-wrapper")]',
+        ui_contract.CONFIRM_WRAPPER_CSS,
+        ui_contract.CONFIRM_WRAPPER_XPATH,
         timeout=0.5
     )
     if confirm_wrapper and confirm_wrapper.states.is_displayed:
@@ -184,8 +185,8 @@ def check_session():
         if m:
             t = browser_session.ele_with_fallback(
                 m,
-                'css:.ant-confirm-body',
-                'xpath:.//*[contains(@class, "ant-confirm-body")]',
+                ui_contract.CONFIRM_BODY_CSS,
+                ui_contract.CONFIRM_BODY_XPATH,
                 timeout=0.1
             ) or m
             return {"expired": True, "detail": (t.text or "").strip()[:120]}

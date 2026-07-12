@@ -26,19 +26,20 @@ def test_list_tabs_no_browser():
 
 
 def test_list_tabs_with_mock_browser():
-    """mock _browser.tab_ids 返回 tab 信息。"""
+    """mock _browser.get_tabs() 返回 tab 信息。"""
     import browser_session
 
     mock_tab1 = MagicMock()
+    mock_tab1.tab_id = "t1"
     mock_tab1.url = "https://demo19-scm.hoolinks.com/page1"
     mock_tab1.title = "页面1"
     mock_tab2 = MagicMock()
+    mock_tab2.tab_id = "t2"
     mock_tab2.url = "https://other.com/page2"
     mock_tab2.title = "Other"
 
     mock_browser = MagicMock()
-    mock_browser.tab_ids = ["t1", "t2"]
-    mock_browser.get_tab = MagicMock(side_effect=[mock_tab1, mock_tab2])
+    mock_browser.get_tabs = MagicMock(return_value=[mock_tab1, mock_tab2])
 
     with patch.object(browser_session, "_browser", mock_browser), \
          patch.object(browser_session, "_lock"):
@@ -55,7 +56,7 @@ def test_list_tabs_browser_error():
     import browser_session
 
     mock_browser = MagicMock()
-    mock_browser.tab_ids = MagicMock(side_effect=RuntimeError("disconnected"))
+    mock_browser.get_tabs = MagicMock(side_effect=RuntimeError("disconnected"))
 
     with patch.object(browser_session, "_browser", mock_browser), \
          patch.object(browser_session, "_lock"):
@@ -146,7 +147,9 @@ def test_find_passes_timeout_to_clickable_wait():
         result = browser_session.find("#search", in_frame=True, timeout=1.25)
 
     assert result is fake_ele
-    assert fake_ele.wait.kwargs == {"timeout": 1.25, "wait_stop": False}
+    assert fake_ele.wait.kwargs["wait_stop"] is False
+    assert fake_ele.wait.kwargs["raise_err"] is False
+    assert 0 < fake_ele.wait.kwargs["timeout"] <= 1.25
 
 
 # ==================== _ensure_display_env 跨平台/headless 守卫 ====================
@@ -205,3 +208,51 @@ def test_ensure_display_finds_xauthority():
         browser_session.os.environ.pop("XAUTHORITY", None)
         browser_session._ensure_display_env()
         assert browser_session.os.environ.get("XAUTHORITY", "").endswith(".mutter-Xwaylandauth.ABC123")
+
+
+def test_close_active_context_clears_dead_tab_without_browser(monkeypatch):
+    import browser_session
+
+    context = MagicMock()
+    context.tab_ids = ["context-tab"]
+    monkeypatch.setattr(browser_session, "_contexts", {7: context})
+    monkeypatch.setattr(browser_session, "_tab", MagicMock(tab_id="context-tab"))
+    monkeypatch.setattr(browser_session, "_browser", None)
+
+    result = browser_session.close_context(7)
+
+    context.close.assert_called_once_with()
+    assert result == {"ok": True, "context_id": 7, "switched_tab_id": None}
+    assert browser_session._tab is None
+
+
+def test_close_active_context_switches_to_live_main_tab(monkeypatch):
+    import browser_session
+
+    context = MagicMock()
+    context.tab_ids = ["context-tab"]
+    replacement = MagicMock(tab_id="main-tab")
+    browser = MagicMock()
+    monkeypatch.setattr(browser_session, "_contexts", {8: context})
+    monkeypatch.setattr(browser_session, "_tab", MagicMock(tab_id="context-tab"))
+    monkeypatch.setattr(browser_session, "_browser", browser)
+    monkeypatch.setattr(browser_session, "_pick_tab", lambda *_: replacement)
+
+    result = browser_session.close_context(8)
+
+    assert result["switched_tab_id"] == "main-tab"
+    assert browser_session._tab is replacement
+
+
+def test_close_context_failure_restores_registry(monkeypatch):
+    import browser_session
+
+    context = MagicMock()
+    context.tab_ids = ["context-tab"]
+    context.close.side_effect = RuntimeError("busy")
+    monkeypatch.setattr(browser_session, "_contexts", {9: context})
+
+    result = browser_session.close_context(9)
+
+    assert result["ok"] is False and "busy" in result["reason"]
+    assert browser_session._contexts[9] is context

@@ -9,12 +9,14 @@ import functools
 import importlib.metadata
 import threading
 import json
+import math
 import logging
 import os
 import re
 import shutil
 import sys
 import time
+import tempfile
 from datetime import datetime
 
 # 确保同目录模块可导入（与 verify_live.py 一致）
@@ -22,10 +24,12 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
+from DrissionPage.common import Keys
 
 import browser_session
 import filter_area
 import config
+import ui_contract
 import vtable
 import session_auth
 import modal
@@ -61,8 +65,6 @@ _READ_ONLY_TOOLS = {
     "get_active_frame",
     "get_element_coords",
     "list_contexts",
-    "listen_wait",
-    "listen_ws_wait",
     "observe_snapshot",
     "scan_drawer",
     "scan_floats",
@@ -80,6 +82,8 @@ _ADDITIVE_TOOLS = {
     "connect",
     "dom_tree",
     "network_record_export",
+    "listen_wait",
+    "listen_ws_wait",
     "scan_page_elements",
     "scan_table",
     "screenshot",
@@ -379,19 +383,19 @@ def enter_module(menu_text: str, timeout: float = 8, expand_filter: bool = True)
     wait_seconds = int(timeout)
     try:
         if old_url is None:
-            tab.wait.ele_displayed(config.ACTIVE_FRAME_LOC, timeout=wait_seconds)
+            tab.wait.ele_displayed(ui_contract.ACTIVE_FRAME, timeout=wait_seconds)
         else:
             new_fr = browser_session.get_active_frame(tab)
             if new_fr:
-                new_fr.wait.url_change(old_url, timeout=wait_seconds)
+                new_fr.wait.url_change(old_url, exclude=True, timeout=wait_seconds)
             else:
-                tab.wait.ele_displayed(config.ACTIVE_FRAME_LOC, timeout=wait_seconds)
+                tab.wait.ele_displayed(ui_contract.ACTIVE_FRAME, timeout=wait_seconds)
     except Exception:
         pass
 
     if browser_session.get_active_frame(tab) is None:
         resource_context = resource_store.set_module(menu_text)
-        return {"ok": True, "entered": menu_text, "iframe_ready": False,
+        return {"ok": False, "entered": menu_text, "iframe_ready": False,
                 "resource_context": resource_context,
                 "reason": "iframe 未在 %.0fs 内出现" % timeout}
 
@@ -445,7 +449,7 @@ def reset_to_initial(module_text: str, timeout: float = 20) -> dict:
                 logger.debug("native tab-close click failed during formal execution")
     # 智能等待：业务 iframe 从 DOM 消失即说明 tab 已关闭（最多 10s）；超时不阻断，交给后续 enter_module
     try:
-        tab.wait.ele_deleted(config.ACTIVE_FRAME_LOC, timeout=10)
+        tab.wait.ele_deleted(ui_contract.ACTIVE_FRAME, timeout=10)
     except Exception:
         pass
     return enter_module(module_text, timeout=timeout)
@@ -490,8 +494,16 @@ def dom_tree(selector: str = "", max_depth: int = 6, max_children: int = 50,
         save_format: 输出格式，"json" 或 "yml"（默认 yml，更省 token）
         max_chars: 输出字符串最大字符数（默认 8000），超出截断并标 _truncated
     """
-    fr = browser_session.get_active_frame()
-    target = fr if fr is not None else browser_session.get_tab()
+    max_depth = min(max(int(max_depth or 0), 0), 20)
+    max_children = min(max(int(max_children or 0), 0), 500)
+    text_limit = min(max(int(text_limit or 0), 0), 1000)
+    max_chars = min(max(int(max_chars or 0), 0), 1_000_000)
+    save_format = str(save_format or "yml").lower()
+    if save_format not in {"json", "yml"}:
+        return {"ok": False, "reason": "save_format 必须为 json 或 yml"}
+    tab = browser_session.get_tab()
+    fr = browser_session.get_active_frame_ro(tab, timeout=0.5)
+    target = fr if fr is not None else tab
     try:
         if selector:
             root = target.ele(f'c:{selector}', timeout=3)
@@ -500,15 +512,17 @@ def dom_tree(selector: str = "", max_depth: int = 6, max_children: int = 50,
         else:
             root = target
 
-        # 用 querySelector 找根元素（与上面 DrissionPage 的 ele 双重验证）
-        escaped = selector.replace("'", "\\'")
-        find_el = ("var el = document.querySelector('" + escaped + "');"
-                   if selector else "var el = document.body;")
+        # json.dumps 生成合法 JavaScript 字符串，避免引号/反斜杠导致选择器注入。
+        find_el = (
+            "var el = document.querySelector(%s);" % json.dumps(selector)
+            if selector else "var el = document.body;"
+        )
 
         # 跳过标签列表
         skip_tags = "" if show_hidden else (
             "var SKIP = {'script':1,'style':1,'link':1,'meta':1,'noscript':1,"
             "'template':1,'#comment':1};")
+        text_budget = "var TEXT_LEFT = 5000;"
 
         js = r"""
         (function walk(el, depth, maxD, maxC, showT, txtLim) {
@@ -538,9 +552,10 @@ def dom_tree(selector: str = "", max_depth: int = 6, max_children: int = 50,
             if (val && tag === 'input' && typ !== 'hidden') node.value = val.substring(0, 60);
 
             // 文本提取：非 script/style 的任意元素，取 textContent 前 N 字符
-            if (showT && tag !== 'script' && tag !== 'style') {
-                var t = (el.textContent || '').trim().substring(0, txtLim);
-                if (t) node.text = t;
+            if (showT && TEXT_LEFT > 0 && tag !== 'script' && tag !== 'style') {
+                var take = Math.min(txtLim, TEXT_LEFT);
+                var t = (el.textContent || '').trim().substring(0, take);
+                if (t) { node.text = t; TEXT_LEFT -= t.length; }
             }
 
             if (depth < maxD && el.children && el.children.length > 0) {
@@ -555,7 +570,7 @@ def dom_tree(selector: str = "", max_depth: int = 6, max_children: int = 50,
             return node;
         })(el, 0, MAXD, MAXC, SHOWT, TXTLIM)
         """
-        js = (find_el + skip_tags + "return JSON.stringify(" +
+        js = (find_el + skip_tags + text_budget + "return JSON.stringify(" +
               js.replace('MAXD', str(max_depth))
                 .replace('MAXC', str(max_children))
                 .replace('SHOWT', 'true' if text else 'false')
@@ -563,6 +578,8 @@ def dom_tree(selector: str = "", max_depth: int = 6, max_children: int = 50,
         res = target.run_js(js)
 
         tree_dict = json.loads(res) if isinstance(res, str) else res
+        if not isinstance(tree_dict, dict):
+            return {"ok": False, "reason": "DOM tree scan returned no object"}
         result = {"ok": True, "save_format": save_format}
 
         # 生成文本内容
@@ -592,8 +609,7 @@ def dom_tree(selector: str = "", max_depth: int = 6, max_children: int = 50,
                             r.append(f"{p}- {_yaml(x, 0).strip()}")
                     return "\n".join(r)
                 else:
-                    s = str(obj)
-                    return f"'{s}'" if (" " in s or s == "") else s
+                    return json.dumps(obj, ensure_ascii=False)
             content_str = _yaml(tree_dict)
         else:
             content_str = json.dumps(tree_dict, ensure_ascii=False, indent=2)
@@ -619,10 +635,10 @@ def dom_tree(selector: str = "", max_depth: int = 6, max_children: int = 50,
             result["_original_chars"] = len(content_str)
 
         if save_path:
-            os.makedirs(os.path.dirname(save_path) or ".", exist_ok=True)
-            with open(save_path, "w", encoding="utf-8") as f:
+            resolved_save_path = resource_store.resolve_path(save_path)
+            with open(resolved_save_path, "w", encoding="utf-8") as f:
                 f.write(content_str)
-            result["saved_to"] = os.path.abspath(save_path)
+            result["saved_to"] = os.path.abspath(resolved_save_path)
 
         return result
     except Exception as e:
@@ -630,11 +646,7 @@ def dom_tree(selector: str = "", max_depth: int = 6, max_children: int = 50,
 
 # ==================== 通用 DOM 原语 ====================
 
-_INTERACTIVE_SELECTOR = (
-    "button,a[href],input,select,textarea,"
-    "[role=button],[role=menuitem],[role=tab],[role=checkbox],[role=switch],[role=link],"
-    "[onclick],.el-button,.ant-btn,[class*=btn]"
-)
+_INTERACTIVE_SELECTOR = ui_contract.INTERACTIVE_CONTROLS
 
 
 def _attr(ele, name: str):
@@ -1046,18 +1058,81 @@ def _click_table_cell_raw(row: int, col: int = None, column_title: str = None,
     return vt
 
 
-def _press_key_raw(tab, key: str, modifiers: list = None, interval: float = 0.01) -> dict:
+_KEY_ALIASES = {
+    "alt": Keys.ALT,
+    "backspace": Keys.BACKSPACE,
+    "control": Keys.CONTROL,
+    "ctrl": Keys.CTRL,
+    "del": Keys.DELETE,
+    "delete": Keys.DELETE,
+    "down": Keys.DOWN,
+    "arrowdown": Keys.DOWN,
+    "end": Keys.END,
+    "enter": Keys.ENTER,
+    "return": Keys.RETURN,
+    "esc": Keys.ESCAPE,
+    "escape": Keys.ESCAPE,
+    "home": Keys.HOME,
+    "left": Keys.LEFT,
+    "arrowleft": Keys.LEFT,
+    "meta": Keys.META,
+    "command": Keys.COMMAND,
+    "pagedown": Keys.PAGE_DOWN,
+    "pageup": Keys.PAGE_UP,
+    "right": Keys.RIGHT,
+    "arrowright": Keys.RIGHT,
+    "shift": Keys.SHIFT,
+    "space": Keys.SPACE,
+    "tab": Keys.TAB,
+    "up": Keys.UP,
+    "arrowup": Keys.UP,
+}
+
+
+def _official_key(value: str):
+    """把 MCP 友好键名映射为 DrissionPage 4.2 官方 ``Keys`` 常量。"""
+    text = str(value or "")
+    if len(text) == 1:
+        return text
+    normalized = re.sub(r"[\s_-]+", "", text).lower()
+    if normalized in _KEY_ALIASES:
+        return _KEY_ALIASES[normalized]
+    if re.fullmatch(r"f(?:[1-9]|1[0-2])", normalized):
+        return getattr(Keys, normalized.upper())
+    raise ValueError("unsupported key: %s" % value)
+
+
+def _press_key_raw(target, key: str, modifiers: list = None, interval: float = 0.01) -> dict:
+    """在动作链发送按键，并在主键释放失败时仍反向释放修饰键。"""
+    modifiers = list(modifiers or [])
     if len(key) == 1 and not modifiers:
-        tab.actions.type(key, interval=interval)
-        return {"ok": True, "key": key}
-    if modifiers:
-        for mod in modifiers:
-            tab.actions.key_down(mod)
-    tab.actions.key_down(key)
-    tab.actions.key_up(key)
-    if modifiers:
-        for mod in modifiers:
-            tab.actions.key_up(mod)
+        target.actions.type(key, interval=interval)
+        return {"ok": True, "key": key, "modifiers": []}
+
+    main_key = _official_key(key)
+    modifier_keys = [_official_key(item) for item in modifiers]
+    pressed = []
+    main_pressed = False
+    release_error = None
+    try:
+        for modifier in modifier_keys:
+            target.actions.key_down(modifier)
+            pressed.append(modifier)
+        target.actions.key_down(main_key)
+        main_pressed = True
+    finally:
+        if main_pressed:
+            try:
+                target.actions.key_up(main_key)
+            except Exception as exc:
+                release_error = exc
+        for modifier in reversed(pressed):
+            try:
+                target.actions.key_up(modifier)
+            except Exception:
+                logger.debug("释放修饰键失败", exc_info=True)
+    if release_error is not None:
+        raise release_error
     return {"ok": True, "key": key, "modifiers": modifiers}
 
 
@@ -1114,7 +1189,10 @@ def _resolve_visible_action_target(target: dict, in_frame: bool) -> dict:
         needle = _compact_text(text)
         for exact in (True, False):
             for overlay in reversed(overlays or []):
-                for item in reversed(overlay.get("buttons") or []):
+                # dropdown/select 的可选项不是 button；页面模型把它们放在 options，
+                # 语义点击统一消费两类元素，避免退化成不稳定坐标点击。
+                candidates = list(overlay.get("buttons") or []) + list(overlay.get("options") or [])
+                for item in reversed(candidates):
                     hay = _compact_text(item.get("text") or item.get("title") or "")
                     matched = hay == needle if exact else bool(needle and needle in hay)
                     if not matched or item.get("disabled"):
@@ -1130,6 +1208,11 @@ def _resolve_visible_action_target(target: dict, in_frame: bool) -> dict:
                         _as_locator("xpath", structural_xpath)
                         if structural_xpath else ""
                     )
+                    overlay_type = overlay.get("type") or ""
+                    resolved_area = (
+                        "modal" if overlay_type in {"modal", "confirm", "system_confirm", "interactive"}
+                        else overlay_type or area
+                    )
                     result = {
                         "ok": True,
                         "action": "click",
@@ -1138,7 +1221,8 @@ def _resolve_visible_action_target(target: dict, in_frame: bool) -> dict:
                         "meta": {
                             "target_type": "action",
                             "text": item.get("text") or text,
-                            "area": area,
+                            "area": resolved_area,
+                            "overlay_type": overlay_type,
                             "overlay_title": overlay.get("title") or "",
                             "scope": overlay.get("scope") or "",
                             "matched": item,
@@ -1151,38 +1235,44 @@ def _resolve_visible_action_target(target: dict, in_frame: bool) -> dict:
                         result["x"] = float(rect["x"]) + float(rect["width"]) / 2
                     if result["y"] is None and {"y", "height"} <= set(rect):
                         result["y"] = float(rect["y"]) + float(rect["height"]) / 2
-                    # Prefer a stable element locator. Coordinate clicks are only
-                    # a fallback for overlays without a usable DOM locator.
                     if not locator and result["x"] is not None and result["y"] is not None:
                         result["action"] = "click_xy"
                     return result
         return None
 
-    if scope in {"auto", "all", "overlay", "modal", "drawer"}:
+    overlay_types = {
+        "modal": {"modal", "confirm", "system_confirm", "interactive"},
+        "drawer": {"drawer"},
+        "dropdown": {"dropdown", "select-dropdown", "vtable-filter-menu", "vtable-menu"},
+        "select-dropdown": {"select-dropdown"},
+        "calendar": {"calendar"},
+        "popover": {"popover"},
+        "tooltip": {"tooltip", "vtable-tooltip"},
+        "notification": {"notification"},
+        "message": {"message"},
+        "vtable-filter-menu": {"vtable-filter-menu"},
+        "vtable-menu": {"vtable-menu"},
+    }
+    all_overlay_types = set().union(*overlay_types.values())
+    overlay_scopes = set(overlay_types) | {"auto", "all", "overlay"}
+    if scope in overlay_scopes:
         snapshot = observe.observe_snapshot(
             only_visible=True, include_table_data=False, detail="summary",
         )
         visible_overlays = snapshot.get("overlays") or []
-        requested_areas = []
-        if scope in {"auto", "all", "overlay", "modal"}:
-            requested_areas.append("modal")
-        if scope in {"auto", "all", "overlay", "drawer"}:
-            requested_areas.append("drawer")
-        for area in requested_areas:
-            accepted_types = (
-                {"modal", "confirm", "system_confirm", "interactive"}
-                if area == "modal" else {area}
-            )
-            typed = [item for item in visible_overlays if item.get("type") in accepted_types]
-            resolved = _matching_button(typed, area)
-            if resolved:
-                if resolved["action"] == "click_xy" and (
-                    resolved.get("x") is None or resolved.get("y") is None
-                ):
-                    continue
-                return resolved
+        accepted_types = (
+            all_overlay_types if scope in {"auto", "all", "overlay"}
+            else overlay_types[scope]
+        )
+        typed = [item for item in visible_overlays if item.get("type") in accepted_types]
+        resolved = _matching_button(typed, "overlay" if scope in {"auto", "all", "overlay"} else scope)
+        if resolved:
+            return resolved
+        # 显式限定浮层时绝不退回页面同名按钮；这是提交/删除类误点击的安全边界。
+        if scope not in {"auto", "all"}:
+            return {"ok": False, "reason": "visible %s action not found: %s" % (scope, text)}
 
-    toolbar_scope = "toolbar" if scope in {"auto", "modal", "drawer", "overlay"} else scope
+    toolbar_scope = "toolbar" if scope == "auto" else scope
     data = page_model.scan_toolbar_actions(
         scope=toolbar_scope, in_frame=in_frame, max_items=max_items,
     )
@@ -1315,20 +1405,33 @@ def _native_element_input(control, value: str, clear: bool, timeout: float) -> N
 def set_field_value(field_name: str, value: str, in_frame: bool = True,
                     clear: bool = True, timeout: float = 5.0,
                     scope: str = "auto", select_index: int = 0) -> dict:
-    """按可见表单标签设置文本/筛选值，优先当前弹窗或抽屉，全程使用 DrissionPage 元素 API。"""
+    """按可见标签写入文本字段；所有候选定位共享一个总超时预算。"""
     field_name = str(field_name or "").strip()
     if not field_name:
         return {"ok": False, "reason": "field_name is required"}
     scope = str(scope or "auto").lower()
+    supported = {"auto", "top", "frame", "iframe", "modal", "drawer", "overlay", "filter", "page"}
+    if scope not in supported:
+        return {"ok": False, "reason": "unsupported scope: %s" % scope}
+    timeout = max(float(timeout or 0), 0.0)
+    deadline = time.monotonic() + timeout
+    select_index = max(int(select_index or 0), 0)
+
+    def remaining(cap=None):
+        available = max(deadline - time.monotonic(), 0.0)
+        return min(available, cap) if cap is not None else available
+
     tab = browser_session.get_tab()
     contexts = []
-    if in_frame and scope not in {"top"}:
+    if in_frame and scope != "top":
         frame = browser_session.get_active_frame(tab)
         if frame is not None:
             contexts.append(("iframe", frame))
     if scope in {"auto", "top", "modal", "drawer", "overlay", "filter", "page"} or not contexts:
         contexts.append(("top", tab))
 
+    if scope in {"frame", "iframe"} and not any(name == "iframe" for name, _ in contexts):
+        return {"ok": False, "reason": "未找到活动 iframe"}
     if scope == "modal":
         areas = ["modal"]
     elif scope == "drawer":
@@ -1346,187 +1449,208 @@ def set_field_value(field_name: str, value: str, in_frame: bool = True,
         "css:input:not([type='hidden']),textarea,.ant-input-number-input,"
         "[contenteditable='true']"
     )
+    text_value = "" if value is None else str(value)
+
+    def apply_control(control, scope_name, area, index):
+        states = getattr(control, "states", None)
+        if not bool(getattr(states, "is_enabled", True)):
+            return {"ok": False, "reason": "field is disabled: %s" % field_name}
+        try:
+            if control.attr("readonly") not in (None, False, "", "false"):
+                return {"ok": False, "reason": "field is read-only: %s" % field_name}
+        except Exception:
+            pass
+        try:
+            _native_element_input(control, text_value, clear, remaining())
+            try:
+                actual = control.property("value")
+            except Exception:
+                actual = None
+            if actual is None:
+                try:
+                    actual = control.attr("value")
+                except Exception:
+                    actual = None
+            if actual is None and getattr(control, "tag", "") not in {"input", "textarea"}:
+                actual = getattr(control, "text", None)
+            return {
+                "ok": True,
+                "action": "set_field_value",
+                "field_name": field_name,
+                "value": text_value,
+                "actual_value": actual,
+                "matches_requested": None if actual is None else str(actual) == text_value,
+                "scope": scope_name,
+                "area": "overlay" if area in {"modal", "drawer"} else area,
+                "select_index": index,
+            }
+        except Exception as exc:
+            return {"ok": False, "reason": "field input failed: %s" % exc,
+                    "field_name": field_name, "scope": scope_name, "area": area}
+
     for scope_name, context in contexts:
         for area in areas:
-            containers = _semantic_field_candidates(context, field_name, area, timeout)
-            exact = [item for item in containers if _compact_text(_field_container_label(item)) == _compact_text(field_name)]
-            ordered = exact or containers
-            for container in reversed(ordered):
+            if remaining() <= 0:
+                break
+            containers = _semantic_field_candidates(
+                context, field_name, area, remaining(2.0)
+            )
+            exact = [
+                item for item in containers
+                if _compact_text(_field_container_label(item)) == _compact_text(field_name)
+            ]
+            for container in reversed(exact or containers):
                 try:
                     controls = [
-                        item for item in container.eles(control_locator, timeout=0.3)
+                        item for item in container.eles(
+                            control_locator, timeout=remaining(0.3)
+                        )
                         if _element_is_visible(item)
                     ]
                 except Exception:
                     controls = []
                 if not controls:
                     continue
-                index = min(max(int(select_index or 0), 0), len(controls) - 1)
-                control = controls[index]
-                states = getattr(control, "states", None)
-                if not bool(getattr(states, "is_enabled", True)):
-                    return {"ok": False, "reason": "field is disabled: %s" % field_name}
-                try:
-                    if control.attr("readonly") not in (None, False, "", "false"):
-                        return {"ok": False, "reason": "field is read-only: %s" % field_name}
-                except Exception:
-                    pass
-                try:
-                    text_value = "" if value is None else str(value)
-                    _native_element_input(control, text_value, clear, timeout)
-                    try:
-                        actual = control.property("value")
-                    except Exception:
-                        actual = None
-                    if actual is None:
-                        try:
-                            actual = control.attr("value")
-                        except Exception:
-                            actual = None
-                    return {
-                        "ok": True,
-                        "action": "set_field_value",
-                        "field_name": field_name,
-                        "value": text_value,
-                        "actual_value": actual,
-                        "scope": scope_name,
-                        "area": "overlay" if area in {"modal", "drawer"} else area,
-                        "select_index": index,
-                    }
-                except Exception as exc:
-                    return {"ok": False, "reason": "field input failed: %s" % exc,
-                            "field_name": field_name, "scope": scope_name, "area": area}
+                index = min(select_index, len(controls) - 1)
+                return apply_control(controls[index], scope_name, area, index)
 
-    # 回退：快速筛选区文本输入（legions-pro-quick-filter）
-    if 'filter' in areas:
-        try:
-            for scope_name, context in contexts:
-                # 在快速筛选区中找文本匹配的 select-value，再定位到值列输入框
-                qf = context.ele('css:.legions-pro-quick-filter', timeout=0.5)
-                if not qf:
-                    continue
-                label_lit = _xpath_literal(field_name)
-                text_el = qf.ele(
-                    'xpath:.//div[contains(@class, "ant-select-selection-selected-value")'
-                    ' and normalize-space(.)=%s]' % label_lit,
-                    timeout=0.3
-                )
-                if not text_el:
-                    continue
-                wrapper = text_el.ele(
-                    'xpath:ancestor::div[contains(@class, "ant-col-xs-24")]',
-                    timeout=0.3
-                )
-                if not wrapper:
-                    continue
-                cols = wrapper.eles('css:.ant-row > .ant-col-8')
-                if len(cols) < 3:
-                    continue
-                value_col = cols[2]
+    if "filter" in areas:
+        for scope_name, context in contexts:
+            column, _ = filter_area._quick_filter_field_column(context, field_name)
+            if column is None:
+                continue
+            try:
                 controls = [
-                    item for item in value_col.eles(control_locator, timeout=0.3)
+                    item for item in column.eles(control_locator, timeout=remaining(0.3))
                     if _element_is_visible(item)
                 ]
-                if not controls:
-                    continue
-                control = controls[min(max(int(select_index or 0), 0), len(controls) - 1)]
-                text_value = "" if value is None else str(value)
-                _native_element_input(control, text_value, clear, timeout)
-                return {
-                    "ok": True,
-                    "action": "set_field_value",
-                    "field_name": field_name,
-                    "value": text_value,
-                    "scope": scope_name,
-                    "area": "filter",
-                }
-        except Exception:
-            pass
+            except Exception:
+                controls = []
+            if controls:
+                index = min(select_index, len(controls) - 1)
+                return apply_control(controls[index], scope_name, "filter", index)
 
-    return {"ok": False, "reason": "field not found: %s" % field_name,
+    reason = "field lookup timed out" if remaining() <= 0 else "field not found"
+    return {"ok": False, "reason": "%s: %s" % (reason, field_name),
             "scope": scope, "in_frame": in_frame}
 
 
 def _click_field_raw(field_name: str, in_frame: bool = True, timeout: float = 5.0,
                      scope: str = "auto", select_index: int = 0) -> dict:
-    """Click a form field control by label using DrissionPage element APIs."""
+    """按可见标签点击固定 Ant Design 字段，严格遵守 frame/浮层区域。
+
+    与 ``set_field_value`` 共用语义候选逻辑：显式 modal/drawer/filter 不会退回页面同名
+    字段；所有候选共享一个总超时预算。日期、Select 等复合控件点击其稳定 opener。
+    """
     field_name = str(field_name or "").strip()
     if not field_name:
         return {"ok": False, "reason": "field target requires name/field_name"}
+    scope = str(scope or "auto").lower()
+    supported = {"auto", "top", "frame", "iframe", "modal", "drawer", "overlay", "filter", "page"}
+    if scope not in supported:
+        return {"ok": False, "reason": "unsupported scope: %s" % scope}
+    timeout = max(float(timeout or 0), 0.0)
+    deadline = time.monotonic() + timeout
+    select_index = max(int(select_index or 0), 0)
+
+    def remaining(cap=None):
+        available = max(deadline - time.monotonic(), 0.0)
+        return min(available, cap) if cap is not None else available
 
     tab = browser_session.get_tab()
-    candidates = []
-    if in_frame and scope in ("auto", "frame", "iframe"):
-        fr = browser_session.get_active_frame(tab)
-        if fr is not None:
-            candidates.append(("iframe", fr))
-    if scope in ("auto", "top") or not candidates:
-        candidates.append(("top", tab))
+    contexts = []
+    if in_frame and scope != "top":
+        frame = browser_session.get_active_frame(tab)
+        if frame is not None:
+            contexts.append(("iframe", frame))
+    if scope in {"auto", "top", "modal", "drawer", "overlay", "filter", "page"} or not contexts:
+        contexts.append(("top", tab))
+    if scope in {"frame", "iframe"} and not any(name == "iframe" for name, _ in contexts):
+        return {"ok": False, "reason": "未找到活动 iframe"}
 
-    label_lit = _xpath_literal(field_name)
-    container_locators = [
-        "xpath://div[contains(@class, 'ant-form-item')][.//*[contains(normalize-space(.), %s)]]" % label_lit,
-        "xpath://div[contains(@class, 'ant-col')][.//*[contains(normalize-space(.), %s)]]" % label_lit,
-    ]
-    control_locator = (
-        "css:.ant-calendar-picker,.ant-picker,.ant-select:not(.ant-select-disabled),"
-        "input:not([type='hidden']),textarea,.ant-input-number,.ant-checkbox-wrapper,"
-        ".ant-radio-group,.ant-switch,[role='combobox']"
-    )
+    if scope == "modal":
+        areas = ["modal"]
+    elif scope == "drawer":
+        areas = ["drawer"]
+    elif scope == "overlay":
+        areas = ["modal", "drawer"]
+    elif scope == "filter":
+        areas = ["filter"]
+    elif scope == "page":
+        areas = ["page"]
+    else:
+        areas = ["modal", "drawer", "filter", "page"]
+
+    control_locator = "css:" + ui_contract.FORM_CONTROL
     opener_locator = (
         "css:.ant-calendar-picker-input,.ant-picker-input input,.ant-select-selection,"
         ".ant-select-selector,[role='combobox'],input:not([type='hidden']),textarea,"
         ".ant-input-number-input,.ant-checkbox-wrapper,.ant-radio-group,.ant-switch"
     )
 
-    for scope_name, target in candidates:
-        for locator in container_locators:
-            try:
-                containers = target.eles(locator, timeout=min(timeout, 2.0))
-            except Exception:
-                containers = []
-            if not containers:
+    def click_container(container, scope_name, area):
+        try:
+            controls = [
+                item for item in container.eles(control_locator, timeout=remaining(0.3))
+                if _element_is_visible(item)
+            ]
+        except Exception:
+            controls = []
+        if not controls:
+            return None
+        index = min(select_index, len(controls) - 1)
+        control = controls[index]
+        try:
+            opener = control.ele(opener_locator, timeout=remaining(0.2)) or control
+            opener.wait.clickable(timeout=remaining(), wait_stop=True, raise_err=False)
+            opener.click(by_js=False, wait_stop=True)
+            cls = str(control.attr("class") or "")
+            control_type = "field"
+            if "calendar" in cls or "ant-picker" in cls:
+                control_type = "date-picker"
+            elif "ant-select" in cls:
+                control_type = "select"
+            elif "input-number" in cls:
+                control_type = "number"
+            return {
+                "ok": True,
+                "action": "field_click",
+                "field_name": field_name,
+                "scope": scope_name,
+                "area": "overlay" if area in {"modal", "drawer"} else area,
+                "control_type": control_type,
+                "select_index": index,
+            }
+        except Exception as exc:
+            return {"ok": False, "reason": "field click failed: %s" % exc,
+                    "field_name": field_name, "scope": scope_name, "area": area}
+
+    for scope_name, context in contexts:
+        for area in areas:
+            if remaining() <= 0:
+                break
+            containers = _semantic_field_candidates(context, field_name, area, remaining(2.0))
+            exact = [
+                item for item in containers
+                if _compact_text(_field_container_label(item)) == _compact_text(field_name)
+            ]
+            for container in reversed(exact or containers):
+                result = click_container(container, scope_name, area)
+                if result is not None:
+                    return result
+
+    if "filter" in areas:
+        for scope_name, context in contexts:
+            column, _ = filter_area._quick_filter_field_column(context, field_name)
+            if column is None:
                 continue
-            for container in containers:
-                try:
-                    controls = container.eles(control_locator, timeout=0.3)
-                except Exception:
-                    controls = []
-                if not controls:
-                    continue
-                control = controls[min(select_index, len(controls) - 1)]
-                opener = None
-                try:
-                    opener = control.ele(opener_locator, timeout=0.2)
-                except Exception:
-                    opener = None
-                opener = opener or control
-                try:
-                    opener.wait.clickable(timeout=timeout, wait_stop=True, raise_err=False)
-                    opener.click(by_js=False, wait_stop=True)
-                    cls = ""
-                    try:
-                        cls = control.attr("class") or ""
-                    except Exception:
-                        pass
-                    control_type = "field"
-                    if "calendar" in cls or "ant-picker" in cls:
-                        control_type = "date-picker"
-                    elif "ant-select" in cls:
-                        control_type = "select"
-                    elif "input-number" in cls:
-                        control_type = "number"
-                    return {
-                        "ok": True,
-                        "action": "field_click",
-                        "field_name": field_name,
-                        "scope": scope_name,
-                        "control_type": control_type,
-                    }
-                except Exception as e:
-                    return {"ok": False, "reason": "field click failed: %s" % e,
-                            "field_name": field_name, "scope": scope_name}
-    return {"ok": False, "reason": "field not found: %s" % field_name}
+            result = click_container(column, scope_name, "filter")
+            if result is not None:
+                return result
+
+    reason = "field lookup timed out" if remaining() <= 0 else "field not found"
+    return {"ok": False, "reason": "%s: %s" % (reason, field_name),
+            "scope": scope, "in_frame": in_frame}
 
 
 def _normalize_date_value(value: str) -> dict:
@@ -1760,7 +1884,13 @@ def set_date(field_name: str, date: str, in_frame: bool = True,
     返回只包含日期控件相关的紧凑信息，不返回父弹窗完整字段/按钮快照。
     date 支持 YYYY-MM-DD 或 YYYY/MM/DD。
     """
-    started = time.time()
+    timeout = max(float(timeout or 0), 0.0)
+    started = time.monotonic()
+    deadline = started + timeout
+
+    def remaining(cap=None):
+        value = max(deadline - time.monotonic(), 0.0)
+        return min(value, cap) if cap is not None else value
     normalized = _normalize_date_value(date)
     if not normalized.get("ok"):
         return normalized
@@ -1772,25 +1902,25 @@ def set_date(field_name: str, date: str, in_frame: bool = True,
     click_result = _click_field_raw(
         field_name,
         in_frame=in_frame,
-        timeout=min(timeout, 5),
+        timeout=remaining(5),
         scope="auto" if in_frame else "top",
         select_index=select_index,
     )
     if not click_result.get("ok"):
-        click_result["elapsedMs"] = int((time.time() - started) * 1000)
+        click_result["elapsedMs"] = int((time.monotonic() - started) * 1000)
         return click_result
 
     scope = click_result.get("scope") or ("iframe" if in_frame else "top")
     target = browser_session.get_active_frame(tab) if scope == "iframe" else tab
     if target is None:
         return {"ok": False, "reason": "未找到活动 iframe", "action": "set_date",
-                "field_name": field_name, "elapsedMs": int((time.time() - started) * 1000)}
+                "field_name": field_name, "elapsedMs": int((time.monotonic() - started) * 1000)}
 
-    cal = _find_calendar_root(target, timeout=min(timeout, 5))
+    cal = _find_calendar_root(target, timeout=remaining(5))
     if cal is None:
         return {"ok": False, "reason": "日历面板未弹出", "action": "set_date",
                 "field_name": field_name, "click": click_result,
-                "elapsedMs": int((time.time() - started) * 1000)}
+                "elapsedMs": int((time.monotonic() - started) * 1000)}
 
     opened = _calendar_snapshot(target, normalized["slash"])
     target_year = normalized["year"]
@@ -1798,57 +1928,75 @@ def set_date(field_name: str, date: str, in_frame: bool = True,
     navigations = []
 
     for _ in range(600):
+        if remaining() <= 0:
+            return {"ok": False, "reason": "日期选择超时", "action": "set_date",
+                    "field_name": field_name, "opened": opened,
+                    "navigations": navigations,
+                    "elapsedMs": int((time.monotonic() - started) * 1000)}
         cur_year, cur_month = _calendar_shown_ym(cal)
         if cur_year == target_year and cur_month == target_month:
             break
         delta = (target_year * 12 + target_month) - (cur_year * 12 + cur_month)
         direction = "next" if delta > 0 else "prev"
         btn_sel = "c:.ant-calendar-next-month-btn" if delta > 0 else "c:.ant-calendar-prev-month-btn"
-        btn = cal.ele(btn_sel, timeout=1)
+        btn = cal.ele(btn_sel, timeout=remaining(1))
         if not btn:
             return {"ok": False, "reason": "未找到%s按钮" % ("下一月" if delta > 0 else "上一月"),
                     "action": "set_date", "field_name": field_name,
                     "opened": opened, "navigations": navigations,
-                    "elapsedMs": int((time.time() - started) * 1000)}
+                    "elapsedMs": int((time.monotonic() - started) * 1000)}
         before_ym = (cur_year, cur_month)
-        btn.wait.clickable(timeout=1.5, wait_stop=True, raise_err=False)
-        btn.click(wait_stop=True)
-        after_ym = _wait_calendar_ym_change(cal, before_ym, 1.5)
+        btn.click(by_js=False, timeout=remaining(1.5), wait_stop=True)
+        after_ym = _wait_calendar_ym_change(cal, before_ym, remaining(1.5))
         navigations.append({
             "direction": direction,
             "from": "%04d-%02d" % before_ym,
             "to": "%04d-%02d" % after_ym,
         })
+        if after_ym == before_ym:
+            return {"ok": False, "reason": "日历翻月后月份未变化", "action": "set_date",
+                    "field_name": field_name, "opened": opened,
+                    "navigations": navigations,
+                    "elapsedMs": int((time.monotonic() - started) * 1000)}
     else:
         return {"ok": False, "reason": "日历翻月超过上限", "action": "set_date",
                 "field_name": field_name, "opened": opened, "navigations": navigations,
-                "elapsedMs": int((time.time() - started) * 1000)}
+                "elapsedMs": int((time.monotonic() - started) * 1000)}
 
     ready = _calendar_snapshot(target, normalized["slash"])
     if not ready.get("ok"):
         return {"ok": False, "reason": ready.get("reason", "日历扫描失败"),
                 "action": "set_date", "field_name": field_name,
                 "opened": opened, "navigations": navigations,
-                "elapsedMs": int((time.time() - started) * 1000)}
+                "elapsedMs": int((time.monotonic() - started) * 1000)}
     if not ready.get("targetCell"):
         return {"ok": False, "reason": "未找到日期单元格: %s" % normalized["slash"],
                 "action": "set_date", "field_name": field_name,
                 "opened": opened, "calendar": ready, "navigations": navigations,
-                "elapsedMs": int((time.time() - started) * 1000)}
+                "elapsedMs": int((time.monotonic() - started) * 1000)}
 
-    cell = cal.ele('c:td[title="%s"] .ant-calendar-date' % normalized["slash"], timeout=1)
+    cell = cal.ele(
+        'c:td[title="%s"]:not(.ant-calendar-last-month-cell)'
+        ':not(.ant-calendar-next-month-btn-day)'
+        ':not(.ant-calendar-next-month-cell) .ant-calendar-date' % normalized["slash"],
+        timeout=remaining(1),
+    )
     if cell is None:
         return {"ok": False, "reason": "未找到日期单元格: %s" % normalized["slash"],
                 "action": "set_date", "field_name": field_name,
                 "opened": opened, "calendar": ready, "navigations": navigations,
-                "elapsedMs": int((time.time() - started) * 1000)}
-    cell.wait.clickable(timeout=2, wait_stop=True, raise_err=False)
-    cell.click(wait_stop=True)
-    target.wait.ele_hidden("c:.ant-calendar-picker-container .ant-calendar", timeout=2, raise_err=False)
+                "elapsedMs": int((time.monotonic() - started) * 1000)}
+    cell.click(by_js=False, timeout=remaining(2), wait_stop=True)
+    target.wait.ele_hidden(
+        "c:.ant-calendar-picker-container .ant-calendar",
+        timeout=remaining(2),
+        raise_err=False,
+    )
     after = _field_snapshot(target, field_name, select_index=select_index)
-    ok = after.get("ok") and after.get("value") == normalized["dash"]
-    return {
-        "ok": bool(ok),
+    actual_value = str(after.get("value") or "").replace("/", "-")
+    ok = bool(after.get("ok") and actual_value == normalized["dash"])
+    result = {
+        "ok": ok,
         "action": "set_date",
         "field_name": field_name,
         "date": normalized["dash"],
@@ -1871,8 +2019,11 @@ def set_date(field_name: str, date: str, in_frame: bool = True,
             },
             "navigations": navigations,
         },
-        "elapsedMs": int((time.time() - started) * 1000),
+        "elapsedMs": int((time.monotonic() - started) * 1000),
     }
+    if not ok:
+        result["reason"] = "日期字段值校验失败"
+    return result
 
 
 def _resolve_target_action(target, action_name: str, locator, x, y, field_name,
@@ -2267,7 +2418,7 @@ def explore_action(action: str = "click", target: dict = None,
     if flow_evidence.wants_screenshot():
         try:
             screenshot_path = resource_store.resolve_path(
-                default_name="flow_step_%d.png" % int(time.time() * 1000),
+                default_name="flow_step_%d.png" % time.time_ns(),
                 category="screenshots",
             )
             browser_session.get_tab().get_screenshot(path=screenshot_path)
@@ -2281,13 +2432,20 @@ def explore_action(action: str = "click", target: dict = None,
             "table_index": table_index, "icon_name": icon_name, "option_text": option_text,
             "field_name": field_name, "text": text, "date": date,
             "start_date": start_date, "end_date": end_date, "key": key, "modifiers": modifiers,
-            "by_js": by_js, "in_frame": in_frame, "expect": expect,
+            "by_js": by_js, "in_frame": in_frame, "timeout": timeout,
+            "signals": signals, "listen_targets": listen_targets, "expect": expect,
+            "observe_mode": observe_mode, "detail": detail, "clean_overlays": clean_overlays,
         },
         result,
         elapsed_ms=int((time.perf_counter() - flow_started) * 1000),
         screenshot=screenshot_path,
     )
-    if flow_step:
+    if isinstance(flow_step, dict) and flow_step.get("ok") is False:
+        result = dict(result)
+        result["ok"] = False
+        result["reason"] = "evidence recording failed: %s" % flow_step.get("reason", "unknown error")
+        result["flow_recording"] = flow_step
+    elif flow_step:
         result["flow_step"] = flow_step
     return result
 
@@ -2332,6 +2490,8 @@ def flow_capture_page_state(label: str = "initial", include_filters: bool = True
         max_elements=200,
     )
     reference = flow_evidence.record_page_state(label, page_state)
+    if isinstance(reference, dict) and reference.get("ok") is False:
+        return reference
     return {"ok": bool(page_state.get("ok")), "reference": reference, "page_state": page_state}
 
 
@@ -2344,7 +2504,7 @@ def flow_stop(filename: str = None, cleanup_from_sequence: int = None) -> dict:
 
 def _read_json_resource(filename: str) -> tuple[dict | None, str | None]:
     try:
-        value = json.loads(resource_store.read_text_resource(filename))
+        value = resource_store.read_json_resource(filename)
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         return None, str(exc)
     return value, None
@@ -2377,20 +2537,24 @@ def _module_artifact_name(module_info: dict | None) -> str:
 
 def _resolve_artifact_path(filename: str | None, category: str, module_info: dict | None,
                            default_name: str) -> str:
-    root = _artifact_root()
+    root = os.path.realpath(os.path.abspath(_artifact_root()))
     requested = str(filename or "").strip()
     if requested and os.path.isabs(requested):
-        path = os.path.abspath(requested)
-        if os.path.commonpath([root, path]) != root:
-            raise ValueError("artifact path escapes project directory")
+        candidate = os.path.abspath(requested)
     elif requested and os.path.dirname(requested):
-        path = os.path.abspath(os.path.join(root, requested))
-        if os.path.commonpath([root, path]) != root:
-            raise ValueError("artifact path escapes project directory")
+        candidate = os.path.abspath(os.path.join(root, requested))
     else:
-        path = os.path.join(root, category, _module_artifact_name(module_info), requested or default_name)
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    return path
+        candidate = os.path.join(
+            root, category, _module_artifact_name(module_info), requested or default_name,
+        )
+    parent = os.path.realpath(os.path.dirname(candidate) or root)
+    try:
+        if os.path.commonpath([root, parent]) != root:
+            raise ValueError("artifact path escapes project directory")
+    except ValueError:
+        raise ValueError("artifact path escapes project directory") from None
+    os.makedirs(parent, exist_ok=True)
+    return os.path.join(parent, os.path.basename(candidate))
 
 
 def _report_bundle_path(filename: str | None, module_info: dict | None,
@@ -2404,32 +2568,118 @@ def _report_bundle_path(filename: str | None, module_info: dict | None,
         direct = _resolve_artifact_path(requested, "", module_info, report_name)
         bundle_dir = os.path.dirname(direct)
         return direct, bundle_dir
-    run_name = os.path.splitext(os.path.basename(execution_file))[0]
-    bundle_dir = os.path.join(_artifact_root(), "test_results", "reports",
-                              _module_artifact_name(module_info), run_name)
-    os.makedirs(bundle_dir, exist_ok=True)
-    return os.path.join(bundle_dir, report_name), bundle_dir
+    run_name = _safe_artifact_segment(
+        os.path.splitext(os.path.basename(str(execution_file)))[0], "execution",
+    )
+    report_path = _resolve_artifact_path(
+        os.path.join("test_results", "reports", _module_artifact_name(module_info),
+                     run_name, report_name),
+        "", module_info, report_name,
+    )
+    return report_path, os.path.dirname(report_path)
 
 
 def _bundle_report_assets(execution: dict, execution_file: str, bundle_dir: str) -> dict:
-    """Copy execution JSON and referenced screenshots beside the Markdown report."""
-    bundled = json.loads(json.dumps(execution, ensure_ascii=False))
-    assets_dir = os.path.join(bundle_dir, "assets")
+    """复制受信目录内的真实位图证据，并在报告目录写入执行快照。"""
+    bundled = flow_evidence.sanitize_artifact(execution)
+    if not isinstance(bundled, dict):
+        raise ValueError("execution must be an object")
+    bundle_root = os.path.realpath(os.path.abspath(bundle_dir))
+    assets_dir = os.path.realpath(os.path.join(bundle_root, "assets"))
+    if os.path.commonpath([bundle_root, assets_dir]) != bundle_root:
+        raise ValueError("report assets path escapes bundle directory")
     os.makedirs(assets_dir, exist_ok=True)
     copied, missing, used_names = [], [], set()
+    copied_sources = {}
+    allowed_roots = {
+        os.path.realpath(os.path.abspath(config.SHOT_DIR)),
+        os.path.realpath(os.path.abspath(config.PROJECT_ROOT)),
+    }
+    try:
+        execution_dir = os.path.dirname(resource_store._resolve_existing_path(execution_file))
+    except (OSError, ValueError):
+        execution_dir = ""
+
+    def allowed_source(path: str) -> bool:
+        for root in allowed_roots:
+            try:
+                if os.path.commonpath([root, path]) == root:
+                    return True
+            except ValueError:
+                continue
+        return False
+
+    def image_kind(path: str) -> str | None:
+        try:
+            size = os.path.getsize(path)
+            if size <= 0 or size > 20_000_000:
+                return None
+            with open(path, "rb") as source:
+                data = source.read()
+        except OSError:
+            return None
+        if (len(data) >= 45 and data.startswith(b"\x89PNG\r\n\x1a\n")
+                and data[12:16] == b"IHDR"
+                and int.from_bytes(data[16:20], "big") > 0
+                and int.from_bytes(data[20:24], "big") > 0
+                and data.endswith(b"\x00\x00\x00\x00IEND\xaeB`\x82")):
+            return ".png"
+        if len(data) >= 4 and data.startswith(b"\xff\xd8\xff") and data.endswith(b"\xff\xd9"):
+            return ".jpg"
+        if (len(data) >= 12 and data.startswith(b"RIFF") and data[8:12] == b"WEBP"
+                and int.from_bytes(data[4:8], "little") == len(data) - 8):
+            return ".webp"
+        return None
+
+    def resolve_screenshot(raw: str) -> str | None:
+        candidates = [str(raw)] if os.path.isabs(str(raw)) else [
+            *([os.path.join(execution_dir, str(raw))] if execution_dir else []),
+            os.path.join(config.SHOT_DIR, str(raw)),
+            os.path.join(config.PROJECT_ROOT, str(raw)),
+        ]
+        for candidate in candidates:
+            source = os.path.realpath(os.path.abspath(candidate))
+            if os.path.isfile(source) and allowed_source(source):
+                return source
+        return None
+
+    def update_ref_path(ref: dict, original: str, relative: str | None) -> None:
+        ref["source_screenshot"] = original
+        artifacts = ref.get("artifacts") if isinstance(ref.get("artifacts"), dict) else None
+        if relative:
+            ref["screenshot"] = relative
+            ref.pop("screenshot_missing", None)
+            if artifacts is not None and "screenshot" in artifacts:
+                artifacts["screenshot"] = relative
+        else:
+            ref.pop("screenshot", None)
+            ref["screenshot_missing"] = True
+            if artifacts is not None:
+                artifacts.pop("screenshot", None)
+
 
     def copy_ref(ref: dict) -> None:
+        artifacts = ref.get("artifacts") if isinstance(ref, dict) else None
         screenshot = ref.get("screenshot") if isinstance(ref, dict) else None
+        if not screenshot and isinstance(artifacts, dict):
+            screenshot = artifacts.get("screenshot")
         if not screenshot:
             return
-        source = os.path.abspath(str(screenshot))
-        if not os.path.isfile(source):
-            missing.append(str(screenshot))
+        original = str(screenshot)
+        source = resolve_screenshot(original)
+        if not source:
+            missing.append(original)
+            update_ref_path(ref, original, None)
             return
-        source_name = os.path.basename(source)
-        source_stem, source_ext = os.path.splitext(source_name)
-        stem = _safe_artifact_segment(source_stem, "evidence")
-        ext = source_ext if re.fullmatch(r"\.[A-Za-z0-9]{1,10}", source_ext or "") else ".png"
+        if source in copied_sources:
+            update_ref_path(ref, original, copied_sources[source])
+            return
+        ext = image_kind(source)
+        if not ext:
+            missing.append(original)
+            update_ref_path(ref, original, None)
+            return
+        stem = _safe_artifact_segment(os.path.splitext(os.path.basename(source))[0], "evidence")
         base = stem + ext
         candidate, index = base, 2
         while candidate in used_names:
@@ -2437,27 +2687,62 @@ def _bundle_report_assets(execution: dict, execution_file: str, bundle_dir: str)
             index += 1
         used_names.add(candidate)
         destination = os.path.join(assets_dir, candidate)
-        shutil.copy2(source, destination)
-        ref["source_screenshot"] = str(screenshot)
-        ref["screenshot"] = "assets/%s" % candidate
-        copied.append(ref["screenshot"])
+        relative = "assets/%s" % candidate
+        if os.path.realpath(destination) != source:
+            temp_path = None
+            try:
+                descriptor, temp_path = tempfile.mkstemp(prefix=".asset-", dir=assets_dir)
+                os.close(descriptor)
+                shutil.copy2(source, temp_path)
+                os.replace(temp_path, destination)
+                temp_path = None
+            except OSError:
+                missing.append(original)
+                update_ref_path(ref, original, None)
+                return
+            finally:
+                if temp_path:
+                    try:
+                        os.unlink(temp_path)
+                    except OSError:
+                        pass
+        copied_sources[source] = relative
+        update_ref_path(ref, original, relative)
+        copied.append(relative)
 
     for result in bundled.get("results", []):
         if not isinstance(result, dict):
             continue
-        for ref in result.get("evidence_refs", []):
+        refs = result.get("evidence_refs")
+        for ref in refs if isinstance(refs, list) else []:
             if isinstance(ref, dict):
                 copy_ref(ref)
-    for defect in bundled.get("known_defects", []):
+        defect = result.get("known_defect")
         if isinstance(defect, dict):
-            for ref in defect.get("evidence_refs", []):
+            refs = defect.get("evidence_refs")
+            for ref in refs if isinstance(refs, list) else []:
+                if isinstance(ref, dict):
+                    copy_ref(ref)
+    coverage_matrix = bundled.get("coverage_matrix")
+    for row in coverage_matrix if isinstance(coverage_matrix, list) else []:
+        if not isinstance(row, dict):
+            continue
+        refs = row.get("asset_evidence_refs") or row.get("evidence_refs") or []
+        for ref in refs if isinstance(refs, list) else []:
+            if isinstance(ref, dict):
+                copy_ref(ref)
+    known_defects = bundled.get("known_defects")
+    for defect in known_defects if isinstance(known_defects, list) else []:
+        if isinstance(defect, dict):
+            refs = defect.get("evidence_refs")
+            for ref in refs if isinstance(refs, list) else []:
                 if isinstance(ref, dict):
                     copy_ref(ref)
     snapshot_path = os.path.join(bundle_dir, "execution.json")
-    with open(snapshot_path, "w", encoding="utf-8") as output:
-        json.dump(bundled, output, ensure_ascii=False, indent=2)
+    resource_store.write_json_atomic(snapshot_path, bundled)
     return {"execution": bundled, "execution_copy": snapshot_path,
-            "assets_dir": assets_dir, "copied": copied, "missing": missing}
+            "assets_dir": assets_dir, "copied": copied,
+            "missing": list(dict.fromkeys(missing))}
 
 
 def _next_case_id_start(case_dir: str, exclude_path: str = None) -> dict:
@@ -2465,19 +2750,26 @@ def _next_case_id_start(case_dir: str, exclude_path: str = None) -> dict:
     if not os.path.isdir(case_dir):
         return {"default": 1}
     excluded = os.path.abspath(exclude_path) if exclude_path else None
+    scanned_files = 0
     for root, _, names in os.walk(case_dir):
         for name in names:
             if not name.lower().endswith(".json"):
                 continue
+            if scanned_files >= 10_000:
+                return {**{prefix: value + 1 for prefix, value in highest.items()},
+                        "default": 1}
+            scanned_files += 1
             source_path = os.path.abspath(os.path.join(root, name))
             if excluded and source_path == excluded:
                 continue
             try:
-                with open(source_path, "r", encoding="utf-8") as source:
-                    payload = json.load(source)
+                payload = resource_store.read_json_resource(source_path, max_bytes=10_000_000)
             except (OSError, ValueError, json.JSONDecodeError):
                 continue
-            for case in payload.get("test_cases", []) if isinstance(payload, dict) else []:
+            raw_cases = payload.get("test_cases") if isinstance(payload, dict) else None
+            for case in raw_cases if isinstance(raw_cases, list) else []:
+                if not isinstance(case, dict):
+                    continue
                 match = re.search(r"([A-Za-z])(\d+)$", str(case.get("case_id", "")))
                 if match:
                     prefix = match.group(1).upper()
@@ -2493,6 +2785,8 @@ def generate_test_cases_from_flow(flow_file: str, module_info: dict = None,
     loaded = flow_evidence.load(flow_file)
     if not loaded.get("ok"):
         return loaded
+    if module_info is not None and not isinstance(module_info, dict):
+        return {"ok": False, "reason": "module_info must be an object"}
     info = dict(module_info or {})
     default_name = "cases_%s.json" % loaded["flow"].get("flow_id", "evidence")
     try:
@@ -2501,10 +2795,13 @@ def generate_test_cases_from_flow(flow_file: str, module_info: dict = None,
         return {"ok": False, "reason": str(exc)}
     info.setdefault("case_id_start", _next_case_id_start(os.path.dirname(path), exclude_path=path))
     generated = testcase_generation.generate_verified_cases(loaded["flow"], info)
-    with open(path, "w", encoding="utf-8") as output:
-        json.dump(generated, output, ensure_ascii=False, indent=2)
-    generated["saved_to"] = path
-    return generated
+    persisted = flow_evidence.sanitize_artifact(generated)
+    try:
+        resource_store.write_json_atomic(path, persisted)
+    except (OSError, TypeError, ValueError) as exc:
+        return {"ok": False, "reason": "test case persistence failed: %s" % exc}
+    persisted["saved_to"] = path
+    return persisted
 
 
 @mcp.tool()
@@ -2513,8 +2810,30 @@ def combine_test_case_files(case_files: list[str], filename: str = None,
                             module_info: dict = None, exclude_case_ids: list[str] = None,
                             exclude_known_defects: bool = False) -> dict:
     """合并多个真实 flow 用例文件，并按资产/场景去重汇总覆盖率。"""
+    if not isinstance(case_files, list) or not case_files or len(case_files) > 100:
+        return {"ok": False, "reason": "case_files must contain 1 to 100 files"}
+    if any(not isinstance(item, str) or not item.strip() for item in case_files):
+        return {"ok": False, "reason": "case_files entries must be non-empty strings"}
+    if module_info is not None and not isinstance(module_info, dict):
+        return {"ok": False, "reason": "module_info must be an object"}
+    if exclude_case_ids is not None and not isinstance(exclude_case_ids, list):
+        return {"ok": False, "reason": "exclude_case_ids must be a list"}
+    if exclude_case_ids is not None and (
+        len(exclude_case_ids) > 100_000
+        or any(not isinstance(item, str) or not item.strip() for item in exclude_case_ids)
+    ):
+        return {"ok": False, "reason": "exclude_case_ids entries must be non-empty strings"}
+    if not isinstance(exclude_known_defects, bool):
+        return {"ok": False, "reason": "exclude_known_defects must be a boolean"}
+    total_bytes = 0
     payloads = []
-    for case_file in case_files or []:
+    for case_file in case_files:
+        try:
+            total_bytes += os.path.getsize(resource_store._resolve_existing_path(case_file))
+        except (OSError, ValueError):
+            pass
+        if total_bytes > 200_000_000:
+            return {"ok": False, "reason": "combined case files exceed 200000000 bytes"}
         payload, error = _read_json_resource(case_file)
         if error:
             return {"ok": False, "reason": "%s: %s" % (case_file, error)}
@@ -2526,17 +2845,26 @@ def combine_test_case_files(case_files: list[str], filename: str = None,
         exclude_case_ids=exclude_case_ids,
         exclude_known_defects=exclude_known_defects,
     )
-    info = merged.get("module_info") or {}
+    if not isinstance(merged, dict):
+        return {"ok": False, "reason": "test suite merger returned an invalid result"}
+    if not merged.get("ok"):
+        return merged
+    info = merged.get("module_info")
+    if not isinstance(info, dict):
+        return {"ok": False, "reason": "merged module_info must be an object"}
     try:
         path = _resolve_artifact_path(
             filename, "test_cases", info, "test_suite_%d.json" % int(time.time()),
         )
     except ValueError as exc:
         return {"ok": False, "reason": str(exc)}
-    with open(path, "w", encoding="utf-8") as output:
-        json.dump(merged, output, ensure_ascii=False, indent=2)
-    merged["saved_to"] = path
-    return merged
+    persisted = flow_evidence.sanitize_artifact(merged)
+    try:
+        resource_store.write_json_atomic(path, persisted)
+    except (OSError, TypeError, ValueError) as exc:
+        return {"ok": False, "reason": "test suite persistence failed: %s" % exc}
+    persisted["saved_to"] = path
+    return persisted
 
 
 _recipe_context = threading.local()
@@ -2552,6 +2880,11 @@ def _recipe_values() -> dict:
 
 def _reset_recipe_context() -> None:
     _recipe_context.values = {}
+    _recipe_context.destructive_allowed = False
+
+
+def _recipe_allows_destructive() -> bool:
+    return bool(getattr(_recipe_context, "destructive_allowed", False))
 
 
 def _recipe_requires_native_actions() -> bool:
@@ -2572,14 +2905,30 @@ def _recipe_ref_value(path: str):
     return value
 
 
-def _resolve_recipe_refs(value):
+def _resolve_recipe_refs(value, _depth: int = 0):
+    if _depth > 20:
+        raise ValueError("recipe reference nesting exceeds 20 levels")
     if isinstance(value, dict):
+        if len(value) > 2_000:
+            raise ValueError("recipe argument object is too large")
         if set(value) == {"$ref"}:
-            return _recipe_ref_value(value["$ref"])
-        return {key: _resolve_recipe_refs(item) for key, item in value.items()}
-    if isinstance(value, list):
-        return [_resolve_recipe_refs(item) for item in value]
-    return value
+            return _resolve_recipe_refs(_recipe_ref_value(value["$ref"]), _depth + 1)
+        if any(not isinstance(key, str) or len(key) > 256 for key in value):
+            raise ValueError("recipe argument keys must be short strings")
+        return {key: _resolve_recipe_refs(item, _depth + 1) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        if len(value) > 2_000:
+            raise ValueError("recipe argument list is too large")
+        return [_resolve_recipe_refs(item, _depth + 1) for item in value]
+    if isinstance(value, str):
+        if len(value) > 12_000:
+            raise ValueError("recipe argument text is too large")
+        return value
+    if isinstance(value, float) and not math.isfinite(value):
+        raise ValueError("recipe argument number must be finite")
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    raise ValueError("recipe argument contains an unsupported value type")
 
 
 def _recipe_element_click(locator: str, in_frame: bool = True, timeout: float = 5,
@@ -2629,6 +2978,7 @@ def _run_recipe_action(action: str, args: dict) -> dict:
         "select_date_range": select_date_range,
         "set_date": set_date,
         "query_filter": _query_filter,
+        "verify_filter_query": _verify_filter_query,
         "observe_snapshot": observe_snapshot,
         "browser_get_element_state": browser_get_element_state,
         "find_elements": find_elements,
@@ -2638,28 +2988,68 @@ def _run_recipe_action(action: str, args: dict) -> dict:
     runner = actions.get(action)
     if runner is None:
         return {"ok": False, "reason": "unsupported recipe action: %s" % action}
-    recorded_args = dict(args or {})
+    if not isinstance(args, dict):
+        return {"ok": False, "reason": "recipe arguments must be an object"}
+    recorded_args = dict(args)
     effective_args = dict(recorded_args)
-    if action == "explore_action" and effective_args.get("by_js") and _recipe_requires_native_actions():
-        return {"ok": False, "reason": "run_test_cases 禁止 by_js 点击；请使用 DrissionPage 原生元素或动作链"}
+    save_as = str(effective_args.pop("save_as", "") or "").strip()
+    if save_as:
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_-]{0,127}", save_as):
+            return {"ok": False, "reason": "save_as must be a short identifier"}
+        values = _recipe_values()
+        if save_as in values:
+            return {"ok": False, "reason": "save_as already exists: %s" % save_as}
+        if len(values) >= 100:
+            return {"ok": False, "reason": "recipe context exceeds 100 saved values"}
+    try:
+        effective_args = _resolve_recipe_refs(effective_args)
+    except (KeyError, ValueError) as exc:
+        reason = ("recipe reference not found: %s" % exc.args[0]
+                  if isinstance(exc, KeyError) else str(exc))
+        return {"ok": False, "reason": reason}
     if action == "explore_action" and _recipe_requires_native_actions():
+        if effective_args.get("by_js"):
+            return {"ok": False, "reason": "run_test_cases 禁止 by_js 点击；请使用 DrissionPage 原生元素或动作链"}
         action_name = str(effective_args.get("action") or "").lower()
-        target_type = str((effective_args.get("target") or {}).get("type") or "").lower()
+        target = effective_args.get("target")
+        target_type = str(target.get("type") or "").lower() if isinstance(target, dict) else ""
         if action_name == "click_xy" or target_type in {"xy", "point", "coord", "coordinate"}:
             return {"ok": False,
                     "reason": "run_test_cases 禁止普通坐标点击；VTable 请使用 vtable_action 或 click_table_cell"}
-    save_as = str(effective_args.pop("save_as", "") or "").strip()
-    try:
-        effective_args = _resolve_recipe_refs(effective_args)
-    except KeyError as exc:
-        return {"ok": False, "reason": "recipe reference not found: %s" % exc.args[0]}
+    if (_recipe_requires_native_actions()
+            and test_execution.is_destructive_command({"action": action, "args": effective_args})
+            and not _recipe_allows_destructive()):
+        return {"ok": False, "reason": "运行期解析出的破坏性操作要求 destructive=true"}
+    for name in (
+        "by_js", "in_frame", "clear", "raw", "allow_empty", "clean_overlays",
+        "include_snapshot", "include_table_data", "only_visible", "hover_first",
+        "select_row",
+    ):
+        if name in effective_args and effective_args[name] is not None and not isinstance(effective_args[name], bool):
+            return {"ok": False, "reason": "%s must be a boolean" % name}
+    for name, lower, upper in (("timeout", 0.1, 120.0), ("duration", 0.0, 30.0)):
+        if name not in effective_args:
+            continue
+        if isinstance(effective_args[name], bool):
+            return {"ok": False, "reason": "%s must be numeric" % name}
+        try:
+            numeric = float(effective_args[name])
+        except (TypeError, ValueError):
+            return {"ok": False, "reason": "%s must be numeric" % name}
+        if not math.isfinite(numeric) or numeric < lower or numeric > upper:
+            return {"ok": False, "reason": "%s must be between %s and %s" %
+                    (name, lower, upper)}
+        effective_args[name] = numeric
     started = time.perf_counter()
     try:
         result = runner(**effective_args)
     except TypeError as exc:
-        return {"ok": False, "reason": "invalid recipe arguments for %s: %s" % (action, exc)}
-    if save_as and isinstance(result, dict) and result.get("ok"):
-        _recipe_values()[save_as] = dict(result)
+        result = {"ok": False, "reason": "invalid recipe arguments for %s: %s" % (action, exc)}
+    except Exception as exc:
+        result = {"ok": False, "reason": "recipe action %s failed: %s: %s" %
+                  (action, type(exc).__name__, exc)}
+    if save_as and isinstance(result, dict) and result.get("ok") is True:
+        _recipe_values()[save_as] = flow_evidence.sanitize(result)
         result = dict(result)
         result["saved_as"] = save_as
     if action == "explore_action" or not flow_evidence.is_active() or not isinstance(result, dict):
@@ -2669,7 +3059,7 @@ def _run_recipe_action(action: str, args: dict) -> dict:
     if flow_evidence.wants_screenshot():
         try:
             screenshot_path = resource_store.resolve_path(
-                "execution_%d_%d.png" % (int(time.time() * 1000), len(flow_evidence.status()["flow"] or {})),
+                "execution_%d.png" % time.time_ns(),
                 category="screenshots",
             )
             browser_session.get_tab().get_screenshot(path=screenshot_path)
@@ -2686,55 +3076,302 @@ def _run_recipe_action(action: str, args: dict) -> dict:
         elapsed_ms=int((time.perf_counter() - started) * 1000),
         screenshot=screenshot_path,
     )
-    if reference:
+    if isinstance(reference, dict) and reference.get("ok") is False:
+        result = dict(result)
+        result["ok"] = False
+        result["reason"] = "evidence recording failed: %s" % reference.get("reason", "unknown error")
+        result["flow_recording"] = reference
+    elif reference:
         result = dict(result)
         result["flow_step"] = reference
     return result
 
 
-def _query_filter(timeout: float = 10, listen_targets: str = "gateway") -> dict:
-    """Submit filter conditions and wait for the resulting page request.
+def _http_success(status) -> bool:
+    try:
+        return 200 <= int(status) < 300
+    except (TypeError, ValueError):
+        return False
 
-    A successful click is not enough: the response must be a successful network
-    event. This is the synchronization boundary required before table assertions.
-    """
-    started = observe.observe_start(signals=["network"], listen_targets=listen_targets,
-                                    native_wait=_recipe_requires_native_actions())
+
+def _response_flag(value) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return value == 1
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "1", "yes", "y", "ok", "success", "succeeded"}:
+            return True
+        if normalized in {"false", "0", "no", "n", "failed", "failure", "error"}:
+            return False
+    return False
+
+
+def _business_response_success(body) -> bool:
+    if not isinstance(body, dict):
+        return True
+    for key in ("ok", "success"):
+        if key in body:
+            return _response_flag(body[key])
+    if "code" in body:
+        return str(body["code"]).strip().lower() in {
+            "0", "200", "20000", "00000", "000000", "ok", "success", "succeeded",
+        }
+    if "status" in body:
+        status_value = body["status"]
+        if isinstance(status_value, bool):
+            return status_value
+        if isinstance(status_value, (int, float)):
+            return status_value in {0, 1, 200, 20000}
+        if isinstance(status_value, str):
+            normalized = status_value.strip().lower()
+            if normalized in {"true", "ok", "success", "succeeded", "0", "1", "200", "20000"}:
+                return True
+            return False
+        return False
+
+    return True
+
+def _wait_query_table(frame, timeout: float = 10) -> tuple[bool, str]:
+    if frame is None:
+        return False, "none"
+    try:
+        limit = min(max(float(timeout or 0), 0.1), 120.0)
+    except (TypeError, ValueError):
+        return False, "none"
+    deadline = time.perf_counter() + limit
+
+    def remaining(cap: float) -> float:
+        return max(0.05, min(cap, deadline - time.perf_counter()))
+
+    if vtable.is_loading_complete(frame, remaining(limit)):
+        return True, "vtable"
+    try:
+        if time.perf_counter() >= deadline:
+            return False, "none"
+        table = frame.ele("c:.ant-table-wrapper", timeout=remaining(0.5))
+        if not table:
+            return False, "none"
+        spinner = table.ele("c:.ant-spin-spinning", timeout=remaining(0.3))
+        if spinner and spinner.states.is_displayed:
+            if not spinner.wait.hidden(timeout=remaining(limit), raise_err=False):
+                return False, "html"
+        if time.perf_counter() >= deadline:
+            return False, "html"
+        stable = table.wait.stop_moving(timeout=remaining(3), raise_err=False)
+        return stable is not False and time.perf_counter() <= deadline, "html"
+    except Exception:
+        return False, "none"
+
+
+def _query_filter(timeout: float = 10, listen_targets: str = "gateway") -> dict:
+    """提交筛选，等待 2xx 业务响应，再被动等待 VTable 或 HTML 表格稳定。"""
+    try:
+        timeout = min(max(float(timeout or 0), 0.1), 120.0)
+    except (TypeError, ValueError):
+        return {"ok": False, "reason": "timeout 必须为正数"}
+    began = time.perf_counter()
+    started = observe.observe_start(
+        signals=["network"], listen_targets=listen_targets,
+        native_wait=_recipe_requires_native_actions(),
+    )
+    observe_started_at = time.perf_counter()
     if not started.get("ok"):
         return {"ok": False, "reason": "无法开始查询网络监听", "observe_start": started}
     click_result = filter_area.submit_filter_area()
-    observed = observe.observe_wait(timeout=timeout, include_snapshot=False, detail="summary",
-                                    native_wait=_recipe_requires_native_actions())
+    clicked_at = time.perf_counter()
+    observed = observe.observe_wait(
+        timeout=timeout if click_result.get("ok") else 0.1,
+        include_snapshot=False, detail="summary",
+        native_wait=_recipe_requires_native_actions(),
+    )
+    network_finished_at = time.perf_counter()
     packet = observed.get("packet") or observed.get("payload") or {}
-    status = packet.get("status", observed.get("status")) if isinstance(packet, dict) else observed.get("status")
+    packet = packet if isinstance(packet, dict) else {}
+    response = packet.get("response") if isinstance(packet.get("response"), dict) else {}
+    status = packet.get("status", response.get("status", observed.get("status")))
+    body = packet.get("body", response.get("body"))
+    body = body if isinstance(body, dict) else {}
+    http_ok = _http_success(status)
+    business_ok = _business_response_success(body)
     loading_complete = False
-    if bool(click_result.get("ok")) and observed.get("type") == "network" and status == 200:
+    table_kind = "none"
+    if (click_result.get("ok") and observed.get("type") == "network"
+            and http_ok and business_ok):
         frame = browser_session.get_active_frame()
-        loading_complete = bool(frame and vtable.is_loading_complete(frame))
-    ok = bool(click_result.get("ok")) and observed.get("type") == "network" and status == 200 and loading_complete
+        remaining_timeout = max(0.1, timeout - (network_finished_at - observe_started_at))
+        loading_complete, table_kind = _wait_query_table(frame, timeout=remaining_timeout)
+    loading_finished_at = time.perf_counter()
+    ok = bool(
+        click_result.get("ok") and observed.get("type") == "network"
+        and http_ok and business_ok and loading_complete
+    )
+    data = body.get("data") if isinstance(body.get("data"), dict) else {}
+    network_summary = {
+        "type": observed.get("type"),
+        "url": packet.get("url") or observed.get("url"),
+        "method": packet.get("method") or observed.get("method"),
+        "api_target": packet.get("api_target") or observed.get("api_target"),
+        "status": status, "elapsedMs": observed.get("elapsedMs"),
+        "event_count": observed.get("event_count"),
+        "request": packet.get("post_data"),
+        "response": {
+            "ok": body.get("ok"), "status": body.get("status"),
+            "message": body.get("msg") or body.get("message"),
+            "total": data.get("total"),
+        },
+    }
+    timings = {
+        "observe_start_ms": round((observe_started_at - began) * 1000, 2),
+        "locate_and_click_ms": round((clicked_at - observe_started_at) * 1000, 2),
+        "network_wait_ms": round((network_finished_at - clicked_at) * 1000, 2),
+        "table_wait_ms": round((loading_finished_at - network_finished_at) * 1000, 2),
+        "vtable_wait_ms": round((loading_finished_at - network_finished_at) * 1000, 2),
+        "total_ms": round((loading_finished_at - began) * 1000, 2),
+    }
     result = {
-        "ok": ok, "click": click_result, "network": observed,
+        "ok": ok, "click": click_result, "network": network_summary,
         "query_completed": ok, "loading_complete": loading_complete,
+        "table_kind": table_kind, "http_ok": http_ok,
+        "business_ok": business_ok, "timings": timings,
     }
     if not ok:
         result["reason"] = click_result.get("reason") or (
-            "查询未在 %.1fs 内获得成功网络响应" % timeout if observed.get("type") != "network"
-            else "查询接口返回 HTTP %s" % status if status != 200
-            else "查询接口返回后 VTable 加载遮罩未完成消失"
+            "查询未在 %.1fs 内获得网络响应" % timeout
+            if observed.get("type") != "network"
+            else "查询接口返回 HTTP %s" % status
+            if not http_ok
+            else "查询接口业务响应失败"
+            if not business_ok
+            else "查询接口返回后 VTable 未稳定完成，且未识别到稳定的 HTML 表格"
         )
     return result
 
 
+def _verify_filter_query(filters: list[dict], timeout: float = 10,
+                         listen_targets: str = "gateway",
+                         allow_empty: bool = False, raw: bool = False) -> dict:
+    """Set filter conditions, submit once, then verify every corresponding table column."""
+    if not isinstance(allow_empty, bool) or not isinstance(raw, bool):
+        return {"ok": False, "verified": False,
+                "reason": "allow_empty 和 raw 必须是布尔值"}
+    if isinstance(timeout, bool):
+        return {"ok": False, "verified": False, "reason": "timeout 必须为正数"}
+    try:
+        timeout = min(max(float(timeout or 0), 0.1), 120.0)
+    except (TypeError, ValueError):
+        return {"ok": False, "verified": False, "reason": "timeout 必须为正数"}
+    if isinstance(filters, list) and len(filters) > 100:
+        return {"ok": False, "verified": False, "reason": "filters 最多支持 100 项"}
+    began = time.perf_counter()
+    if not isinstance(filters, list) or not filters:
+        return {"ok": False, "verified": False, "reason": "filters 必须是非空列表"}
+    expanded = filter_area.expand_filter_area()
+    if not expanded.get("ok"):
+        return {"ok": False, "verified": False,
+                "reason": "筛选区展开失败: %s" % expanded.get("reason", "")}
+    configured = []
+    for index, condition in enumerate(filters):
+        if not isinstance(condition, dict):
+            return {"ok": False, "verified": False,
+                    "reason": "filters[%d] 必须是对象" % index}
+        if "allow_empty" in condition and not isinstance(condition["allow_empty"], bool):
+            return {"ok": False, "verified": False,
+                    "reason": "filters[%d].allow_empty 必须是布尔值" % index}
+        field = str(condition.get("field") or "").strip()
+        operator = str(condition.get("operator") or "").strip()
+        if not field or not operator:
+            return {"ok": False, "verified": False,
+                    "reason": "filters[%d] 缺少 field/operator" % index}
+        if test_execution.normalize_filter_operator(operator) is None:
+            return {"ok": False, "verified": False,
+                    "reason": "不支持的筛选操作符: %s" % operator}
+        setup_started = time.perf_counter()
+        setup = filter_area.set_filter_condition(
+            field, operator, condition.get("value"), timeout=min(timeout, 5.0),
+            ensure_expanded=False,
+        )
+        setup = dict(setup)
+        setup["elapsed_ms"] = round((time.perf_counter() - setup_started) * 1000, 2)
+        configured.append(setup)
+        if not setup.get("ok"):
+            return {
+                "ok": False, "verified": False,
+                "reason": "筛选条件设置失败: %s" % setup.get("reason", field),
+                "configured": configured,
+            }
+    configured_at = time.perf_counter()
+
+    query = _query_filter(timeout=timeout, listen_targets=listen_targets)
+    queried_at = time.perf_counter()
+    if not query.get("ok"):
+        return {"ok": False, "verified": False, "reason": query.get("reason", "查询失败"),
+                "configured": configured, "query": query}
+
+    comparisons = []
+    for condition in filters:
+        comparison_started = time.perf_counter()
+        field = str(condition.get("field") or "").strip()
+        column_title = str(condition.get("column_title") or field).strip()
+        table_values = get_table_values(column_title, kind="auto", raw=raw)
+        if not table_values.get("ok"):
+            return {
+                "ok": False, "verified": False,
+                "reason": "读取筛选对应列失败: %s" % column_title,
+                "configured": configured, "query": query,
+                "comparisons": comparisons,
+                "table_values": {key: table_values.get(key) for key in ("ok", "kind", "reason")},
+            }
+        evaluation = test_execution.evaluate_filter_values(
+            table_values.get("values"), condition.get("operator"), condition.get("value"),
+            allow_empty=condition.get("allow_empty", allow_empty),
+        )
+        comparison = {
+            "field": field, "column_title": column_title,
+            "operator": condition.get("operator"), "expected": condition.get("value"),
+            "evaluation": evaluation,
+            "elapsed_ms": round((time.perf_counter() - comparison_started) * 1000, 2),
+        }
+        comparisons.append(comparison)
+        if not evaluation.get("ok"):
+            return {
+                "ok": False, "verified": False, "reason": evaluation.get("reason"),
+                "configured": configured, "query": query, "comparisons": comparisons,
+            }
+
+    finished_at = time.perf_counter()
+    verified = all(item["evaluation"].get("matched") for item in comparisons)
+    result = {
+        "ok": verified, "verified": verified, "configured": configured,
+        "query": query, "comparisons": comparisons,
+        "condition_count": len(comparisons),
+        "timings": {
+            "configure_filters_ms": round((configured_at - began) * 1000, 2),
+            "query_and_wait_ms": round((queried_at - configured_at) * 1000, 2),
+            "read_and_compare_ms": round((finished_at - queried_at) * 1000, 2),
+            "total_ms": round((finished_at - began) * 1000, 2),
+        },
+    }
+    if not verified:
+        failed_fields = [item["field"] for item in comparisons if not item["evaluation"].get("matched")]
+        result["reason"] = "筛选结果列校验失败: %s" % ", ".join(failed_fields)
+    return result
+
+
 def _execution_module_text(payload: dict) -> str:
-    info = payload.get("module_info") or {}
+    info = payload.get("module_info") if isinstance(payload, dict) else {}
+    info = info if isinstance(info, dict) else {}
     return str(info.get("menu_text") or info.get("module_level2") or "").strip()
 
 
 def _browser_ready_gate(module_text: str) -> dict:
-    if not module_text:
-        return {"ok": True, "skipped": True, "reason": "module_info.menu_text/module_level2 is absent"}
+    """连接浏览器、确认会话与业务 iframe；模块名存在时再精确导航。"""
     try:
         connection = connect(config.DEFAULT_PORT, config.DEFAULT_TARGET_HINT)
+        if not connection.get("ok"):
+            return {"ok": False, "reason": "browser connection failed",
+                    "connection": connection}
         first_session = check_session()
         refresh = None
         if first_session.get("expired"):
@@ -2742,19 +3379,26 @@ def _browser_ready_gate(module_text: str) -> dict:
         final_session = check_session()
         if final_session.get("expired"):
             return {"ok": False, "reason": "session remains expired after refresh",
-                    "connection": connection, "session": final_session, "refresh": refresh}
+                    "connection": connection, "session": final_session,
+                    "refresh": refresh}
         frame = get_active_frame()
-        entered = {"ok": True, "skipped": True, "reason": "target module already active"}
-        if not frame.get("ok") or str(frame.get("tab_name") or "").strip() != module_text:
+        entered = {"ok": True, "skipped": True,
+                   "reason": "module navigation not requested" if not module_text
+                             else "target module already active"}
+        if module_text and (
+            not frame.get("ok") or str(frame.get("tab_name") or "").strip() != module_text
+        ):
             entered = enter_module(module_text, timeout=12)
             frame = get_active_frame()
         if not entered.get("ok") or not frame.get("ok"):
-            return {"ok": False, "reason": "target module iframe is not ready",
-                    "connection": connection, "session": final_session,
-                    "entered": entered, "frame": frame, "refresh": refresh}
-        return {"ok": True, "connection": connection, "initial_session": first_session,
-                "session": final_session, "entered": entered, "frame": frame,
-                "refresh": refresh}
+            reason = ("target module iframe is not ready" if module_text
+                      else "module_info is absent and no active business iframe is ready")
+            return {"ok": False, "reason": reason, "connection": connection,
+                    "session": final_session, "entered": entered, "frame": frame,
+                    "refresh": refresh}
+        return {"ok": True, "connection": connection,
+                "initial_session": first_session, "session": final_session,
+                "entered": entered, "frame": frame, "refresh": refresh}
     except Exception as exc:
         return {"ok": False, "reason": "%s: %s" % (type(exc).__name__, exc)}
 
@@ -2766,110 +3410,262 @@ def run_test_cases(case_file: str, filename: str = None) -> dict:
     payload, error = _read_json_resource(case_file)
     if error:
         return {"ok": False, "reason": error}
-    cases = payload.get("test_cases", []) if isinstance(payload, dict) else []
-    if not cases:
+    if not isinstance(payload, dict):
+        return {"ok": False, "reason": "case file root must be an object"}
+    cases = payload.get("test_cases", [])
+    if not isinstance(cases, list) or not cases:
         return {"ok": False, "reason": "case file contains no test_cases"}
+    if len(cases) > 1_000:
+        return {"ok": False, "reason": "case file exceeds 1000 test cases"}
     # Refuse to turn known stale-table patterns into a green result. Keep the
     # affected cases in the execution artifact as skipped, with a repair reason.
     trusted_cases = []
     preflight_results = []
+    result_slots = []
+    seen_case_ids = set()
     for case in cases:
         reasons = test_execution.weak_recipe_reasons(case)
+        case_id = case.get("case_id") if isinstance(case, dict) else None
+        case_key = case_id.strip() if isinstance(case_id, str) else ""
+        if not isinstance(case_id, str):
+            reasons.append("case_id 必须是字符串")
+        elif not case_key:
+            reasons.append("case_id 不能为空")
+        elif case_key == "__HARNESS__":
+            reasons.append("case_id __HARNESS__ 为执行框架保留编号")
+        elif case_key in seen_case_ids:
+            reasons.append("case_id 重复: %s" % case_key)
+        else:
+            seen_case_ids.add(case_key)
         if reasons:
-            preflight_results.append({
-                "case_id": case.get("case_id"),
-                "case_title": case.get("case_title", ""),
+            rejected = {
+                "case_id": case_id,
+                "case_title": case.get("case_title", "") if isinstance(case, dict) else "",
                 "status": "skipped",
-                "reason": "执行配方可信度不足：" + "；".join(reasons),
-                "failure_type": "recipe_quality",
-                "steps": [],
-                "evidence_refs": [],
-            })
+                "reason": "执行配方可信度不足：" + "；".join(dict.fromkeys(reasons)),
+                "failure_type": "recipe_quality", "steps": [], "evidence_refs": [],
+            }
+            preflight_results.append(rejected)
+            result_slots.append(rejected)
         else:
             trusted_cases.append(case)
-    module_info = payload.get("module_info") or {}
+            result_slots.append(None)
+    module_info = payload.get("module_info") if isinstance(payload.get("module_info"), dict) else {}
     module_text = _execution_module_text(payload)
+    if trusted_cases and flow_evidence.is_active():
+        return {"ok": False, "reason": "an evidence flow is already active; stop it before execution"}
+
     prior_native_actions = _recipe_requires_native_actions()
-    _recipe_context.native_actions_only = True
-    ready_gate = _browser_ready_gate(module_text)
+    _reset_recipe_context()
+    _recipe_context.native_actions_only = True if trusted_cases else prior_native_actions
+    ready_gate = (_browser_ready_gate(module_text) if trusted_cases else
+                  {"ok": True, "skipped": True, "reason": "all cases rejected by preflight"})
     if not ready_gate.get("ok"):
         _recipe_context.native_actions_only = prior_native_actions
         return {"ok": False, "reason": "browser ready gate failed: %s" % ready_gate.get("reason", ""),
                 "ready_gate": ready_gate}
-    if flow_evidence.is_active():
-        _recipe_context.native_actions_only = prior_native_actions
-        return {"ok": False, "reason": "an evidence flow is already active; stop it before execution"}
 
-    started_flow = flow_evidence.start(
-        module_text or str(module_info.get("module_name") or "automated_execution"),
-        "automated_execution_%d" % int(time.time()), capture_screenshots=True,
-        scenario_type="自动化回归测试", risk_type="执行复验",
-        destructive=any(bool(case.get("destructive")) for case in cases),
-        cleanup_strategy="automation_recipe.cleanup + after_case overlay cleanup",
-    )
-    if not started_flow.get("ok"):
-        _recipe_context.native_actions_only = prior_native_actions
-        return started_flow
+    started_flow = {"ok": True, "skipped": True,
+                    "reason": "all cases rejected by preflight"}
+    if trusted_cases:
+        started_flow = flow_evidence.start(
+            module_text or str(module_info.get("module_name") or "automated_execution"),
+            "automated_execution_%d" % int(time.time()), capture_screenshots=True,
+            scenario_type="自动化回归测试", risk_type="执行复验",
+            destructive=any(bool(case.get("destructive")) for case in trusted_cases),
+            cleanup_strategy="automation_recipe.cleanup + after_case overlay cleanup",
+        )
+        if not started_flow.get("ok"):
+            _recipe_context.native_actions_only = prior_native_actions
+            return started_flow
 
-    def before_case(_case):
-        _reset_recipe_context()
-        if not module_text:
-            return {"ok": True, "skipped": True, "reason": "module reset unavailable"}
-        # 仅重置筛选条件（点击重置按钮），不刷新 iframe，速度快且保留鼠标轨迹状态
+    def reset_case_filters(submit: bool) -> dict:
+        began = time.perf_counter()
+        observer_active = False
+
+        def drain_observer() -> None:
+            nonlocal observer_active
+            if not observer_active:
+                return
+            try:
+                observe.observe_wait(
+                    timeout=0.1, include_snapshot=False, detail="summary", native_wait=True,
+                )
+            except Exception:
+                pass
+            observer_active = False
+
         try:
-            started = observe.observe_start(signals=["network"], listen_targets="gateway",
-                                            native_wait=True)
-            reset = filter_area.reset_filter_area()
-            observed = observe.observe_wait(timeout=10, include_snapshot=False, detail="summary",
-                                            native_wait=True)
-            packet = observed.get("packet") or observed.get("payload") or {}
-            status = packet.get("status", observed.get("status")) if isinstance(packet, dict) else observed.get("status")
-            frame = browser_session.get_active_frame()
-            loading_complete = bool(
-                reset.get("ok") and observed.get("type") == "network" and status == 200
-                and frame and vtable.is_loading_complete(frame)
+            started = ({"ok": True, "skipped": True} if not submit else
+                       observe.observe_start(
+                           signals=["network"], listen_targets="gateway", native_wait=True,
+                       ))
+            if not started.get("ok"):
+                return {"ok": False, "reason": "无法监听筛选重置请求",
+                        "observe_start": started}
+            observer_active = bool(submit)
+            reset = filter_area.reset_filter_area(submit=submit)
+            if not reset.get("ok") or not submit:
+                drain_observer()
+                return {"ok": bool(reset.get("ok")), "reset": reset,
+                        "query_deferred": not submit,
+                        "reason": reset.get("reason", "") if not reset.get("ok") else ""}
+            observed = observe.observe_wait(
+                timeout=10, include_snapshot=False, detail="summary", native_wait=True,
             )
-            if reset.get("ok") and not loading_complete:
-                reset = {"ok": False, "reason": "重置后的查询未完成", "reset": reset,
-                         "network": observed, "observe_start": started,
-                         "loading_complete": loading_complete}
+            observer_active = False
+            packet = observed.get("packet") or observed.get("payload") or {}
+            packet = packet if isinstance(packet, dict) else {}
+            response = packet.get("response") if isinstance(packet.get("response"), dict) else {}
+            status = packet.get("status", response.get("status", observed.get("status")))
+            body = packet.get("body", response.get("body"))
+            http_ok = _http_success(status)
+            business_ok = _business_response_success(body)
+            frame_object = browser_session.get_active_frame()
+            remaining = max(0.1, 10 - (time.perf_counter() - began))
+            loading_complete, table_kind = _wait_query_table(frame_object, remaining)
+            ok = bool(observed.get("type") == "network" and http_ok
+                      and business_ok and loading_complete)
+            return {
+                "ok": ok, "reset": reset, "network": observed,
+                "http_ok": http_ok, "business_ok": business_ok,
+                "loading_complete": loading_complete, "table_kind": table_kind,
+                "reason": "" if ok else "重置后的业务查询未稳定完成",
+            }
         except Exception as exc:
-            reset = {"ok": False, "reason": "reset_filter_area 失败: %s" % exc}
+            drain_observer()
+            return {"ok": False, "reason": "reset_filter_area 失败: %s" % exc}
+
+    def reload_case_frame() -> dict:
+        try:
+            frame_object = browser_session.get_active_frame()
+            if frame_object is None:
+                return {"ok": False, "reason": "active iframe is unavailable"}
+            frame_object.refresh()
+            frame_object.wait.doc_loaded(timeout=10, raise_err=False)
+            frame = get_active_frame()
+            return {"ok": bool(frame.get("ok")), "frame": frame,
+                    "reason": "" if frame.get("ok") else "active iframe reload failed"}
+        except Exception as exc:
+            return {"ok": False, "reason": "active iframe reload failed: %s" % exc}
+
+    def fallback_case_reset(reset: dict) -> dict:
+        if reset.get("ok"):
+            return reset
+        logger.warning("reset_filter_area 失败，回退到 iframe 刷新: %s", reset.get("reason", ""))
+        return (_run_recipe_action("reset_to_initial", {"module_text": module_text})
+                if module_text else reload_case_frame())
+
+    def before_case(case):
+        _reset_recipe_context()
+        _recipe_context.destructive_allowed = bool(
+            isinstance(case, dict) and case.get("destructive") is True
+        )
+        overlay_cleanup = _pre_click_cleanup(True)
+        if overlay_cleanup.get("errors"):
+            return {"ok": False, "reason": "; ".join(
+                str(item) for item in overlay_cleanup["errors"]
+            ), "cleanup": overlay_cleanup}
+        recipe = case.get("automation_recipe") if isinstance(case, dict) else None
+        if isinstance(recipe, list):
+            setup_commands, step_commands = [], recipe
+        elif isinstance(recipe, dict):
+            setup_commands = recipe.get("setup") or []
+            step_commands = recipe.get("steps") or []
+        else:
+            setup_commands, step_commands = [], []
+        defer_query = bool(
+            not setup_commands and step_commands and isinstance(step_commands[0], dict)
+            and step_commands[0].get("action") in {"query_filter", "verify_filter_query"}
+        )
+        reset = fallback_case_reset(reset_case_filters(submit=not defer_query))
         if not reset.get("ok"):
-            logger.warning("reset_filter_area 失败，回退到 iframe 刷新: %s", reset.get("reason", ""))
-            reset = _run_recipe_action("reset_to_initial", {"module_text": module_text})
-            if not reset.get("ok"):
-                return reset
+            return reset
         frame = get_active_frame()
         if not frame.get("ok"):
             return frame
-        return {"ok": True, "reset": reset, "frame": frame,
-                "flow_step": reset.get("flow_step")}
+        return {
+            "ok": True, "reset": reset, "frame": frame,
+            "query_deferred": defer_query, "flow_step": reset.get("flow_step"),
+        }
 
     def after_case(_case, _result):
-        cleanup = _pre_click_cleanup(True)
-        response = {"ok": not cleanup.get("errors"), "cleanup": cleanup}
-        if cleanup.get("errors"):
-            response["reason"] = "; ".join(str(item) for item in cleanup["errors"])
+        overlay_cleanup = _pre_click_cleanup(True)
+        reset = fallback_case_reset(reset_case_filters(submit=True))
+        errors = [str(item) for item in overlay_cleanup.get("errors", [])]
+        if not reset.get("ok"):
+            errors.append(str(reset.get("reason") or "页面状态重置失败"))
+        response = {"ok": not errors, "cleanup": overlay_cleanup, "reset": reset,
+                    "flow_step": reset.get("flow_step")}
+        if errors:
+            response["reason"] = "; ".join(errors)
         return response
 
     execution_flow = None
+    harness_failures = []
     try:
         execution = test_execution.execute_cases(
             trusted_cases, _run_recipe_action, before_case=before_case, after_case=after_case,
         )
+        if not isinstance(execution, dict) or not isinstance(execution.get("results"), list):
+            raise TypeError("execution engine returned an invalid result")
+    except Exception as exc:
+        now = datetime.now().astimezone().isoformat()
+        execution = {"schema_version": "1.0", "started_at": now,
+                     "finished_at": now, "results": []}
+        harness_failures.append("execution engine failed: %s: %s" % (type(exc).__name__, exc))
     finally:
         _recipe_context.native_actions_only = prior_native_actions
-        execution_flow = flow_evidence.stop()
+        _reset_recipe_context()
+        if trusted_cases:
+            execution_flow = flow_evidence.stop() if flow_evidence.is_active() else {
+                "ok": False, "reason": "execution evidence flow ended unexpectedly",
+            }
+        else:
+            execution_flow = {"ok": True, "skipped": True,
+                              "reason": "all cases rejected by preflight"}
+    if not execution_flow.get("ok"):
+        harness_failures.append("execution evidence failed: %s" %
+                                execution_flow.get("reason", "unknown error"))
+
+    # Reinsert preflight rejections into their original positions. Reports and
+    # external result consumers must see the same order as the source suite.
+    trusted_results = list(execution.get("results", []))
+    trusted_index = 0
+    ordered_results = []
+    for source_case, slot in zip(cases, result_slots):
+        if slot is not None:
+            ordered_results.append(slot)
+        elif trusted_index < len(trusted_results):
+            ordered_results.append(trusted_results[trusted_index])
+            trusted_index += 1
+        else:
+            ordered_results.append({
+                "case_id": source_case.get("case_id") if isinstance(source_case, dict) else None,
+                "case_title": source_case.get("case_title", "") if isinstance(source_case, dict) else "",
+                "status": "failed", "failure_type": "harness",
+                "reason": "execution engine did not return a result for this case",
+                "steps": [], "evidence_refs": [],
+            })
+    ordered_results.extend(trusted_results[trusted_index:])
+    if harness_failures:
+        ordered_results.append({
+            "case_id": "__HARNESS__", "case_title": "回放执行框架",
+            "status": "failed", "failure_type": "harness",
+            "reason": "；".join(harness_failures), "steps": [], "evidence_refs": [],
+        })
+    execution["results"] = ordered_results
     execution["module_info"] = module_info
-    execution["source_case_file"] = os.path.abspath(case_file)
+    try:
+        execution["source_case_file"] = resource_store._resolve_existing_path(case_file)
+    except (OSError, ValueError):
+        execution["source_case_file"] = str(case_file)
     execution["ready_gate"] = ready_gate
     execution["evidence_flow"] = execution_flow
     if preflight_results:
-        execution["results"] = preflight_results + execution["results"]
         execution["recipe_quality_gate"] = {
             "trusted": len(trusted_cases), "rejected": len(preflight_results),
-            "policy": "query_filter 网络同步 + 全量结果断言",
+            "policy": "原生动作 + 网络同步 + 全量业务断言 + 可验证清理",
         }
     if payload.get("coverage_summary") is not None:
         execution["coverage_summary"] = payload["coverage_summary"]
@@ -2882,11 +3678,14 @@ def run_test_cases(case_file: str, filename: str = None) -> dict:
         )
     except ValueError as exc:
         return {"ok": False, "reason": str(exc)}
-    with open(path, "w", encoding="utf-8") as output:
-        json.dump(flow_evidence.sanitize(execution), output, ensure_ascii=False, indent=2)
-    counts = {state: sum(1 for item in execution["results"] if item["status"] == state)
+    sanitized_execution = flow_evidence.sanitize_artifact(execution)
+    try:
+        resource_store.write_json_atomic(path, sanitized_execution)
+    except (OSError, TypeError, ValueError) as exc:
+        return {"ok": False, "reason": "execution persistence failed: %s" % exc}
+    counts = {state: sum(1 for item in execution["results"] if item.get("status") == state)
               for state in ("passed", "failed", "xfailed", "skipped")}
-    return {"ok": True, "saved_to": path, "counts": counts, "execution": execution}
+    return {"ok": True, "saved_to": path, "counts": counts, "execution": sanitized_execution}
 
 
 @mcp.tool()
@@ -2899,53 +3698,140 @@ def generate_test_report(execution_file: str, coverage_file: str = None,
     execution, error = _read_json_resource(execution_file)
     if error:
         return {"ok": False, "reason": error}
+    if not isinstance(execution, dict):
+        return {"ok": False, "reason": "execution file root must be an object"}
+    if not isinstance(execution.get("results", []), list):
+        return {"ok": False, "reason": "execution.results must be a list"}
+    if any(not isinstance(item, dict) for item in execution.get("results", [])):
+        return {"ok": False, "reason": "execution.results entries must be objects"}
+
+    def coverage_input_error(value, label: str) -> str | None:
+        matrix = value if isinstance(value, list) else value.get("coverage_matrix") if isinstance(value, dict) else None
+        summary = value.get("coverage_summary") if isinstance(value, dict) else None
+        if matrix is not None and not isinstance(matrix, list):
+            return "%s.coverage_matrix must be a list" % label
+        if isinstance(matrix, list) and any(not isinstance(item, dict) for item in matrix):
+            return "%s.coverage_matrix entries must be objects" % label
+        if summary is not None and not isinstance(summary, (dict, list)):
+            return "%s.coverage_summary must be an object or list" % label
+        return None
+
     coverage_payload, coverage_error = _read_json_resource(coverage_file) if coverage_file else ({}, None)
     if coverage_error:
         return {"ok": False, "reason": coverage_error}
+    if not isinstance(coverage_payload, (dict, list)):
+        return {"ok": False, "reason": "coverage file root must be an object or list"}
+    coverage_shape_error = coverage_input_error(coverage_payload, "coverage")
+    if coverage_shape_error:
+        return {"ok": False, "reason": coverage_shape_error}
     baseline, baseline_error = _read_json_resource(baseline_file) if baseline_file else (None, None)
     if baseline_error:
         return {"ok": False, "reason": baseline_error}
+    if baseline is not None and not isinstance(baseline, dict):
+        return {"ok": False, "reason": "baseline file root must be an object"}
     defects_payload, defects_error = _read_json_resource(defects_file) if defects_file else ({}, None)
     if defects_error:
         return {"ok": False, "reason": defects_error}
+    if not isinstance(defects_payload, (dict, list)):
+        return {"ok": False, "reason": "defects file root must be an object or list"}
+
+    supplemental_files = [] if supplemental_execution_files is None else supplemental_execution_files
+    if not isinstance(supplemental_files, list) or len(supplemental_files) > 100:
+        return {"ok": False, "reason": "supplemental_execution_files must contain at most 100 files"}
     current = dict(execution)
     supplemental_results = []
     supplemental_sources = []
-    for supplemental_file in supplemental_execution_files or []:
+    supplemental_bytes = 0
+    module_identity_keys = ("system_name", "domain", "module_level1", "module_level2", "module_name", "menu_text")
+    module_values = {key: set() for key in module_identity_keys}
+    base_module_info = execution.get("module_info") if isinstance(execution.get("module_info"), dict) else {}
+    for key in module_identity_keys:
+        if base_module_info.get(key):
+            module_values[key].add("".join(str(base_module_info[key]).split()).lower())
+    for supplemental_file in supplemental_files:
+        if not isinstance(supplemental_file, str) or not supplemental_file.strip():
+            return {"ok": False, "reason": "supplemental execution file paths must be non-empty strings"}
+        try:
+            resolved_supplemental = resource_store._resolve_existing_path(supplemental_file)
+            supplemental_bytes += os.path.getsize(resolved_supplemental)
+        except (OSError, ValueError):
+            resolved_supplemental = None
+        if supplemental_bytes > 200_000_000:
+            return {"ok": False, "reason": "supplemental execution files exceed 200000000 bytes"}
         supplemental, supplemental_error = _read_json_resource(supplemental_file)
         if supplemental_error:
             return {"ok": False, "reason": "%s: %s" % (supplemental_file, supplemental_error)}
-        supplemental_results.extend(
-            item for item in supplemental.get("results", []) if isinstance(item, dict)
-        )
-        supplemental_sources.append(os.path.abspath(supplemental_file))
+        if not isinstance(supplemental, dict) or not isinstance(supplemental.get("results", []), list):
+            return {"ok": False, "reason": "%s: execution root/results is invalid" % supplemental_file}
+        if any(not isinstance(item, dict) for item in supplemental.get("results", [])):
+            return {"ok": False, "reason": "%s: execution results must contain objects" % supplemental_file}
+        supplemental_info = supplemental.get("module_info") if isinstance(supplemental.get("module_info"), dict) else {}
+        for key in module_identity_keys:
+            if supplemental_info.get(key):
+                module_values[key].add("".join(str(supplemental_info[key]).split()).lower())
+        conflicts = [key for key, values in module_values.items() if len(values) > 1]
+        if conflicts:
+            return {"ok": False, "reason": "supplemental execution module_info conflicts: %s" % ", ".join(conflicts)}
+        supplemental_results.extend(supplemental.get("results", []))
+        supplemental_sources.append(resolved_supplemental or os.path.abspath(supplemental_file))
+
+    base_results = list(execution.get("results", []))
+    if len(base_results) + len(supplemental_results) > 10_000:
+        return {"ok": False, "reason": "report input exceeds 10000 execution results"}
+    current["results"] = base_results + supplemental_results
     if supplemental_results:
-        current["results"] = list(execution.get("results", [])) + supplemental_results
         current["supplemental_execution_files"] = supplemental_sources
-    if coverage_payload:
+
+    seen_case_ids = set()
+    duplicate_case_ids = []
+    for result in current["results"]:
+        case_id = result.get("case_id")
+        if case_id is None:
+            continue
+        case_key = case_id.strip() if isinstance(case_id, str) else str(case_id)
+        if case_key in seen_case_ids:
+            duplicate_case_ids.append(case_key)
+        seen_case_ids.add(case_key)
+    if duplicate_case_ids:
+        return {"ok": False, "reason": "duplicate case ids across executions: %s" %
+                ", ".join(str(item) for item in dict.fromkeys(duplicate_case_ids))}
+
+    if isinstance(coverage_payload, list):
+        current["coverage_matrix"] = coverage_payload
+    elif coverage_payload:
         if coverage_payload.get("coverage_summary") is not None:
             current["coverage_summary"] = coverage_payload["coverage_summary"]
         if coverage_payload.get("coverage_matrix") is not None:
             current["coverage_matrix"] = coverage_payload["coverage_matrix"]
+    final_coverage_error = coverage_input_error(current, "execution")
+    if final_coverage_error:
+        return {"ok": False, "reason": final_coverage_error}
     if defects_payload:
-        if isinstance(defects_payload, list):
-            current["known_defects"] = defects_payload
-        else:
-            current["known_defects"] = defects_payload.get("known_defects", [])
-    try:
-        path, bundle_dir = _report_bundle_path(
-            filename, execution.get("module_info") or {}, execution_file,
+        current["known_defects"] = (
+            defects_payload if isinstance(defects_payload, list)
+            else defects_payload.get("known_defects", [])
         )
-    except ValueError as exc:
-        return {"ok": False, "reason": str(exc)}
-    bundle = _bundle_report_assets(current, execution_file, bundle_dir)
-    regression = test_reporting.compare_regression(bundle["execution"], baseline)
-    markdown = test_reporting.render_markdown(
-        bundle["execution"], coverage_payload or bundle["execution"], regression,
-    )
-    with open(path, "w", encoding="utf-8") as output:
-        output.write(markdown)
+        if not isinstance(current["known_defects"], list):
+            return {"ok": False, "reason": "known_defects must be a list"}
+        if any(not isinstance(item, dict) for item in current["known_defects"]):
+            return {"ok": False, "reason": "known_defects entries must be objects"}
+
+    regression = test_reporting.compare_regression(current, baseline)
+    if baseline is not None and regression.get("ok") is not True:
+        return {"ok": False, "reason": "regression comparison failed: %s" % regression.get("reason", "unknown error"),
+                "regression": regression}
+    module_info = execution.get("module_info") if isinstance(execution.get("module_info"), dict) else {}
+    try:
+        path, bundle_dir = _report_bundle_path(filename, module_info, execution_file)
+        bundle = _bundle_report_assets(current, execution_file, bundle_dir)
+        markdown = test_reporting.render_markdown(
+            bundle["execution"], bundle["execution"], regression,
+        )
+        resource_store.write_text_atomic(path, markdown)
+    except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        return {"ok": False, "reason": "report generation failed: %s" % exc}
     return {"ok": True, "saved_to": path, "regression": regression,
+            "has_regressions": bool(regression.get("has_regressions")),
             "coverage_summary": current.get("coverage_summary"),
             "bundle_dir": bundle_dir, "execution_copy": bundle["execution_copy"],
             "assets_dir": bundle["assets_dir"], "copied_screenshots": len(bundle["copied"]),
@@ -2967,7 +3853,8 @@ def compare_regression_report(execution_file: str, baseline_file: str) -> dict:
 
 def _action_disabled_diff(before: dict, after: dict) -> list:
     def key(item):
-        return (item.get("text") or item.get("title") or item.get("selectorHint") or "").strip()
+        label = (item.get("text") or item.get("title") or item.get("selectorHint") or "").strip()
+        return (item.get("area") or "", label) if label else None
 
     before_map = {key(item): item for item in before.get("actions", []) if key(item)}
     after_map = {key(item): item for item in after.get("actions", []) if key(item)}
@@ -2978,7 +3865,7 @@ def _action_disabled_diff(before: dict, after: dict) -> list:
         a = after_map[name]
         if bool(b.get("disabled")) != bool(a.get("disabled")):
             changes.append({
-                "action": name,
+                "action": name[1],
                 "before_disabled": bool(b.get("disabled")),
                 "after_disabled": bool(a.get("disabled")),
                 "area": a.get("area") or b.get("area"),
@@ -2996,8 +3883,29 @@ def scan_action_availability_by_selection(row: int = 0, col: int = 0,
 
     select_row=True 时会尝试点击 VTable 的 col,row 或 HTML 表格行复选框。
     """
+    parsed = {}
+    for name, value in (("row", row), ("col", col), ("table_index", table_index)):
+        try:
+            item = int(value)
+        except (TypeError, ValueError):
+            return {"ok": False, "reason": "%s 必须为非负整数" % name}
+        if (isinstance(value, float) and not value.is_integer()) or item < 0:
+            return {"ok": False, "reason": "%s 必须为非负整数" % name}
+        parsed[name] = item
+    row, col, table_index = parsed["row"], parsed["col"], parsed["table_index"]
+    try:
+        wait_after_click = float(wait_after_click or 0)
+    except (TypeError, ValueError):
+        return {"ok": False, "reason": "wait_after_click 必须为非负数"}
+    if not math.isfinite(wait_after_click) or wait_after_click < 0:
+        return {"ok": False, "reason": "wait_after_click 必须为非负有限数值"}
+    wait_after_click = min(wait_after_click, 30.0)
     before = page_model.scan_toolbar_actions(scope="all", max_items=160)
+    if not before.get("ok"):
+        return {"ok": False, "reason": "选择前工具栏扫描失败", "before": before,
+                "mutated_page": False}
     select_result = {"ok": True, "skipped": True}
+    post_selection_wait = {"ok": True, "skipped": True}
     if select_row:
         cleanup = _pre_click_cleanup(True)
         table_kind = _normalize_table_kind(kind)
@@ -3012,17 +3920,22 @@ def scan_action_availability_by_selection(row: int = 0, col: int = 0,
         select_result = _attach_cleanup(select_result, cleanup)
         if select_result.get("ok"):
             if select_result.get("kind") == "vtable":
-                vtable.wait_for_render_stable(timeout=max(float(wait_after_click or 0), 0.1))
+                post_selection_wait = vtable.wait_for_render_stable(timeout=max(wait_after_click, 0.1))
             else:
                 target = browser_session.get_active_frame() or browser_session.get_tab()
-                target.wait.doc_loaded(timeout=max(float(wait_after_click or 0), 0.1), raise_err=False)
+                waited = target.wait.doc_loaded(timeout=max(wait_after_click, 0.1), raise_err=False)
+                post_selection_wait = {"ok": waited is not False}
     after = page_model.scan_toolbar_actions(scope="all", max_items=160)
     return {
-        "ok": bool(before.get("ok") and after.get("ok")),
+        "ok": bool(after.get("ok")
+                   and (not select_row or (select_result.get("ok") and post_selection_wait.get("ok")))),
         "selection": select_result,
+        "post_selection_wait": post_selection_wait,
         "changes": _action_disabled_diff(before, after),
         "before": before,
         "after": after,
+        "mutated_page": bool(select_row and select_result.get("ok")),
+        "state_note": "选中状态保留在页面中" if select_row and select_result.get("ok") else "页面选择状态未改变",
     }
 
 
@@ -3306,21 +4219,35 @@ def click(locator: str, in_frame: bool = True, by_js: bool = False, timeout: flo
 @write_synchronized
 def click_xy(x: float, y: float, hover_first: bool = True, duration: float = 0.3,
              clean_overlays: bool = True, times: int = 1) -> dict:
-    """按顶层视口坐标点击(用于 canvas)。
+    """按有限顶层视口坐标点击；``times`` 仅接受 1 到 10。"""
+    if (
+        isinstance(x, bool) or isinstance(y, bool)
+        or not isinstance(x, (int, float)) or not isinstance(y, (int, float))
+        or not math.isfinite(float(x)) or not math.isfinite(float(y))
+    ):
+        return {"ok": False, "reason": "x 和 y 必须是有限数值"}
+    if isinstance(times, bool) or not isinstance(times, int) or not 1 <= times <= 10:
+        return {"ok": False, "reason": "times 必须是 1 到 10 的整数"}
+    if (
+        isinstance(duration, bool) or not isinstance(duration, (int, float))
+        or not math.isfinite(float(duration)) or duration < 0
+    ):
+        return {"ok": False, "reason": "duration 必须是非负有限数值"}
 
-    Args:
-        x, y: top-viewport 坐标
-        hover_first: 是否先缓慢移动到目标再点击（VTable 排序图标需要）
-        duration: hover 移动时长（秒）
-        clean_overlays: 点击前先清理残留通知/消息
-        times: 点击次数，1=单击，2=双击，以此类推
-    """
+    x, y, duration = float(x), float(y), float(duration)
     cleanup = _pre_click_cleanup(clean_overlays)
-    tab = browser_session.get_tab()
-    if times > 1:
-        tab.actions.move_to((x, y), duration=duration if hover_first else 0).click(times=times)
-    else:
-        tab.actions.move_to((x, y), duration=duration if hover_first else 0).click()
+    try:
+        actions = browser_session.get_tab().actions.move_to(
+            (x, y), duration=duration if hover_first else 0,
+        )
+        if times > 1:
+            actions.click(times=times)
+        else:
+            actions.click()
+    except Exception as exc:
+        return _attach_cleanup(
+            {"ok": False, "reason": "坐标点击失败: %s" % exc}, cleanup,
+        )
     return _attach_cleanup({"ok": True, "x": x, "y": y, "times": times}, cleanup)
 
 @mcp.tool()
@@ -3345,13 +4272,27 @@ def select_date_range(field_name: str, start_date: str, end_date: str) -> dict:
 @mcp.tool()
 @write_synchronized
 def input(locator: str, text: str, in_frame: bool = True, clear: bool = True, timeout: float = 5) -> dict:
-    """向输入框填入文本（使用动作链 type 模拟键盘输入）。clear=True 先清空。timeout 为查找超时秒数。"""
-    ele = browser_session.find(locator, in_frame=in_frame, timeout=timeout)
-    if not ele:
+    """定位一次后通过 DrissionPage 元素 input 写入，并返回实际值。"""
+    timeout = max(float(timeout or 0), 0.0)
+    element = browser_session.find(
+        locator, in_frame=in_frame, timeout=timeout, wait_clickable=False
+    )
+    if not element:
         return {"ok": False, "reason": "元素未找到: %s（等待 %.1fs）" % (locator, timeout)}
+    value = "" if text is None else str(text)
     try:
-        _native_element_input(ele, text, clear, timeout)
-        return {"ok": True, "locator": locator, "method": "element.input"}
+        _native_element_input(element, value, clear, timeout)
+        try:
+            actual = element.property("value")
+        except Exception:
+            actual = element.attr("value")
+        return {
+            "ok": True,
+            "locator": locator,
+            "method": "element.input",
+            "actual_value": actual,
+            "matches_requested": None if actual is None else str(actual) == value,
+        }
     except Exception as exc:
         return {"ok": False, "locator": locator, "reason": "DrissionPage input failed: %s" % exc}
 
@@ -3359,64 +4300,100 @@ def input(locator: str, text: str, in_frame: bool = True, clear: bool = True, ti
 @mcp.tool()
 @write_synchronized
 def insert_text(text: str) -> dict:
-    """向当前焦点元素插入文本(动作链)。"""
+    """向当前焦点元素插入文本；活动业务 iframe 优先。"""
     tab = browser_session.get_tab()
-    tab.actions.input(text)
-    return {"ok": True}
+    target = browser_session.get_active_frame_ro(tab, timeout=0.2) or tab
+    try:
+        target.actions.input("" if text is None else str(text))
+        return {"ok": True, "scope": "iframe" if target is not tab else "top"}
+    except Exception as exc:
+        return {"ok": False, "reason": "DrissionPage actions.input failed: %s" % exc}
 
 
 @mcp.tool()
 @write_synchronized
-def hover(locator: str = None, x: float = None, y: float = None, in_frame: bool = True, duration: float = 0.3, timeout: float = 5) -> dict:
-    """鼠标悬停。给 locator 悬停元素；或给 x,y 悬停坐标。timeout 为查找超时秒数。"""
+def hover(locator: str = None, x: float = None, y: float = None, in_frame: bool = True,
+          duration: float = 0.3, timeout: float = 5) -> dict:
+    """通过元素或完整坐标执行 DrissionPage 悬停。"""
     tab = browser_session.get_tab()
-    if locator:
-        ele = browser_session.find(locator, in_frame=in_frame, timeout=timeout, wait_clickable=False)
-        if not ele:
-            return {"ok": False, "reason": "元素未找到: %s（等待 %.1fs）" % (locator, timeout)}
-        tab.actions.move_to(ele)
-    else:
-        tab.actions.move_to((x, y), duration=duration)
-    return {"ok": True}
+    duration = max(float(duration or 0), 0.0)
+    timeout = max(float(timeout or 0), 0.0)
+    try:
+        if locator:
+            element = browser_session.find(
+                locator, in_frame=in_frame, timeout=timeout, wait_clickable=False
+            )
+            if not element:
+                return {"ok": False, "reason": "元素未找到: %s（等待 %.1fs）" % (locator, timeout)}
+            tab.actions.move_to(element, duration=duration)
+            return {"ok": True, "locator": locator}
+        if x is None or y is None:
+            return {"ok": False, "reason": "locator 或 x/y 必须提供"}
+        tab.actions.move_to((float(x), float(y)), duration=duration)
+        return {"ok": True, "x": float(x), "y": float(y)}
+    except Exception as exc:
+        return {"ok": False, "reason": "DrissionPage hover failed: %s" % exc}
 
 
 @mcp.tool()
 @read_synchronized
-def screenshot(path: str = None, locator: str = None, in_frame: bool = True, timeout: float = 5) -> dict:
-    """截图。locator 给定则截元素，否则截全页。path 为空则存资源目录下 shot_<时间戳>.png。timeout 为查找超时秒数。"""
+def screenshot(path: str = None, locator: str = None, in_frame: bool = True,
+               timeout: float = 5) -> dict:
+    """截图并将输出限制在资源目录；可截取匹配元素或当前 Tab。"""
     tab = browser_session.get_tab()
-    if not path:
-        path = resource_store.resolve_path(default_name="shot_%d.png" % int(time.time()),
-                                           category="screenshots")
-    if locator:
-        ele = browser_session.find(locator, in_frame=in_frame, timeout=timeout, wait_clickable=False)
-        if not ele:
-            return {"ok": False, "reason": "元素未找到: %s（等待 %.1fs）" % (locator, timeout)}
-        ele.get_screenshot(path=path)
-    else:
-        tab.get_screenshot(path=path)
-    return {"ok": True, "path": path}
+    timeout = max(float(timeout or 0), 0.0)
+    resolved_path = resource_store.resolve_path(
+        path,
+        default_name="shot_%d.png" % int(time.time()),
+        category="screenshots",
+    )
+    try:
+        if locator:
+            element = browser_session.find(
+                locator, in_frame=in_frame, timeout=timeout, wait_clickable=False
+            )
+            if not element:
+                return {"ok": False, "reason": "元素未找到: %s（等待 %.1fs）" % (locator, timeout)}
+            element.get_screenshot(path=resolved_path)
+        else:
+            tab.get_screenshot(path=resolved_path)
+        if not os.path.isfile(resolved_path):
+            return {"ok": False, "reason": "截图未生成文件", "path": resolved_path}
+        return {
+            "ok": True,
+            "path": os.path.abspath(resolved_path),
+            "size": os.path.getsize(resolved_path),
+        }
+    except Exception as exc:
+        return {"ok": False, "reason": "DrissionPage screenshot failed: %s" % exc}
 
 
 @mcp.tool()
 @read_synchronized
 def run_js(script: str, in_frame: bool = True, max_chars: int = 4000) -> dict:
-    """逃生舱：执行任意 JS。in_frame=True 在活动 iframe 内执行。script 内可用 return 返回值。
-    返回值需为 JSON 可序列化(建议 return JSON.stringify(...))。
-    max_chars 限制返回文本长度（超出截断并标 _truncated），避免吃尽上下文。"""
-    target = browser_session.get_active_frame() if in_frame else None
-    if target is None:
-        target = browser_session.get_tab()
-    res = target.run_js(script)
+    """执行显式调试脚本，并按序列化后的真实体积限制返回。"""
+    max_chars = min(max(int(max_chars or 0), 0), 1_000_000)
+    tab = browser_session.get_tab()
+    target = browser_session.get_active_frame_ro(tab, timeout=0.5) if in_frame else None
+    target = target or tab
     try:
-        json.dumps(res)
-    except (TypeError, ValueError):
-        res = str(res)
-    truncated = False
-    if isinstance(res, str) and len(res) > max_chars:
-        res = res[:max_chars]
-        truncated = True
-    return {"ok": True, "result": res, "_truncated": True} if truncated else {"ok": True, "result": res}
+        result = target.run_js(str(script or ""))
+        try:
+            serialized = json.dumps(result, ensure_ascii=False)
+            output = result
+        except (TypeError, ValueError):
+            output = str(result)
+            serialized = output
+        if len(serialized) > max_chars:
+            return {
+                "ok": True,
+                "result": serialized[:max_chars],
+                "_truncated": True,
+                "_original_chars": len(serialized),
+            }
+        return {"ok": True, "result": output}
+    except Exception as exc:
+        return {"ok": False, "reason": "run_js failed: %s" % exc}
 
 
 def _normalize_table_kind(kind: str) -> str:
@@ -3436,11 +4413,17 @@ def _find_vtable_col(column_title: str, max_col: int = 100):
     scan = vtable.scan_vtable_columns(max_col)
     if not scan.get("ok"):
         return None, scan.get("reason", "VTable 扫描失败")
-    for col_info in scan.get("columns", []):
-        title = (col_info.get("title") or col_info.get("field") or "").strip()
-        if title == column_title:
-            return col_info.get("col"), None
-    return None, "VTable 列未找到: %s" % column_title
+    expected = str(column_title or "").strip()
+    matches = {
+        info.get("col") for info in scan.get("columns", [])
+        if str(info.get("title") or info.get("field") or "").strip() == expected
+    }
+    matches.discard(None)
+    if len(matches) == 1:
+        return next(iter(matches)), None
+    if matches:
+        return None, "VTable 列标题匹配不唯一: %s（匹配列 %s）" % (expected, sorted(matches))
+    return None, "VTable 列未找到: %s" % expected
 
 
 def _build_vtable_drag_to(drag_to_x=None, drag_to_y=None, drag_by_x=None, drag_by_y=None):
@@ -3483,9 +4466,16 @@ def _scan_table_vtable(max_col: int) -> dict:
 def _scan_table_html(table_index: int = 0) -> dict:
     result = html_table.scan_html_table()
     tagged = _tag_table_result("html", result)
-    if tagged.get("ok") and table_index:
-        tables = tagged.get("tables") or []
-        tagged["tables"] = [tables[table_index]] if table_index < len(tables) else []
+    if not tagged.get("ok"):
+        return tagged
+    tables = tagged.get("tables") or []
+    if table_index >= len(tables):
+        return {"ok": False, "kind": "html",
+                "reason": "visible table not found at index %s" % table_index,
+                "table_count": len(tables)}
+    tagged["tables"] = [tables[table_index]]
+    tagged["table_index"] = table_index
+    tagged["table_count"] = len(tables)
     return tagged
 
 
@@ -3494,8 +4484,15 @@ def _scan_table_html(table_index: int = 0) -> dict:
 @mcp.tool()
 @read_synchronized
 def scan_table(kind: str = "auto", max_col: int = 50, table_index: int = 0, filename: str = None) -> dict:
-    """统一扫描表格。kind=auto 优先 VTable，失败后回退 HTML Table；返回实际 kind。
+    """扫描当前可见表格。auto 优先 VTable；HTML 按可见 table_index 返回单个表格。
     filename 提供时保存到文件，不返回大 JSON。"""
+    try:
+        parsed_table_index = int(table_index)
+    except (TypeError, ValueError):
+        return {"ok": False, "reason": "table_index 必须为非负整数"}
+    if (isinstance(table_index, float) and not table_index.is_integer()) or parsed_table_index < 0:
+        return {"ok": False, "reason": "table_index 必须为非负整数"}
+    table_index = parsed_table_index
     kind = _normalize_table_kind(kind)
     if kind == "vtable":
         result = _scan_table_vtable(max_col)
@@ -3532,22 +4529,40 @@ def scan_table(kind: str = "auto", max_col: int = 50, table_index: int = 0, file
 @mcp.tool()
 @read_synchronized
 def get_table_values(column_title: str, kind: str = "auto", raw: bool = False, table_index: int = 0, filename: str = None) -> dict:
-    """统一按列标题读取表格列值。kind=auto 优先 VTable，失败后回退 HTML Table。
-    filename 提供时保存到文件，不返回大 JSON。"""
+    """按列标题读取标量值列表；HTML 同时返回 cells 元数据，raw=true 仅支持 VTable。
+    kind=auto 优先 VTable，失败后回退当前可见 HTML Table；filename 可保存大结果。"""
+    column_title = str(column_title or "").strip()
+    if not column_title:
+        return {"ok": False, "reason": "column_title 不能为空"}
+    try:
+        parsed_table_index = int(table_index)
+    except (TypeError, ValueError):
+        return {"ok": False, "reason": "table_index 必须为非负整数"}
+    if (isinstance(table_index, float) and not table_index.is_integer()) or parsed_table_index < 0:
+        return {"ok": False, "reason": "table_index 必须为非负整数"}
+    table_index = parsed_table_index
     kind = _normalize_table_kind(kind)
     if kind == "vtable":
         result = _tag_table_result("vtable", vtable.get_column_values(column_title, raw))
     elif kind == "html":
+        if raw:
+            return {"ok": False, "kind": "html", "reason": "HTML 表格仅支持界面文本，raw=true 只适用于 VTable"}
         result = _tag_table_result("html", html_table.get_html_table_values(column_title, table_index))
+        result.setdefault("raw", False)
     else:
         vt = _tag_table_result("vtable", vtable.get_column_values(column_title, raw))
         if vt.get("ok"):
             result = vt
+        elif raw:
+            return {"ok": False, "kind": "auto",
+                    "reason": "未找到可读取原始值的 VTable；HTML 表格不支持 raw=true",
+                    "vtable_reason": vt.get("reason", "")}
         else:
             ht = _tag_table_result("html", html_table.get_html_table_values(column_title, table_index))
             if ht.get("ok"):
                 ht["fallback_from"] = "vtable"
                 ht["vtable_reason"] = vt.get("reason", "")
+                ht.setdefault("raw", False)
                 result = ht
             else:
                 result = {"ok": False, "kind": "auto", "reason": "列值读取失败",
@@ -3570,25 +4585,43 @@ def get_table_values(column_title: str, kind: str = "auto", raw: bool = False, t
 @mcp.tool()
 @read_synchronized
 def find_vtable_row(column_title: str, value: str, raw: bool = False,
-                    match: str = "equals", header_rows: int = 1,
+                    match: str = "equals", header_rows: int = None,
                     timeout: float = 0) -> dict:
-    """按唯一列值解析 VTable 画布行号；重复值会失败，避免回放误操作其他业务行。"""
+    """按唯一列值解析 VTable 画布行号；默认从实例自动读取表头层数。"""
     match = str(match or "equals").lower()
     if match not in {"equals", "contains"}:
         return {"ok": False, "reason": "unsupported row match: %s" % match}
     expected = str(value or "").strip()
-    if timeout and float(timeout) > 0:
-        settled = vtable.wait_for_render_stable(timeout=float(timeout))
+    if match == "contains" and not expected:
+        return {"ok": False, "reason": "contains 匹配值不能为空"}
+    try:
+        timeout_value = float(timeout or 0)
+    except (TypeError, ValueError):
+        return {"ok": False, "reason": "timeout 必须为非负数"}
+    if not math.isfinite(timeout_value) or timeout_value < 0:
+        return {"ok": False, "reason": "timeout 必须为非负有限数值"}
+    explicit_header_rows = None
+    if header_rows is not None:
+        try:
+            explicit_header_rows = int(header_rows)
+        except (TypeError, ValueError):
+            return {"ok": False, "reason": "header_rows 必须为非负整数"}
+        if (isinstance(header_rows, float) and not header_rows.is_integer()) or explicit_header_rows < 0:
+            return {"ok": False, "reason": "header_rows 必须为非负整数"}
+    if timeout_value > 0:
+        settled = vtable.wait_for_render_stable(timeout=timeout_value)
         if not settled.get("ok"):
             return settled
     scanned = get_table_values(column_title=column_title, kind="vtable", raw=raw)
     if not scanned.get("ok"):
         return scanned
+    resolved_header_rows = (explicit_header_rows if explicit_header_rows is not None
+                            else max(int(scanned.get("header_rows") or 1), 1))
     matches = []
     for index, actual in enumerate(scanned.get("values") or []):
         normalized = str(actual if actual is not None else "").strip()
         if normalized == expected if match == "equals" else expected in normalized:
-            matches.append({"data_index": index, "row": index + max(int(header_rows), 0),
+            matches.append({"data_index": index, "row": index + resolved_header_rows,
                             "actual": actual})
     if len(matches) != 1:
         return {
@@ -3602,6 +4635,7 @@ def find_vtable_row(column_title: str, value: str, raw: bool = False,
             "match": match,
             "match_count": len(matches),
             "matches": matches,
+            "header_rows": resolved_header_rows,
         }
     found = matches[0]
     return {
@@ -3612,6 +4646,7 @@ def find_vtable_row(column_title: str, value: str, raw: bool = False,
         "row": found["row"],
         "data_index": found["data_index"],
         "match": match,
+        "header_rows": resolved_header_rows,
     }
 
 
@@ -3625,8 +4660,24 @@ def count_vtable_rows(column_title: str, value: str, raw: bool = False,
     if match not in {"equals", "contains"}:
         return {"ok": False, "reason": "unsupported row match: %s" % match}
     expected = str(value or "").strip()
-    if timeout and float(timeout) > 0:
-        settled = vtable.wait_for_render_stable(timeout=float(timeout))
+    if match == "contains" and not expected:
+        return {"ok": False, "reason": "contains 匹配值不能为空"}
+    if expected_count is not None:
+        try:
+            parsed_count = int(expected_count)
+        except (TypeError, ValueError):
+            return {"ok": False, "reason": "expected_count 必须为非负整数"}
+        if (isinstance(expected_count, float) and not expected_count.is_integer()) or parsed_count < 0:
+            return {"ok": False, "reason": "expected_count 必须为非负整数"}
+        expected_count = parsed_count
+    try:
+        timeout_value = float(timeout or 0)
+    except (TypeError, ValueError):
+        return {"ok": False, "reason": "timeout 必须为非负数"}
+    if not math.isfinite(timeout_value) or timeout_value < 0:
+        return {"ok": False, "reason": "timeout 必须为非负有限数值"}
+    if timeout_value > 0:
+        settled = vtable.wait_for_render_stable(timeout=timeout_value)
         if not settled.get("ok"):
             return settled
     scanned = get_table_values(column_title=column_title, kind="vtable", raw=raw)
@@ -3641,6 +4692,8 @@ def count_vtable_rows(column_title: str, value: str, raw: bool = False,
         "ok": True, "kind": "vtable", "column_title": column_title,
         "value": value, "match": match, "match_count": len(matched_indexes),
         "data_indexes": matched_indexes, "expected_count": expected_count,
+        "matches_expected": (len(matched_indexes) == expected_count
+                             if expected_count is not None else None),
     }
 
 
@@ -3649,68 +4702,68 @@ def count_vtable_rows(column_title: str, value: str, raw: bool = False,
 def get_vtable_row_values(key_column: str, key_value: str, column_titles: list[str],
                           raw: bool = False, match: str = "equals",
                           timeout: float = 0) -> dict:
-    """按唯一业务键读取同一 VTable 行的多个列值，避免依赖易变的视觉行号。"""
+    """按唯一业务键读取同一 VTable 行的多列值；目标列通过一次脚本批量读取。"""
+    titles = list(dict.fromkeys(str(title or "").strip() for title in (column_titles or [])))
+    key_column = str(key_column or "").strip()
+    if not key_column:
+        return {"ok": False, "reason": "key_column 不能为空"}
+    if not titles or any(not title for title in titles):
+        return {"ok": False, "reason": "column_titles 不能为空"}
     found = find_vtable_row(
         column_title=key_column, value=key_value, raw=raw, match=match,
-        header_rows=1, timeout=timeout,
+        timeout=timeout,
     )
     if not found.get("ok"):
         return found
     data_index = found["data_index"]
+    scan_titles = list(dict.fromkeys([key_column] + titles))
+    scanned = vtable.get_columns_values(scan_titles, raw=raw)
+    if not scanned.get("ok"):
+        return {"ok": False, "reason": "批量读取目标列失败", "detail": scanned}
+    columns = scanned.get("values") or {}
+    key_values = columns.get(key_column) or []
+    expected = str(key_value or "").strip()
+    resolved_match = found.get("match", "equals")
+    matching_indexes = []
+    for index, actual in enumerate(key_values):
+        normalized = str(actual if actual is not None else "").strip()
+        if normalized == expected if resolved_match == "equals" else expected in normalized:
+            matching_indexes.append(index)
+    if matching_indexes != [data_index]:
+        return {"ok": False, "kind": "vtable",
+                "reason": "VTable 在行定位后发生变化，业务键不再唯一指向原数据行",
+                "key_column": key_column, "key_value": key_value,
+                "previous_data_index": data_index, "matching_indexes": matching_indexes}
     values = {}
-    for title in column_titles or []:
-        scanned = get_table_values(column_title=title, kind="vtable", raw=raw)
-        if not scanned.get("ok"):
-            return {"ok": False, "reason": "读取列失败: %s" % title,
-                    "column": title, "detail": scanned}
-        column_values = scanned.get("values") or []
+    for title in titles:
+        column_values = columns.get(title) or []
         if data_index >= len(column_values):
             return {"ok": False, "reason": "列数据行数不一致: %s" % title,
-                    "column": title, "data_index": data_index, "value_count": len(column_values)}
-        values[str(title)] = column_values[data_index]
+                    "column": title, "data_index": data_index,
+                    "value_count": len(column_values)}
+        values[title] = column_values[data_index]
     return {
         "ok": True, "kind": "vtable", "key_column": key_column,
         "key_value": key_value, "row": found["row"], "data_index": data_index,
-        "values": values,
+        "header_rows": found.get("header_rows"), "values": values,
     }
 
 
 @mcp.tool()
 @read_synchronized
-def get_table_data(kind: str = "auto", table_index: int = 0, filename: str = None) -> dict:
-    """统一读取表格完整数据。HTML Table 支持完整数据；VTable 请优先用 get_table_values。
-    filename 提供时保存到文件，不返回大 JSON。"""
+def get_table_data(kind: str = "auto", table_index: int = 0,
+                   filename: str = None) -> dict:
+    """统一读取当前表格完整可读数据，HTML 与 VTable 均受支持。"""
     kind = _normalize_table_kind(kind)
-    if kind == "vtable":
-        result = {"ok": False, "kind": "vtable",
-                "reason": "VTable 暂不支持完整数据读取，请使用 get_table_values(column_title=...)"}
-    elif kind == "html":
-        result = _tag_table_result("html", html_table.get_html_table_data(table_index))
-    else:
-        ht = _tag_table_result("html", html_table.get_html_table_data(table_index))
-        if ht.get("ok"):
-            result = ht
-        else:
-            vt = _scan_table_vtable(max_col=20)
-            if vt.get("ok"):
-                result = {"ok": False, "kind": "vtable",
-                        "reason": "检测到 VTable，但暂不支持完整数据读取，请使用 get_table_values(column_title=...)"}
-            else:
-                result = {"ok": False, "kind": "auto", "reason": "未能读取表格完整数据",
-                        "html_reason": ht.get("reason", ""), "vtable_reason": vt.get("reason", "")}
-
-    # filename 参数优先
-    if filename and result.get("ok"):
-        full_path = resource_store.resolve_path(filename)
-        with open(full_path, "w", encoding="utf-8") as f:
-            json.dump(result, f, ensure_ascii=False, indent=2)
-        return {
-            "ok": True,
-            "saved_to": os.path.abspath(full_path),
-            "kind": result.get("kind"),
-        }
-
-    return result
+    return page_model.get_all_table_data(
+        kind=kind,
+        table_index=table_index,
+        max_pages=1,
+        max_rows=100_000,
+        max_columns=1000,
+        raw=False,
+        filename=filename,
+    )
 
 
 @mcp.tool()
@@ -3845,13 +4898,17 @@ def hover_table_cell(row: int, col: int = None, column_title: str = None, kind: 
     if kind == "html":
         if not column_title:
             return {"ok": False, "kind": "html", "reason": "HTML 表格悬停需要 column_title"}
-        return _tag_table_result("html", html_table.hover_html_table_cell(column_title, row, table_index))
+        return _tag_table_result("html", html_table.hover_html_table_cell(
+            column_title, row, table_index, duration=duration
+        ))
 
     vt = _hover_vtable()
     if vt.get("ok"):
         return vt
     if column_title:
-        ht = _tag_table_result("html", html_table.hover_html_table_cell(column_title, row, table_index))
+        ht = _tag_table_result("html", html_table.hover_html_table_cell(
+            column_title, row, table_index, duration=duration
+        ))
         if ht.get("ok"):
             ht["fallback_from"] = "vtable"
             ht["vtable_reason"] = vt.get("reason", "")
@@ -4106,49 +5163,46 @@ def listen_start(targets, method: str = None) -> dict:
       tab.listen.set_method.all()            # 监听全部
     """
     tab = browser_session.get_tab()
-    # 4.2：method/resourceType 不再传给 listen.start()，而是作为监听器独立状态。
-    # 因此每次启动监听都显式设置 method/res_type，避免继承上一次 WS-only 或方法限制。
     urls = _normalize_listen_targets(targets)
-    effective_method, resource_type = network_record.start_http_listener(tab.listen, urls, method)
+    try:
+        tab.listen.stop()
+    except Exception:
+        pass
+    try:
+        effective_method, resource_type = network_record.start_http_listener(tab.listen, urls, method)
+    except Exception as exc:
+        return {"ok": False, "reason": "监听启动失败: %s" % exc}
     return {"ok": True, "targets": urls, "method": effective_method, "resource_type": resource_type}
 
 
 @mcp.tool()
-@read_synchronized
+@write_synchronized
 def listen_wait(count: int = 1, timeout: float = 10, fit_count: bool = False) -> dict:
     """等待监听的数据包。返回 {url, method, api_target, post_data, status, body}。
     api_target 为请求头中的接口路由标识（同一 gateway URL 下区分不同接口）。
     post_data 为 POST 请求体（JSON 字符串），含查询参数如 conditions/isDelivery 等。
     count>1 返回 packets 列表。fit_count=False 时超时前抓到多少返回多少，适合探索式断言。"""
     tab = browser_session.get_tab()
-    pkt = tab.listen.wait(count=count, timeout=timeout, fit_count=fit_count)
-    if not pkt:
+    try:
+        try:
+            packet = tab.listen.wait(
+                count=count,
+                timeout=timeout,
+                fit_count=fit_count,
+                raise_err=False,
+            )
+        except TypeError:
+            packet = tab.listen.wait(count=count, timeout=timeout, fit_count=fit_count)
+    except Exception as exc:
+        return {"ok": False, "reason": "监听等待失败: %s" % exc}
+    if not packet:
         return {"ok": False, "reason": "timeout", "hint": "确认 listen_start 的 targets 是否正确，或增大 timeout"}
-
-    def conv(p):
-        url = getattr(p, "url", "")
-        method = getattr(p, "method", "")
-        status = getattr(p.response, "status", None) if p.response else None
-        body = getattr(p.response, "body", None) if p.response else None
-        # 提取 api-target 请求头（同一 URL 下区分不同接口的路由标识）
-        api_target = ""
-        post_data = None
-        if p.request:
-            headers = dict(p.request.headers) if hasattr(p.request, "headers") else {}
-            api_target = headers.get("api-target", "")
-            post_data = p.request.postData if hasattr(p.request, "postData") else None
+    if isinstance(packet, list):
         return {
-            "url": url,
-            "method": method,
-            "api_target": api_target,
-            "post_data": post_data,
-            "status": status,
-            "body": body,
+            "ok": True,
+            "packets": [network_record.packet_to_dict(item) for item in packet],
         }
-
-    if isinstance(pkt, list):
-        return {"ok": True, "packets": [conv(p) for p in pkt]}
-    return {"ok": True, **conv(pkt)}
+    return {"ok": True, **network_record.packet_to_dict(packet)}
 
 
 @mcp.tool()
@@ -4204,51 +5258,70 @@ def mouse_trail(on: bool = True) -> dict:
 def download_by_browser(url: str, save_path: str = None, rename: str = None,
                         suffix: str = None, timeout: float = 30,
                         file_exists: str = "rename") -> dict:
-    """浏览器触发下载(4.2 新增)。用于 blob / 难以直接 fetch 的 URL。
-    file_exists: 'rename'/'overwrite'/'skip' 或 'r'/'o'/'s'。
-    返回 {ok, path, file_size, url, state, name}。
+    """触发浏览器下载，等待完成并返回可序列化的绝对文件路径。"""
+    if not isinstance(url, str) or not url.strip():
+        return {"ok": False, "reason": "url 必须是非空字符串"}
+    if len(url) > 100_000:
+        return {"ok": False, "reason": "url 超过 100000 字符"}
+    if (
+        isinstance(timeout, bool) or not isinstance(timeout, (int, float))
+        or not math.isfinite(float(timeout)) or timeout < 0 or timeout > 3600
+    ):
+        return {"ok": False, "reason": "timeout 必须是 0 到 3600 的有限数值"}
+    if file_exists not in {"rename", "overwrite", "skip", "r", "o", "s"}:
+        return {"ok": False, "reason": "file_exists 必须是 rename/overwrite/skip 或 r/o/s"}
 
-    注意：DownloadMission 的属性为 final_path/total_bytes/name/state，
-    无 path/file_size；wait(show=False) 返回 final_path 或 False（静默，避免 print 污染 MCP stdout）。
-    """
     tab = browser_session.get_tab()
     download = getattr(tab, "download", None)
     by_browser = getattr(download, "by_browser", None) if download is not None else None
-    if by_browser is None:
+    if not callable(by_browser):
         return {
             "ok": False,
             "reason": "当前 DrissionPage 版本未提供 tab.download.by_browser；可改用点击触发下载后 wait.download_begin/downloads_done",
         }
-    kwargs = {"url": url, "timeout": timeout, "file_exists": file_exists}
+    kwargs = {"url": url, "timeout": float(timeout), "file_exists": file_exists}
     if save_path:
-        kwargs["save_path"] = save_path
+        kwargs["save_path"] = os.fspath(save_path)
     if rename:
-        kwargs["rename"] = rename
+        kwargs["rename"] = str(rename)
     if suffix:
-        kwargs["suffix"] = suffix
+        kwargs["suffix"] = str(suffix)
     try:
         mission = by_browser(**kwargs)
-        # show=False：wait() 默认 print 进度到 stdout，会污染 MCP 协议帧，必须关闭
-        final_path = mission.wait(show=False)
-        return {
-            "ok": bool(final_path),
-            "path": final_path or getattr(mission, "final_path", "") or "",
+        # show=False：wait() 默认 print 进度到 stdout，会污染 MCP 协议帧。
+        completed_path = mission.wait(show=False)
+        raw_path = completed_path or getattr(mission, "final_path", "") or ""
+        path_value = os.path.abspath(os.fspath(raw_path)) if raw_path else ""
+        ok = bool(completed_path) and os.path.isfile(path_value)
+        result = {
+            "ok": ok,
+            "path": path_value,
             "file_size": getattr(mission, "total_bytes", None),
             "url": url,
-            "state": getattr(mission, "state", ""),
-            "name": getattr(mission, "name", ""),
+            "state": str(getattr(mission, "state", "") or ""),
+            "name": str(getattr(mission, "name", "") or ""),
         }
-    except Exception as e:
-        return {"ok": False, "reason": "下载失败: %s" % e}
+        if not ok:
+            result["reason"] = "下载未完成或目标文件不存在"
+        return result
+    except Exception as exc:
+        return {"ok": False, "reason": "下载失败: %s" % exc}
 
 
 @mcp.tool()
 @write_synchronized
 def listen_ws_start(targets: str = None) -> dict:
-    """启动 WebSocket 监听(4.2 新增)。targets 可选 URL 特征过滤；不传则监听所有 WS 帧。"""
+    """启动 4.2 WebSocket 专项监听，并重置此前 listener 状态。"""
     tab = browser_session.get_tab()
     urls = _normalize_listen_targets(targets)
-    method, resource_type, hint = network_record.start_ws_listener(tab.listen, urls)
+    try:
+        tab.listen.stop()
+    except Exception:
+        pass
+    try:
+        method, resource_type, hint = network_record.start_ws_listener(tab.listen, urls)
+    except Exception as exc:
+        return {"ok": False, "reason": "WebSocket 监听启动失败: %s" % exc}
     result = {"ok": True, "targets": urls, "method": method, "resource_type": resource_type}
     if hint:
         result["hint"] = hint
@@ -4256,43 +5329,57 @@ def listen_ws_start(targets: str = None) -> dict:
 
 
 @mcp.tool()
-@read_synchronized
+@write_synchronized
 def listen_ws_wait(count: int = 1, timeout: float = 10, fit_count: bool = False) -> dict:
-    """等待 WebSocket 数据包。返回 {ok, packets:[{is_sent, payload, timestamp}]}。"""
+    """等待 WebSocket 数据包，并限制每个 payload 的输出体积。"""
     tab = browser_session.get_tab()
-    pkt = tab.listen.wait(count=count, timeout=timeout, fit_count=fit_count)
-    if not pkt:
+    try:
+        try:
+            packet = tab.listen.wait(
+                count=count, timeout=timeout, fit_count=fit_count, raise_err=False
+            )
+        except TypeError:
+            packet = tab.listen.wait(count=count, timeout=timeout, fit_count=fit_count)
+    except Exception as exc:
+        return {"ok": False, "reason": "WebSocket 监听等待失败: %s" % exc}
+    if not packet:
         return {"ok": False, "reason": "timeout", "hint": "确认 listen_ws_start 的 targets 是否正确，或增大 timeout"}
-
-    def conv(p):
+    if isinstance(packet, list):
         return {
-            "is_sent": getattr(p, "is_sent", None),
-            "payload": getattr(p, "data", None),
-            "url": getattr(p, "url", None),
-            "timestamp": getattr(p, "timestamp", None),
+            "ok": True,
+            "packets": [network_record.ws_packet_to_dict(item) for item in packet],
         }
-
-    if isinstance(pkt, list):
-        return {"ok": True, "packets": [conv(p) for p in pkt]}
-    return {"ok": True, **conv(pkt)}
+    return {"ok": True, **network_record.ws_packet_to_dict(packet)}
 
 
 @mcp.tool()
 @write_synchronized
 def new_context(proxy: str = None) -> dict:
-    """创建独立浏览器上下文(4.2 BrowserContext)，隔离 cookie/代理。用于多账号或干净测试环境。
-    proxy 格式: 'http://user:password@ip:port'。
-    返回稳定 context_id（可传给 switch_context 切换操作）与该上下文 tab 列表。"""
+    """创建带初始空白标签页的 4.2 BrowserContext。
+
+    Context 刚创建时不可见且没有 tab；MCP 又没有 context 专属的 new_tab 调用，因此
+    这里立即通过官方 ``context.new_tab()`` 建立可切换入口，避免返回不可用 context。
+    """
     browser = browser_session.get_browser()
+    context = None
     try:
-        ctx = browser.new_context(proxy=proxy) if proxy else browser.new_context()
-    except Exception as e:
-        return {"ok": False, "reason": "创建上下文失败: %s" % e}
-    cid = browser_session.register_context(ctx)
-    tids = list(getattr(ctx, "tab_ids", []) or [])
-    return {"ok": True, "context_id": cid, "tab_ids": tids,
-            "hint": "调用 switch_context(%d) 切换到该上下文操作" % cid if tids
-            else "上下文暂无 tab，可能需先在该上下文 new_tab"}
+        context = browser.new_context(proxy=proxy) if proxy else browser.new_context()
+        tab = context.new_tab()
+    except Exception as exc:
+        if context is not None:
+            try:
+                context.close()
+            except Exception:
+                pass
+        return {"ok": False, "reason": "创建上下文失败: %s" % exc}
+    context_id = browser_session.register_context(context)
+    return {
+        "ok": True,
+        "context_id": context_id,
+        "tab_ids": list(context.tab_ids),
+        "initial_tab_id": tab.tab_id,
+        "hint": "调用 switch_context(%d) 切换到该上下文操作" % context_id,
+    }
 
 
 @mcp.tool()
@@ -4306,6 +5393,13 @@ def switch_context(context_id: int) -> dict:
 
 
 @mcp.tool()
+@write_synchronized
+def close_context(context_id: int) -> dict:
+    """关闭 new_context 创建的上下文，并在必要时切回主浏览器标签页。"""
+    return browser_session.close_context(context_id)
+
+
+@mcp.tool()
 @read_synchronized
 def list_contexts() -> dict:
     """列出所有已注册的浏览器上下文（配合 new_context）。"""
@@ -4315,26 +5409,22 @@ def list_contexts() -> dict:
 @mcp.tool()
 @write_synchronized
 def set_permission(perm: str, allow: bool = True) -> dict:
-    """设置浏览器权限(4.2 新增)。perm: 'camera'/'geolocation'/'notifications'/'midi' 等。
-    allow=False 撤销权限；若该权限仅支持开启（无 deny 形式），返回 ok=False 并说明。"""
+    """通过 DrissionPage 权限 setter 明确授予或拒绝浏览器权限。"""
+    if not isinstance(allow, bool):
+        return {"ok": False, "reason": "allow 必须是布尔值"}
+    permission = str(perm or "").strip()
+    if not re.fullmatch(r"[a-z][a-z0-9_]*", permission):
+        return {"ok": False, "reason": "不支持的权限: %s" % permission}
+
     browser = browser_session.get_browser()
+    perm_fn = getattr(browser.set.perm, permission, None)
+    if not callable(perm_fn):
+        return {"ok": False, "reason": "不支持的权限: %s" % permission}
     try:
-        perm_fn = getattr(browser.set.perm, perm)
-    except AttributeError:
-        return {"ok": False, "reason": "不支持的权限: %s" % perm}
-    try:
-        if allow:
-            perm_fn()
-        else:
-            # deny 路径：尝试 (allow=False) 形参；不支持则明确告知而非静默返回 ok
-            try:
-                perm_fn(allow=False)
-            except TypeError:
-                return {"ok": False, "reason": "deny 不支持（权限 %s 仅可开启）" % perm,
-                        "perm": perm, "allow": False}
-    except Exception as e:
-        return {"ok": False, "reason": "设置权限失败: %s" % e}
-    return {"ok": True, "perm": perm, "allow": allow}
+        perm_fn(allow=allow)
+    except Exception as exc:
+        return {"ok": False, "reason": "设置权限失败: %s" % exc}
+    return {"ok": True, "perm": permission, "allow": allow}
 
 
 # ==================== HTML 表格（ant-table）====================
@@ -4419,118 +5509,135 @@ def browser_list_caps() -> dict:
 
 @mcp.tool()
 @write_synchronized
-def browser_scroll(direction: str = 'down', pixel: int = 300, locator: str = None, x: int = None, y: int = None) -> dict:
-    """滚动操作工具。
+def browser_scroll(direction: str = "down", pixel: int = 300, locator: str = None,
+                   x: int = None, y: int = None, timeout: float = 5) -> dict:
+    """滚动活动 iframe；``see`` 按 iframe → 顶层顺序定位并保留真实作用域。"""
+    directions = {"top", "bottom", "half", "up", "down", "left", "right", "see", "location"}
+    if direction not in directions:
+        return {"ok": False, "reason": "Invalid direction: %s" % direction}
+    if direction in {"up", "down", "left", "right"} and (
+        isinstance(pixel, bool) or not isinstance(pixel, int) or pixel < 0
+    ):
+        return {"ok": False, "reason": "pixel 必须是非负整数"}
+    if direction == "see" and not str(locator or "").strip():
+        return {"ok": False, "reason": "see 方向必须提供 locator"}
+    if direction == "location" and (
+        isinstance(x, bool) or isinstance(y, bool)
+        or not isinstance(x, (int, float)) or not isinstance(y, (int, float))
+        or not math.isfinite(float(x)) or not math.isfinite(float(y))
+    ):
+        return {"ok": False, "reason": "location 方向必须提供有限 x/y"}
+    if (
+        isinstance(timeout, bool) or not isinstance(timeout, (int, float))
+        or not math.isfinite(float(timeout)) or timeout < 0
+    ):
+        return {"ok": False, "reason": "timeout 必须是非负有限数值"}
 
-    Args:
-        direction: 'top'|'bottom'|'half'|'up'|'down'|'left'|'right'|'see'|'location'
-        pixel: 滚动像素数（用于 up/down/left/right，默认 300）
-        locator: 目标元素（用于 see 方向，滚动到看见该元素）
-        x/y: 滚动位置（用于 location 方向）
-
-    Returns:
-        滚动操作结果
-    """
+    timeout = min(float(timeout), 120.0)
     tab = browser_session.get_tab()
-
+    target = browser_session.get_active_frame(tab) or tab
     try:
-        if direction == 'top':
-            tab.scroll.to_top()
-        elif direction == 'bottom':
-            tab.scroll.to_bottom()
-        elif direction == 'half':
-            tab.scroll.to_half()
-        elif direction == 'up':
-            tab.scroll.up(pixel)
-        elif direction == 'down':
-            tab.scroll.down(pixel)
-        elif direction == 'left':
-            tab.scroll.left(pixel)
-        elif direction == 'right':
-            tab.scroll.right(pixel)
-        elif direction == 'see' and locator:
-            ele = browser_session.find(locator)
-            if ele:
-                tab.scroll.to_see(ele)
-            else:
-                return {'ok': False, 'reason': f'Element not found: {locator}'}
-        elif direction == 'location' and x is not None and y is not None:
-            tab.scroll.to_location(x, y)
+        if direction == "top":
+            target.scroll.to_top()
+        elif direction == "bottom":
+            target.scroll.to_bottom()
+        elif direction == "half":
+            target.scroll.to_half()
+        elif direction == "up":
+            target.scroll.up(pixel)
+        elif direction == "down":
+            target.scroll.down(pixel)
+        elif direction == "left":
+            target.scroll.left(pixel)
+        elif direction == "right":
+            target.scroll.right(pixel)
+        elif direction == "see":
+            deadline = time.monotonic() + timeout
+            try:
+                element = target.ele(locator, timeout=max(timeout * 0.8, 0.0))
+            except Exception:
+                element = None
+            if not element and target is not tab:
+                target = tab
+                element = tab.ele(locator, timeout=max(deadline - time.monotonic(), 0.0))
+            if not element:
+                return {"ok": False, "reason": "Element not found: %s" % locator}
+            target.scroll.to_see(element)
         else:
-            return {'ok': False, 'reason': 'Invalid direction or missing parameters'}
-
-        return {'ok': True, 'direction': direction, 'pixel': pixel if direction in ('up', 'down', 'left', 'right') else None}
-    except Exception as e:
-        logger.error(f"Scroll error: {e}")
-        return {'ok': False, 'reason': str(e)}
+            target.scroll.to_location(float(x), float(y))
+        return {
+            "ok": True,
+            "direction": direction,
+            "scope": "iframe" if target is not tab else "top",
+            "pixel": pixel if direction in {"up", "down", "left", "right"} else None,
+        }
+    except Exception as exc:
+        logger.error("Scroll error: %s", exc)
+        return {"ok": False, "reason": str(exc)}
 
 
 # ==================== 新增：标签页管理工具 ====================
 
 @mcp.tool()
 @write_synchronized
-def browser_tabs(action: str = 'list', index: int = None, url: str = None) -> dict:
-    """标签页管理工具。
+def browser_tabs(action: str = "list", index: int = None, url: str = None) -> dict:
+    """用 DrissionPage 管理零基索引标签页，并保持关闭后的业务目标。"""
+    if action not in {"list", "new", "close", "select"}:
+        return {"ok": False, "reason": "Invalid action: %s" % action}
+    if action in {"close", "select"} and (
+        isinstance(index, bool) or not isinstance(index, int)
+    ):
+        return {"ok": False, "reason": "index 必须是整数"}
+    if action == "new" and url is not None and not isinstance(url, str):
+        return {"ok": False, "reason": "url 必须是字符串"}
 
-    Args:
-        action: 'list'|'new'|'close'|'select'
-        index: 标签页索引（用于 close/select）
-        url: 要导航的 URL（用于 new）
-
-    Returns:
-        标签页操作结果
-    """
     browser = browser_session.get_browser()
-
     try:
-        if action == 'list':
-            tabs = []
-            current_tab = browser_session.get_tab()
-            for i, tid in enumerate(browser.tab_ids):
-                t = browser.get_tab(tid)
-                tabs.append({
-                    'index': i,
-                    'tab_id': tid,
-                    'url': t.url,
-                    'title': t.title,
-                    'is_current': t.tab_id == current_tab.tab_id
-                })
-            return {'ok': True, 'tabs': tabs}
+        if action == "list":
+            return {
+                "ok": True,
+                "tabs": [dict(item, index=i) for i, item in enumerate(browser_session.list_tabs())],
+            }
 
-        elif action == 'new':
-            new_tab = browser.new_tab(url)
-            # 更新当前活动 tab
-            browser_session._tab = new_tab
-            return {'ok': True, 'url': new_tab.url, 'tab_id': new_tab.tab_id}
+        if action == "new":
+            new_tab = browser.new_tab(url=url)
+            browser_session.set_tab(new_tab)
+            return {"ok": True, "url": new_tab.url, "tab_id": new_tab.tab_id}
 
-        elif action == 'close' and index is not None:
-            tabs = browser.tab_ids
-            if 0 <= index < len(tabs):
-                browser.close_tabs(tabs[index])
-                # 如果关闭了当前 tab，切换到第一个
-                current_tab = browser_session.get_tab()
-                if current_tab and current_tab.tab_id == tabs[index]:
-                    if browser.tab_ids:
-                        browser_session._tab = browser.get_tab(browser.tab_ids[0])
-                return {'ok': True}
-            else:
-                return {'ok': False, 'reason': f'Invalid index: {index}, total: {len(tabs)}'}
+        tab_ids = list(browser.tab_ids)
+        if not 0 <= index < len(tab_ids):
+            return {"ok": False, "reason": "Invalid index: %s, total: %d" % (index, len(tab_ids))}
+        tab_id = tab_ids[index]
+        if action == "select":
+            selected = browser.get_tab(tab_id)
+            browser.activate_tab(selected)
+            browser_session.set_tab(selected)
+            return {
+                "ok": True,
+                "tab_id": selected.tab_id,
+                "url": selected.url,
+                "title": selected.title,
+            }
 
-        elif action == 'select' and index is not None:
-            tabs = browser.tab_ids
-            if 0 <= index < len(tabs):
-                selected_tab = browser.get_tab(tabs[index])
-                selected_tab.activate()
-                browser_session._tab = selected_tab
-                return {'ok': True, 'url': selected_tab.url, 'title': selected_tab.title}
-            else:
-                return {'ok': False, 'reason': f'Invalid index: {index}, total: {len(tabs)}'}
-
-        else:
-            return {'ok': False, 'reason': f'Invalid action: {action}'}
-    except Exception as e:
-        logger.error(f"Browser tabs error: {e}")
-        return {'ok': False, 'reason': str(e)}
+        current_id = getattr(browser_session.get_tab(), "tab_id", None)
+        browser.close_tabs(tab_id)
+        replacement = None
+        if tab_id == current_id:
+            try:
+                replacement = browser_session._pick_tab(browser, browser_session._target_hint)
+            except Exception:
+                replacement = None
+            if replacement is None:
+                replacement = browser.new_tab()
+            browser_session.set_tab(replacement)
+        return {
+            "ok": True,
+            "closed_tab_id": tab_id,
+            "active_tab_id": getattr(replacement, "tab_id", current_id),
+        }
+    except Exception as exc:
+        logger.error("Browser tabs error: %s", exc)
+        return {"ok": False, "reason": str(exc)}
 
 
 # ==================== 新增：PDF 导出工具 ====================
@@ -4538,46 +5645,50 @@ def browser_tabs(action: str = 'list', index: int = None, url: str = None) -> di
 @mcp.tool()
 @write_synchronized
 def browser_save_pdf(path: str = None, filename: str = None) -> dict:
-    """将当前页面保存为 PDF。
-
-    Args:
-        path: 保存目录路径（可选，默认使用截图目录）
-        filename: PDF 文件名（可选，默认使用时间戳）
-
-    Returns:
-        保存的文件路径
-    """
-    import time
-    from pathlib import Path
-
+    """将当前页面保存为 PDF，并验证 DrissionPage 确实生成了文件。"""
     try:
         tab = browser_session.get_tab()
-
-        # 确定文件名
-        pdf_filename = filename or f'page_{int(time.time())}.pdf'
-        if not pdf_filename.endswith('.pdf'):
-            pdf_filename += '.pdf'
+        raw_name = os.path.basename(str(filename or "page_%d.pdf" % int(time.time())))
+        pdf_filename = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", raw_name).strip(" .")
+        if not pdf_filename:
+            return {"ok": False, "reason": "filename 必须是有效文件名"}
+        if not pdf_filename.lower().endswith(".pdf"):
+            pdf_filename += ".pdf"
 
         if path:
-            save_dir = path
+            save_dir = os.path.abspath(str(path))
             os.makedirs(save_dir, exist_ok=True)
         else:
             save_path = resource_store.resolve_path(pdf_filename, category="pdf")
             save_dir = os.path.dirname(save_path)
             pdf_filename = os.path.basename(save_path)
 
-        # 使用 DrissionPage 保存 PDF
-        result_path = tab.save(path=save_dir, name=pdf_filename, as_pdf=True)
-
+        returned = tab.save(path=save_dir, name=pdf_filename, as_pdf=True)
+        expected = os.path.abspath(os.path.join(save_dir, pdf_filename))
+        candidates = []
+        if isinstance(returned, (str, os.PathLike)):
+            returned_path = os.fspath(returned)
+            if not os.path.isabs(returned_path):
+                returned_path = os.path.join(save_dir, returned_path)
+            candidates.append(os.path.abspath(returned_path))
+        candidates.append(expected)
+        candidate = next((item for item in candidates if os.path.isfile(item)), None)
+        if candidate is None and isinstance(returned, (bytes, bytearray)):
+            with open(expected, "wb") as output:
+                output.write(returned)
+            candidate = expected
+        if candidate is None:
+            return {"ok": False, "reason": "PDF 未生成文件", "path": expected}
         return {
-            'ok': True,
-            'path': result_path,
-            'dir': save_dir,
-            'filename': pdf_filename
+            "ok": True,
+            "path": candidate,
+            "dir": os.path.dirname(candidate),
+            "filename": os.path.basename(candidate),
+            "size": os.path.getsize(candidate),
         }
-    except Exception as e:
-        logger.error(f"Save PDF error: {e}")
-        return {'ok': False, 'reason': str(e)}
+    except Exception as exc:
+        logger.error("Save PDF error: %s", exc)
+        return {"ok": False, "reason": str(exc)}
 
 
 def _console_arg_text(arg):
@@ -4609,7 +5720,7 @@ def _console_message_to_dict(message) -> dict:
         "line": data.get("lineNumber", first_frame.get("lineNumber")),
         "column": first_frame.get("columnNumber"),
         "timestamp": data.get("timestamp"),
-        "raw": data,
+        "arg_count": len(args),
     }
 
 
@@ -4618,51 +5729,62 @@ def _console_message_to_dict(message) -> dict:
 def browser_console_messages(level: str = "", timeout: float = 0.0, start: bool = True,
                              clear: bool = False, stop: bool = False,
                              max_messages: int = 50, filename: str = None) -> dict:
-    """读取浏览器控制台消息。封装 DrissionPage tab.console，支持等待新消息和按级别过滤。
-
-    level 可传 error/warning/log/info 或逗号分隔；timeout>0 时等待新消息，之后会 drain 当前队列。
-    """
+    """读取并按级别筛选 DrissionPage 控制台队列；过滤先于数量上限。"""
     tab = browser_session.get_tab()
+    console = None
     try:
         console = tab.console
-        if start or timeout > 0:
-            if not getattr(console, "listening", False):
-                console.start()
+        if (start or timeout > 0) and not getattr(console, "listening", False):
+            console.start()
         if clear:
             console.clear()
 
-        messages = []
-        if timeout > 0:
-            deadline = time.time() + timeout
-            while len(messages) < max_messages and time.time() < deadline:
-                remain = max(0.05, min(0.5, deadline - time.time()))
-                msg = console.wait(timeout=remain)
-                if msg:
-                    messages.append(msg)
-        for msg in console.messages:
-            if len(messages) >= max_messages:
-                break
-            messages.append(msg)
+        limit = max(int(max_messages or 0), 0)
+        wanted = {
+            item.strip().lower() for item in str(level or "").split(",") if item.strip()
+        }
+        items = []
 
-        items = [_console_message_to_dict(m) for m in messages[:max_messages]]
-        if level:
-            wanted = {x.strip().lower() for x in str(level).split(",") if x.strip()}
-            items = [
-                m for m in items
-                if (m.get("level") or "").lower() in wanted or (m.get("type") or "").lower() in wanted
-            ]
+        def append_if_wanted(message):
+            item = _console_message_to_dict(message)
+            if wanted and not (
+                (item.get("level") or "").lower() in wanted
+                or (item.get("type") or "").lower() in wanted
+            ):
+                return
+            if len(items) < limit:
+                items.append(item)
+
+        timeout = max(float(timeout or 0), 0.0)
+        deadline = time.monotonic() + timeout
+        while limit and len(items) < limit and time.monotonic() < deadline:
+            remaining = min(0.5, max(deadline - time.monotonic(), 0.0))
+            message = console.wait(timeout=remaining)
+            if message:
+                append_if_wanted(message)
+
+        if limit and len(items) < limit:
+            for message in console.messages:
+                append_if_wanted(message)
+                if len(items) >= limit:
+                    break
+
         result = {"ok": True, "count": len(items), "messages": items}
         if filename:
             full_path = resource_store.resolve_path(filename)
-            with open(full_path, "w", encoding="utf-8") as f:
-                json.dump(result, f, ensure_ascii=False, indent=2)
-            result = {"ok": True, "saved_to": os.path.abspath(full_path), "count": len(items)}
-        if stop:
-            console.stop()
+            with open(full_path, "w", encoding="utf-8") as file:
+                json.dump(result, file, ensure_ascii=False, indent=2)
+            return {"ok": True, "saved_to": os.path.abspath(full_path), "count": len(items)}
         return result
-    except Exception as e:
-        logger.error("Console messages error: %s", e)
-        return {"ok": False, "reason": str(e)}
+    except Exception as exc:
+        logger.error("Console messages error: %s", exc)
+        return {"ok": False, "reason": str(exc)}
+    finally:
+        if stop and console is not None:
+            try:
+                console.stop()
+            except Exception:
+                logger.debug("停止控制台监听失败", exc_info=True)
 
 
 # ==================== 新增：按键操作工具 ====================
@@ -4670,49 +5792,32 @@ def browser_console_messages(level: str = "", timeout: float = 0.0, start: bool 
 @mcp.tool()
 @write_synchronized
 def browser_press_key(key: str, modifiers: list[str] = None, interval: float = 0.01) -> dict:
-    """按键操作工具。
+    """在活动业务 iframe 发送官方 Keys 动作，并校验组合键参数。"""
+    if not isinstance(key, str) or not key:
+        return {"ok": False, "reason": "key 必须是非空字符串"}
+    if modifiers is None:
+        modifiers = []
+    if not isinstance(modifiers, list) or any(not isinstance(item, str) for item in modifiers):
+        return {"ok": False, "reason": "modifiers 必须是字符串列表"}
+    allowed_modifiers = {"alt", "control", "ctrl", "meta", "command", "shift"}
+    normalized_modifiers = [re.sub(r"[\s_-]+", "", item).lower() for item in modifiers]
+    if any(item not in allowed_modifiers for item in normalized_modifiers):
+        return {"ok": False, "reason": "modifiers 仅支持 Ctrl/Alt/Shift/Meta/Command"}
+    if (
+        isinstance(interval, bool) or not isinstance(interval, (int, float))
+        or not math.isfinite(float(interval)) or interval < 0 or interval > 10
+    ):
+        return {"ok": False, "reason": "interval 必须是 0 到 10 的有限数值"}
 
-    Args:
-        key: 按键名称或字符，如 'Enter'|'Escape'|'Tab'|'a'|'1'
-            支持的特殊键：'Ctrl'|'Alt'|'Shift'|'Meta'|'Enter'|'Escape'|'Tab'|
-            'Backspace'|'Delete'|'Home'|'End'|'PageUp'|'PageDown'|
-            'ArrowUp'|'ArrowDown'|'ArrowLeft'|'ArrowRight'
-        modifiers: 修饰键列表，如 ['Ctrl', 'Shift'] 表示同时按住这些键
-        interval: 按键间隔（秒），仅在输入多字符时有效
-
-    Returns:
-        按键操作结果
-    """
     tab = browser_session.get_tab()
-
+    target = browser_session.get_active_frame(tab) or tab
     try:
-        # 如果是单字符且没有修饰键，用 actions.type()
-        if len(key) == 1 and not modifiers:
-            tab.actions.type(key, interval=interval)
-            return {'ok': True, 'key': key}
-
-        # 如果有修饰键，先按下修饰键
-        if modifiers:
-            for mod in modifiers:
-                tab.actions.key_down(mod)
-
-        # 按下并释放主键
-        tab.actions.key_down(key)
-        tab.actions.key_up(key)
-
-        # 释放修饰键
-        if modifiers:
-            for mod in modifiers:
-                tab.actions.key_up(mod)
-
-        return {
-            'ok': True,
-            'key': key,
-            'modifiers': modifiers
-        }
-    except Exception as e:
-        logger.error(f"Press key error: {e}")
-        return {'ok': False, 'reason': str(e)}
+        result = _press_key_raw(target, key, modifiers=modifiers, interval=float(interval))
+        result["scope"] = "iframe" if target is not tab else "top"
+        return result
+    except Exception as exc:
+        logger.error("Press key error: %s", exc)
+        return {"ok": False, "reason": str(exc)}
 
 
 # ==================== 新增：元素状态查询工具 ====================
@@ -4720,46 +5825,44 @@ def browser_press_key(key: str, modifiers: list[str] = None, interval: float = 0
 @mcp.tool()
 @read_synchronized
 def browser_get_element_state(locator: str, state: str = None) -> dict:
-    """获取元素状态。
-
-    Args:
-        locator: 元素定位符
-        state: 要查询的状态（可选），如 'displayed'|'hidden'|'enabled'|'disabled'|
-            'selected'|'checked'|'clickable'|'covered'
-            如果不指定，返回所有可用状态
-
-    Returns:
-        元素状态字典
-    """
-    ele = browser_session.find(locator)
+    """读取 DrissionPage 元素状态；派生 hidden/disabled 并按需求值。"""
+    ele = browser_session.find(locator, wait_clickable=False)
     if not ele:
-        return {'ok': False, 'reason': f'Element not found: {locator}'}
+        return {"ok": False, "reason": "Element not found: %s" % locator}
 
     try:
-        states = {
-            'displayed': ele.states.is_displayed,
-            'hidden': ele.states.is_hidden,
-            'enabled': ele.states.is_enabled,
-            'disabled': ele.states.is_disabled,
-            'selected': ele.states.is_selected,
-            'checked': ele.states.is_checked,
-            'clickable': ele.states.is_clickable,
-            'covered': ele.states.is_covered,
+        element_states = ele.states
+        getters = {
+            "displayed": lambda: bool(element_states.is_displayed),
+            "hidden": lambda: not bool(element_states.is_displayed),
+            "enabled": lambda: bool(element_states.is_enabled),
+            "disabled": lambda: not bool(element_states.is_enabled),
+            "selected": lambda: bool(element_states.is_selected),
+            "checked": lambda: bool(element_states.is_checked),
+            "clickable": lambda: bool(element_states.is_clickable),
+            "covered": lambda: bool(element_states.is_covered),
+            "alive": lambda: bool(element_states.is_alive),
+            "in_viewport": lambda: bool(element_states.is_in_viewport),
+            "whole_in_viewport": lambda: bool(element_states.is_whole_in_viewport),
+            "has_rect": lambda: bool(element_states.has_rect),
         }
-
         if state:
-            if state not in states:
+            getter = getters.get(state)
+            if getter is None:
                 return {
-                    'ok': False,
-                    'reason': f'Invalid state: {state}',
-                    'available_states': list(states.keys())
+                    "ok": False,
+                    "reason": "Invalid state: %s" % state,
+                    "available_states": list(getters),
                 }
-            return {'ok': True, 'locator': locator, 'state': state, 'value': states[state]}
-
-        return {'ok': True, 'locator': locator, 'states': states}
-    except Exception as e:
-        logger.error(f"Get element state error: {e}")
-        return {'ok': False, 'reason': str(e)}
+            return {"ok": True, "locator": locator, "state": state, "value": getter()}
+        return {
+            "ok": True,
+            "locator": locator,
+            "states": {name: getter() for name, getter in getters.items()},
+        }
+    except Exception as exc:
+        logger.error("Get element state error: %s", exc)
+        return {"ok": False, "reason": str(exc)}
 
 
 def main():

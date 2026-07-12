@@ -31,6 +31,9 @@ class _FakeWait:
     def ele_displayed(self, *args, **kwargs):
         return True
 
+    def ele_hidden(self, *args, **kwargs):
+        return True
+
 
 class _FakeCalendar:
     def __init__(self, cell):
@@ -74,6 +77,7 @@ class _FakeFrame:
     def __init__(self, row, calendar):
         self.row = row
         self.calendar = calendar
+        self.wait = _FakeWait()
         self.eles_calls = []
         self.ele_calls = []
 
@@ -109,3 +113,78 @@ def test_select_date_range_finds_query_item_and_calendar_inside_iframe():
     assert "c:.ant-calendar" in frame.ele_calls
     assert row.input.clicked is True
     assert cell.click_count == 2
+
+
+class _FakeSearchButton:
+    text = ""
+
+    def attr(self, name):
+        return ""
+
+
+def test_filter_search_button_supports_icon_only_markup():
+    import filter_area
+
+    icon = object()
+    with patch.object(filter_area.browser_session, "ele_with_fallback", return_value=icon):
+        assert filter_area._is_filter_search_button(_FakeSearchButton()) is True
+
+
+def test_filter_search_button_does_not_treat_other_icon_as_query():
+    import filter_area
+
+    with patch.object(filter_area.browser_session, "ele_with_fallback", return_value=None):
+        assert filter_area._is_filter_search_button(_FakeSearchButton()) is False
+
+
+def test_reset_filter_area_can_defer_requery_for_filter_verification():
+    import filter_area
+
+    states = type("States", (), {"is_displayed": True})()
+    reset_button = type("Button", (), {"states": states, "text": "重置"})()
+    search_button = type("Button", (), {"states": states, "text": ""})()
+    clicked = []
+    with patch.object(filter_area.browser_session, "get_tab", return_value=object()), \
+         patch.object(filter_area.browser_session, "get_active_frame", return_value=object()), \
+         patch.object(filter_area.browser_session, "ele_with_fallback", return_value=object()), \
+         patch.object(filter_area.browser_session, "eles_with_fallback", return_value=[reset_button, search_button]), \
+         patch.object(filter_area, "_native_click", side_effect=lambda button, **_: clicked.append(button)), \
+         patch.object(filter_area, "_is_filter_search_button", side_effect=AssertionError("search lookup must be skipped")):
+        result = filter_area.reset_filter_area(submit=False)
+
+    assert result == {
+        "ok": True, "reset_clicked": True,
+        "search_clicked": False, "query_deferred": True,
+    }
+    assert clicked == [reset_button]
+
+
+def test_set_filter_condition_skips_unchanged_operator_dropdown():
+    import filter_area
+
+    class Wait:
+        def clickable(self, **kwargs):
+            return True
+
+    class Input:
+        states = type("States", (), {"is_displayed": True})()
+        wait = Wait()
+
+        def __init__(self):
+            self.values = []
+
+        def input(self, value, **kwargs):
+            self.values.append(value)
+
+    value_input = Input()
+    operator_select = type("Select", (), {"text": "包含"})()
+    with patch.object(filter_area, "expand_filter_area", return_value={"ok": True}), \
+         patch.object(filter_area.browser_session, "get_tab", return_value=object()), \
+         patch.object(filter_area.browser_session, "get_active_frame", return_value=object()), \
+         patch.object(filter_area, "_quick_filter_field_column", return_value=(object(), [object(), operator_select])), \
+         patch.object(filter_area.browser_session, "eles_with_fallback", return_value=[value_input]), \
+         patch.object(filter_area, "_select_filter_option", side_effect=AssertionError("unchanged operator must not reopen")):
+        result = filter_area.set_filter_condition("工位名称", "包含", "工位")
+
+    assert result["ok"] is True and result["operator_changed"] is False
+    assert value_input.values == ["工位"]

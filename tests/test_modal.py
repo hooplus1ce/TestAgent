@@ -107,6 +107,27 @@ def test_confirm_modal_classified():
     assert info["hasClose"] is True
 
 
+def test_modal_detector_injects_fixed_contract_and_topmost_selection():
+    import modal
+    import ui_contract
+
+    captured = []
+    target = _FakeTarget(run_js_return=lambda script: captured.append(script) or '{"type":"none"}')
+    assert modal._detect_in_target(target) == {"type": "none"}
+
+    script = captured[0]
+    for selector in (
+        ui_contract.MODAL_CONTENT,
+        ui_contract.MODAL_WRAP,
+        ui_contract.CONFIRM_BODY,
+        ui_contract.NOTIFICATION,
+        ui_contract.MESSAGE,
+    ):
+        assert selector in script
+    assert "function topmost" in script
+    assert "zIndex(left) - zIndex(right)" in script
+
+
 def test_interactive_modal_when_no_confirm_body():
     """modal 无 ant-confirm-body → type=interactive。"""
     import modal

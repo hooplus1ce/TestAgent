@@ -64,26 +64,95 @@ def test_js_args_special_chars():
     assert parsed == ["含'引号\"和\\斜杠"]
 
 
-def test_is_loading_complete_waits_for_loading_element_deletion():
+def test_is_loading_complete_waits_for_visible_mask_and_visible_vtable_canvas():
     import vtable
 
     calls = []
 
-    class Wait:
-        def eles_loaded(self, locator, **kwargs):
-            calls.append(("eles_loaded", locator, kwargs))
+    class LoadingWait:
+        def hidden(self, **kwargs):
+            calls.append(("hidden", kwargs))
             return True
 
-        def ele_deleted(self, locator, **kwargs):
-            calls.append(("ele_deleted", locator, kwargs))
+    class CanvasWait:
+        def stop_moving(self, **kwargs):
+            calls.append(("stop_moving", kwargs))
             return True
 
-    frame = type("Frame", (), {"wait": Wait()})()
-    result = vtable.is_loading_complete(frame)
+    loading = type("Loading", (), {
+        "states": type("States", (), {"is_displayed": True})(),
+        "wait": LoadingWait(),
+    })()
+    hidden_canvas = type("Canvas", (), {
+        "states": type("States", (), {"is_displayed": False})(),
+        "wait": CanvasWait(),
+    })()
+    visible_canvas = type("Canvas", (), {
+        "states": type("States", (), {"is_displayed": True})(),
+        "wait": CanvasWait(),
+    })()
 
-    assert result is True
-    assert [item[0] for item in calls] == ["eles_loaded", "ele_deleted"]
-    assert all("vtable-loading" in item[1] for item in calls)
+    class Frame:
+        def run_js(self, script):
+            assert "window._vtableElement" in script
+            return "1"
+
+        def eles(self, locator, timeout=None):
+            calls.append(("eles", locator, timeout))
+            if "vtable-loading" in locator:
+                return [loading]
+            return [hidden_canvas, visible_canvas]
+
+    assert vtable.is_loading_complete(Frame()) is True
+    assert any(item[0] == "hidden" for item in calls)
+    assert any(item[0] == "stop_moving" for item in calls)
+
+
+def test_is_loading_complete_skips_mask_wait_when_already_absent():
+    import vtable
+
+    calls = []
+
+    class CanvasWait:
+        def stop_moving(self, **kwargs):
+            calls.append(("stop_moving", kwargs))
+            return True
+
+    canvas = type("Canvas", (), {
+        "states": type("States", (), {"is_displayed": True})(),
+        "wait": CanvasWait(),
+    })()
+
+    class Frame:
+        def run_js(self, script):
+            return "0"
+
+        def eles(self, locator, timeout=None):
+            calls.append(("eles", locator, timeout))
+            return [] if "vtable-loading" in locator else [canvas]
+
+    assert vtable.is_loading_complete(Frame()) is True
+    assert not any(item[0] == "hidden" for item in calls)
+    assert any(item[0] == "stop_moving" for item in calls)
+
+
+def test_is_loading_complete_rejects_canvas_that_never_stabilizes():
+    import vtable
+
+    canvas_wait = type("CanvasWait", (), {"stop_moving": lambda self, **kwargs: False})()
+    canvas = type("Canvas", (), {
+        "states": type("States", (), {"is_displayed": True})(),
+        "wait": canvas_wait,
+    })()
+
+    class Frame:
+        def run_js(self, script):
+            return "0"
+
+        def eles(self, locator, timeout=None):
+            return [] if "vtable-loading" in locator else [canvas]
+
+    assert vtable.is_loading_complete(Frame(), timeout=1) is False
 
 
 def test_vtable_action_click_uses_visible_cell_coordinates():
@@ -248,3 +317,38 @@ def test_vtable_action_cell_icon_clicks_icon_by_index():
         ("move_to", (30, 40), 0.3),
         ("click",),
     ]
+
+
+def test_get_cell_rect_stops_when_scroll_fails():
+    import vtable
+
+    with patch.object(vtable, "_ensure_vtable", return_value=True), \
+         patch.object(vtable, "scroll_to_cell", return_value={"ok": False, "reason": "out of range"}) as scroll, \
+         patch.object(vtable, "_wait_cell_center_stable") as wait_center:
+        result = vtable.get_cell_rect(2, 999, scroll=True)
+
+    assert result == {"ok": False, "reason": "out of range"}
+    scroll.assert_called_once_with(2, 999)
+    wait_center.assert_not_called()
+
+
+def test_get_columns_values_propagates_header_row_count():
+    import vtable
+
+    with patch.object(vtable, "_ensure_vtable", return_value=True), \
+         patch.object(vtable, "_run", return_value={
+             "values": {"订单号": ["SO-1"]}, "missing": [], "headerRows": 2,
+         }):
+        result = vtable.get_column_values("订单号")
+
+    assert result["values"] == ["SO-1"]
+    assert result["header_rows"] == 2
+
+
+def test_match_icon_rejects_fractional_index():
+    import vtable
+
+    icon, reason = vtable._match_icon([{"name": "edit"}], icon_index=0.5)
+
+    assert icon is None
+    assert "非负整数" in reason

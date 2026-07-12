@@ -36,7 +36,7 @@ def test_evidence_to_case_execution_report_and_regression(monkeypatch, tmp_path)
     monkeypatch.setattr(flow_evidence, "_active_flow", None)
     monkeypatch.setattr(flow_evidence, "_last_flow", None)
 
-    assert flow_evidence.start("采购入库", "保存单据")["ok"] is True
+    assert flow_evidence.start("采购入库", "保存单据", destructive=True)["ok"] is True
     page_state = flow_evidence.record_page_state("初始页面", {"ok": True, "actions": [{"text": "保存"}]})
     assert page_state["page_state_sequence"] == 1
     reference = flow_evidence.record_exploration(
@@ -48,7 +48,12 @@ def test_evidence_to_case_execution_report_and_regression(monkeypatch, tmp_path)
         "sequence": 1,
         "screenshot": "evidence/step-1.png",
     }
-    stopped = flow_evidence.stop()
+    cleanup_result = _observed_result("恢复成功")
+    cleanup_result["target"]["text"] = "恢复测试数据"
+    flow_evidence.record_exploration(
+        {"action": "click", "locator": "text:恢复测试数据"}, cleanup_result, elapsed_ms=20,
+    )
+    stopped = flow_evidence.stop(cleanup_from_sequence=2)
     assert stopped["ok"] is True
 
     loaded = flow_evidence.load(stopped["saved_to"])
@@ -61,25 +66,29 @@ def test_evidence_to_case_execution_report_and_regression(monkeypatch, tmp_path)
     generated = testcase_generation.generate_verified_cases(loaded["flow"], {"module_pinyin": "CG"})
     assert len(generated["test_cases"]) == 1
     assert generated["test_cases"][0]["expected_result"] == "页面显示“保存成功”"
-    assert generated["unverified_count"] == 2
+    assert generated["unverified_count"] == sum(
+        row["status"] != "已验证" for row in generated["coverage_matrix"]
+    )
 
     input_flow = dict(loaded["flow"])
     input_flow["steps"] = [dict(loaded["flow"]["steps"][0])]
+    input_flow["destructive"] = False
+    input_flow.pop("cleanup_from_sequence", None)
     input_flow["steps"][0]["action"] = {"name": "input", "input": {"action": "input", "field_name": "订单号", "text": "PO20260711"}}
     input_cases = testcase_generation.generate_verified_cases(input_flow, {})["test_cases"]
     assert input_cases[0]["test_data"] == {"订单号": "PO20260711"}
 
-    execution = test_execution.execute_cases(
-        generated["test_cases"], lambda action, args: {
-            "ok": action == "explore_action",
-            "args": args,
+    def replay(_action, args):
+        message = "恢复成功" if "恢复" in str(args.get("locator", "")) else "保存成功"
+        return {
+            "ok": True, "args": args,
             "signal": {
-                "type": "message",
-                "payload": {"message": "保存成功"},
+                "type": "message", "payload": {"message": message},
                 "events": [{"type": "network", "api_target": "scm.order.save", "status": 200}],
             },
         }
-    )
+
+    execution = test_execution.execute_cases(generated["test_cases"], replay)
     assert execution["results"][0]["status"] == "passed"
 
     baseline = {"results": [{"case_id": generated["test_cases"][0]["case_id"], "status": "failed", "elapsed_ms": 10}]}
@@ -94,7 +103,7 @@ def test_execution_marks_missing_recipe_as_skipped():
     import test_execution
 
     execution = test_execution.execute_cases([{"case_id": "I001"}], lambda *_: {"ok": True})
-    assert execution["results"] == [{"case_id": "I001", "status": "skipped", "reason": "missing automation_recipe", "steps": []}]
+    assert execution["results"] == [{"case_id": "I001", "case_title": "", "status": "skipped", "reason": "missing automation_recipe", "steps": []}]
 
 
 def test_resource_store_reads_absolute_path_inside_resource_root(monkeypatch, tmp_path):
@@ -146,22 +155,44 @@ def test_mcp_tools_chain_evidence_to_markdown_report(monkeypatch, tmp_path):
     monkeypatch.setattr(flow_evidence, "_active_flow", None)
     monkeypatch.setattr(flow_evidence, "_last_flow", None)
 
-    server.flow_start("采购入库", capture_screenshots=False)
+    server.flow_start("采购入库", capture_screenshots=False, destructive=True)
     flow_evidence.record_exploration(
         {"action": "click", "locator": "text:保存"}, _observed_result(), elapsed_ms=15,
     )
-    flow_file = server.flow_stop()["saved_to"]
+    cleanup_result = _observed_result("恢复成功")
+    cleanup_result["target"]["text"] = "恢复测试数据"
+    flow_evidence.record_exploration(
+        {"action": "click", "locator": "text:恢复测试数据"}, cleanup_result, elapsed_ms=10,
+    )
+    flow_file = server.flow_stop(cleanup_from_sequence=2)["saved_to"]
 
-    generated = server.generate_test_cases_from_flow(flow_file, {"module_pinyin": "CG"}, "cases.json")
+    generated = server.generate_test_cases_from_flow(
+        flow_file, {"module_pinyin": "CG", "api_key": "secret"}, "cases.json",
+    )
     assert generated["saved_to"]
-    with patch.object(server, "explore_action", return_value={
-        "ok": True,
-        "signal": {
-            "type": "message",
-            "payload": {"message": "保存成功"},
-            "events": [{"type": "network", "api_target": "scm.order.save", "status": 200}],
-        },
-    }):
+    assert generated["module_info"]["api_key"] == "[REDACTED]"
+
+    def replay_action(**kwargs):
+        message = "恢复成功" if "恢复" in str(kwargs.get("locator", "")) else "保存成功"
+        return {
+            "ok": True,
+            "signal": {
+                "type": "message", "payload": {"message": message},
+                "events": [{"type": "network", "api_target": "scm.order.save", "status": 200}],
+            },
+        }
+
+    network_result = {"type": "network", "status": 200,
+                      "packet": {"status": 200, "body": {"ok": True}}}
+    with patch.object(server, "_browser_ready_gate", return_value={"ok": True}), \
+            patch.object(server, "_pre_click_cleanup", return_value={"errors": []}), \
+            patch.object(server.filter_area, "reset_filter_area", return_value={"ok": True}), \
+            patch.object(server.observe, "observe_start", return_value={"ok": True}), \
+            patch.object(server.observe, "observe_wait", return_value=network_result), \
+            patch.object(server.browser_session, "get_active_frame", return_value=object()), \
+            patch.object(server, "_wait_query_table", return_value=(True, "vtable")), \
+            patch.object(server, "get_active_frame", return_value={"ok": True}), \
+            patch.object(server, "explore_action", side_effect=replay_action):
         execution = server.run_test_cases(generated["saved_to"], "execution.json")
     assert execution["counts"] == {"passed": 1, "failed": 0, "xfailed": 0, "skipped": 0}
 
@@ -196,3 +227,126 @@ def test_generate_report_merges_supplemental_xfailed_execution(monkeypatch, tmp_
     assert "| 已知缺陷复现 | 1 |" in markdown
     assert "| 补充执行文件 | 1 |" in markdown
     assert "| D001 |" in markdown
+
+
+def test_flow_sanitize_redacts_authorization_userinfo_and_nested_json():
+    import flow_evidence
+
+    sanitized = flow_evidence.sanitize({
+        "auth_url": "https://example.test/a?authorization=Basic%20abc&name=order",
+        "url": "https://user:pass@example.test/a?token=abc#session=xyz",
+        "message": "Authorization: Basic abc123\nCookie: sid=secret; session=xyz; see https://u:p@example.test/a",
+        "body": '{"password":"secret","ok":true}',
+    })
+
+    assert sanitized["url"] == "https://[REDACTED]@example.test/a?token=%5BREDACTED%5D#[REDACTED]"
+    assert sanitized["auth_url"].endswith("authorization=%5BREDACTED%5D&name=order")
+    assert "abc123" not in sanitized["message"]
+    assert "secret" not in sanitized["message"]
+    assert "u:p" not in sanitized["message"]
+    assert sanitized["body"] == '{"password":"[REDACTED]","ok":true}'
+    artifact = flow_evidence.sanitize_artifact({"rows": list(range(2_500))})
+    assert len(artifact["rows"]) == 2_500
+
+
+def test_flow_recording_enforces_page_and_step_limits(monkeypatch, tmp_path):
+    import config
+    import flow_evidence
+    import resource_store
+
+    monkeypatch.setattr(config, "SHOT_DIR", str(tmp_path))
+    monkeypatch.setattr(flow_evidence, "_MAX_PAGE_STATES", 1)
+    monkeypatch.setattr(flow_evidence, "_MAX_STEPS", 1)
+    monkeypatch.setattr(flow_evidence, "_active_flow", None)
+    monkeypatch.setattr(flow_evidence, "_last_flow", None)
+    resource_store.clear_module()
+    assert flow_evidence.start("上限验证", capture_screenshots=False)["ok"] is True
+
+    assert flow_evidence.record_page_state("one", {"ok": True})["page_state_sequence"] == 1
+    page_limit = flow_evidence.record_page_state("two", {"ok": True})
+    first_step = flow_evidence.record_exploration(
+        {"action": "click", "locator": "text:查询"},
+        {"action": {"ok": True, "action": "click"}, "signal": {"type": "none"}},
+        elapsed_ms=1,
+    )
+    step_limit = flow_evidence.record_exploration(
+        {"action": "click", "locator": "text:查询"},
+        {"action": {"ok": True, "action": "click"}, "signal": {"type": "none"}},
+        elapsed_ms=1,
+    )
+
+    assert page_limit == {"ok": False, "reason": "flow exceeds 1 page states"}
+    assert first_step["sequence"] == 1
+    assert step_limit == {"ok": False, "reason": "flow exceeds 1 steps"}
+    assert flow_evidence.stop()["ok"] is True
+
+
+def test_flow_preserves_distinct_raw_network_packets(monkeypatch, tmp_path):
+    import config
+    import flow_evidence
+    import resource_store
+
+    monkeypatch.setattr(config, "SHOT_DIR", str(tmp_path))
+    monkeypatch.setattr(flow_evidence, "_active_flow", None)
+    monkeypatch.setattr(flow_evidence, "_last_flow", None)
+    resource_store.clear_module()
+    assert flow_evidence.start("网络证据", capture_screenshots=False)["ok"] is True
+
+    reference = flow_evidence.record_exploration(
+        {"action": "click", "locator": "text:查询"},
+        {
+            "ok": True,
+            "observe_start": {"ok": True},
+            "action": {"ok": True, "action": "click"},
+            "signal": {
+                "type": "message", "payload": {"message": "完成"},
+                "events": [
+                    {"type": "network", "url": "/gateway", "status": 200,
+                     "response": {"body": {"page": 1}}},
+                    {"type": "network", "url": "/gateway", "status": 200,
+                     "response": {"body": {"page": 2}}},
+                ],
+            },
+        },
+        elapsed_ms=3,
+    )
+    stopped = flow_evidence.stop()
+    networks = flow_evidence.load(stopped["saved_to"])["flow"]["steps"][0]["network"]
+
+    assert reference["sequence"] == 1
+    assert len(networks) == 2
+    assert [item["response"]["body"]["page"] for item in networks] == [1, 2]
+
+
+def test_flow_marks_observer_start_failure_and_rejects_fractional_cleanup(monkeypatch, tmp_path):
+    import config
+    import flow_evidence
+    import resource_store
+
+    monkeypatch.setattr(config, "SHOT_DIR", str(tmp_path))
+    monkeypatch.setattr(flow_evidence, "_active_flow", None)
+    monkeypatch.setattr(flow_evidence, "_last_flow", None)
+    resource_store.clear_module()
+    assert flow_evidence.start("观察失败", capture_screenshots=False)["ok"] is True
+    assert flow_evidence.record_page_state("bad", "not-an-object") == {
+        "ok": False, "reason": "page_model must be an object",
+    }
+    flow_evidence.record_exploration(
+        {"action": "click", "locator": "text:查询"},
+        {
+            "ok": True,
+            "observe_start": {"ok": False, "reason": "listener unavailable"},
+            "action": {"ok": True, "action": "click"},
+            "signal": {"type": "none"},
+        },
+        elapsed_ms=1,
+    )
+
+    assert flow_evidence.status()["flow"]["failed_step_count"] == 1
+    assert flow_evidence.stop(cleanup_from_sequence=1.5) == {
+        "ok": False, "reason": "cleanup_from_sequence must be an integer",
+    }
+    stopped = flow_evidence.stop(cleanup_from_sequence=1)
+    step = flow_evidence.load(stopped["saved_to"])["flow"]["steps"][0]
+    assert step["outcome"] == "failed"
+    assert step["error"] == "listener unavailable"

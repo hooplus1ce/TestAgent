@@ -2,18 +2,25 @@
 from __future__ import annotations
 
 import json
+import html
 import math
+import re
 from collections import Counter
 from statistics import mean
+from urllib.parse import quote
 
 
 _COVERED_STATES = {"已验证", "已覆盖", "verified", "covered", "passed", "pass", "true"}
 
 
 def _number(value):
-    if isinstance(value, bool):
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
-    return float(value) if isinstance(value, (int, float)) and math.isfinite(value) else None
+    try:
+        number = float(value)
+    except (OverflowError, TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
 
 
 def _coverage_metric(key: str, value: dict) -> dict | None:
@@ -29,6 +36,11 @@ def _coverage_metric(key: str, value: dict) -> dict | None:
         rate = covered / total * 100 if total else 0.0
     elif rate is not None and rate <= 1:
         rate *= 100
+    if ((covered is not None and covered < 0)
+            or (total is not None and total < 0)
+            or (covered is not None and total is not None and covered > total)
+            or (rate is not None and not 0 <= rate <= 100)):
+        return None
     if covered is None and total is None and rate is None:
         return None
     return {
@@ -111,61 +123,153 @@ def _coverage_changed(before: dict, after: dict) -> bool:
     return False
 
 
+def _status_direction(before: str, after: str) -> str:
+    """保守分类执行状态变化；失去执行或暴露失败都不能算改善。"""
+    if after == "passed":
+        return "improvement"
+    if before == "passed":
+        return "regression"
+    if after == "skipped":
+        return "regression"
+    if before == "skipped":
+        return "regression"
+    if before == "xfailed" and after == "failed":
+        return "regression"
+    return "neutral"
+
+
 def compare_regression(current: dict, baseline: dict | None) -> dict:
-    """Compare case membership, status, material timing, and coverage with a baseline."""
-    if not baseline:
-        return {"ok": True, "baseline_available": False, "changes": []}
-    current_results = {
-        item.get("case_id"): item for item in current.get("results", [])
-        if isinstance(item, dict) and item.get("case_id") is not None
-    }
-    previous_results = {
-        item.get("case_id"): item for item in baseline.get("results", [])
-        if isinstance(item, dict) and item.get("case_id") is not None
-    }
+    """比较成员、状态、耗时和覆盖率，并显式区分回归与改善。"""
+    if not isinstance(current, dict):
+        return {"ok": False, "baseline_available": bool(baseline),
+                "reason": "current execution must be an object", "changes": []}
+    if baseline is None:
+        return {"ok": True, "baseline_available": False, "changes": [],
+                "has_regressions": False, "regression_count": 0}
+    if not isinstance(baseline, dict):
+        return {"ok": False, "baseline_available": True,
+                "reason": "baseline execution must be an object", "changes": []}
+
+    if not isinstance(current.get("results", []), list) or not isinstance(baseline.get("results", []), list):
+        return {"ok": False, "baseline_available": True,
+                "reason": "execution results must be lists", "changes": [],
+                "has_regressions": False, "regression_count": 0}
+
+    allowed_statuses = {"skipped", "failed", "xfailed", "passed"}
+
+    def index_results(payload, label):
+        indexed = {}
+        duplicates = []
+        invalid = []
+        for index, item in enumerate(payload.get("results", [])):
+            if not isinstance(item, dict):
+                invalid.append("%s[%d]: result must be an object" % (label, index))
+                continue
+            raw_case_id = item.get("case_id")
+            case_key = raw_case_id.strip() if isinstance(raw_case_id, str) else ""
+            status = str(item.get("status") or "").strip().lower()
+            if not case_key:
+                invalid.append("%s[%d]: case_id must be a non-empty string" % (label, index))
+                continue
+            if status not in allowed_statuses:
+                invalid.append("%s[%d]: unsupported status %s" % (label, index, status or "<empty>"))
+                continue
+            if case_key in indexed:
+                duplicates.append(case_key)
+            else:
+                normalized = dict(item)
+                normalized["case_id"] = case_key
+                normalized["status"] = status
+                indexed[case_key] = normalized
+        return indexed, ["%s:%s" % (label, item) for item in duplicates], invalid
+
+    current_results, current_duplicates, current_invalid = index_results(current, "current")
+    previous_results, baseline_duplicates, baseline_invalid = index_results(baseline, "baseline")
+    invalid = current_invalid + baseline_invalid
+    if invalid:
+        return {"ok": False, "baseline_available": True, "changes": [],
+                "reason": "invalid execution results: %s" % "; ".join(invalid[:20]),
+                "has_regressions": False, "regression_count": 0}
+    duplicates = current_duplicates + baseline_duplicates
+    if duplicates:
+        return {"ok": False, "baseline_available": True, "changes": [],
+                "reason": "duplicate case ids: %s" % ", ".join(duplicates),
+                "has_regressions": False, "regression_count": 0}
     changes = []
     for case_id, item in current_results.items():
         old = previous_results.get(case_id)
         if old is None:
-            changes.append({
-                "case_id": case_id, "before": None,
-                "after": item.get("status"), "kind": "added",
-            })
+            added_status = item.get("status")
+            changes.append({"case_id": case_id, "before": None,
+                            "after": added_status, "kind": "added",
+                            "direction": ("regression" if added_status in {"failed", "skipped"}
+                                          else "neutral")})
             continue
         if old.get("status") != item.get("status"):
+            before_status, after_status = old.get("status"), item.get("status")
             changes.append({
-                "case_id": case_id, "before": old.get("status"),
-                "after": item.get("status"), "kind": "status",
+                "case_id": case_id, "before": before_status, "after": after_status,
+                "kind": "status",
+                "direction": _status_direction(str(before_status), str(after_status)),
             })
         old_ms, new_ms = _number(old.get("elapsed_ms")), _number(item.get("elapsed_ms"))
-        if old_ms is not None and new_ms is not None and old_ms > 0:
+        comparable_status = (
+            old.get("status") == item.get("status")
+            and item.get("status") in {"passed", "xfailed"}
+        )
+        if (comparable_status and old_ms is not None and new_ms is not None
+                and old_ms > 0 and new_ms >= 0):
             increase = (new_ms - old_ms) / old_ms
-            if increase >= 0.2:
+            if increase > 0.2:
                 changes.append({
                     "case_id": case_id, "before_ms": old_ms, "after_ms": new_ms,
-                    "change_percent": round(increase * 100, 2), "kind": "performance_regression",
+                    "change_percent": round(increase * 100, 2),
+                    "kind": "performance_regression", "direction": "regression",
                 })
-            elif increase <= -0.2:
+            elif increase < -0.2:
                 changes.append({
                     "case_id": case_id, "before_ms": old_ms, "after_ms": new_ms,
-                    "change_percent": round(increase * 100, 2), "kind": "performance_improvement",
+                    "change_percent": round(increase * 100, 2),
+                    "kind": "performance_improvement", "direction": "improvement",
                 })
     for case_id, old in previous_results.items():
         if case_id not in current_results:
-            changes.append({
-                "case_id": case_id, "before": old.get("status"),
-                "after": None, "kind": "removed",
-            })
+            changes.append({"case_id": case_id, "before": old.get("status"),
+                            "after": None, "kind": "removed",
+                            "direction": "regression"})
 
-    current_coverage = {row["key"]: row for row in _coverage_rows(current)}
-    previous_coverage = {row["key"]: row for row in _coverage_rows(baseline)}
+    def index_coverage(payload, label):
+        indexed, duplicates = {}, []
+        for row in _coverage_rows(payload):
+            key = row["key"]
+            if key in indexed:
+                duplicates.append(key)
+            else:
+                indexed[key] = row
+        return indexed, ["%s:%s" % (label, key) for key in duplicates]
+
+    current_coverage, current_coverage_duplicates = index_coverage(current, "current")
+    previous_coverage, baseline_coverage_duplicates = index_coverage(baseline, "baseline")
+    coverage_duplicates = current_coverage_duplicates + baseline_coverage_duplicates
+    if coverage_duplicates:
+        return {"ok": False, "baseline_available": True, "changes": [],
+                "reason": "duplicate coverage dimensions: %s" % ", ".join(coverage_duplicates),
+                "has_regressions": False, "regression_count": 0}
     for key in sorted(set(current_coverage) | set(previous_coverage)):
         old, new = previous_coverage.get(key), current_coverage.get(key)
         if old is None or new is None or _coverage_changed(old, new):
-            changes.append({
-                "kind": "coverage", "dimension": key,
-                "before": old, "after": new,
-            })
+            old_rate = old.get("rate") if old else None
+            new_rate = new.get("rate") if new else None
+            direction = "neutral"
+            if old is not None and new is None:
+                direction = "regression"
+            elif old is None and new is not None:
+                direction = "improvement"
+            elif old_rate is not None and new_rate is not None:
+                direction = ("regression" if new_rate < old_rate
+                             else "improvement" if new_rate > old_rate else "neutral")
+            changes.append({"kind": "coverage", "dimension": key,
+                            "before": old, "after": new, "direction": direction})
 
     summary = {kind: 0 for kind in (
         "added", "removed", "status", "performance_regression",
@@ -173,7 +277,12 @@ def compare_regression(current: dict, baseline: dict | None) -> dict:
     )}
     for change in changes:
         summary[change["kind"]] = summary.get(change["kind"], 0) + 1
-    return {"ok": True, "baseline_available": True, "changes": changes, "summary": summary}
+    regressions = [change for change in changes if change.get("direction") == "regression"]
+    improvements = [change for change in changes if change.get("direction") == "improvement"]
+    return {"ok": True, "baseline_available": True, "changes": changes,
+            "summary": summary, "has_regressions": bool(regressions),
+            "regression_count": len(regressions),
+            "improvement_count": len(improvements)}
 
 
 def _percentile(values: list[float], percent: float) -> float:
@@ -190,6 +299,14 @@ def _percentile(values: list[float], percent: float) -> float:
     return ordered[lower] + (ordered[upper] - ordered[lower]) * (position - lower)
 
 
+def _object(value) -> dict:
+    return value if isinstance(value, dict) else {}
+
+
+def _object_list(value) -> list[dict]:
+    return [item for item in value if isinstance(item, dict)] if isinstance(value, list) else []
+
+
 def _display(value) -> str:
     if value is None:
         return "-"
@@ -199,12 +316,16 @@ def _display(value) -> str:
 
 
 def _cell(value) -> str:
-    return _display(value).replace("|", "\\|").replace("\r", " ").replace("\n", " ")
+    text = _display(value).replace("\r", " ").replace("\n", " ")
+    text = text.replace("\\", "\\\\")
+    for char in ("|", "`", "[", "]", "*", "_", "!"):
+        text = text.replace(char, "\\" + char)
+    return html.escape(text, quote=False)
 
 
 def _step_label(step) -> str:
     if not isinstance(step, dict):
-        return _cell(step)
+        return _display(step)
     phase = step.get("phase", "")
     index = step.get("index", step.get("phase_index", ""))
     action = step.get("action", "")
@@ -214,22 +335,30 @@ def _step_label(step) -> str:
 def _screenshot(ref: dict):
     if not isinstance(ref, dict):
         return None
-    return ref.get("screenshot") or (ref.get("artifacts") or {}).get("screenshot")
+    if ref.get("screenshot"):
+        return ref.get("screenshot")
+    artifacts = ref.get("artifacts")
+    return artifacts.get("screenshot") if isinstance(artifacts, dict) else None
 
 
 def _markdown_target(value) -> str:
-    target = str(value or "").replace("\\", "/")
-    if len(target) >= 3 and target[1:3] == ":/":
+    target = str(value or "").replace("\\", "/").replace("\n", "").replace("\r", "")
+    target = target.strip().strip("<>")
+    windows_drive = len(target) >= 3 and target[1:3] == ":/"
+    scheme = re.match(r"^([A-Za-z][A-Za-z0-9+.-]*):", target)
+    if scheme and not windows_drive and scheme.group(1).lower() not in {"http", "https"}:
+        return "#unsafe-evidence-link"
+    if windows_drive:
         target = "/" + target
-    return "<%s>" % target if any(char.isspace() for char in target) else target
+    safe_chars = "/:#?&=@%+;,~.-_" if scheme else "/:#?=@%+;,~.-_"
+    return quote(target, safe=safe_chars)
 
 
 def _evidence_text(item: dict, max_refs: int = 3) -> str:
     refs = []
-    for ref in item.get("evidence_refs", []):
-        if not isinstance(ref, dict):
-            continue
-        label = "%s#%s" % (ref.get("flow_id", ""), ref.get("sequence", ""))
+    for ref in _object_list(item.get("evidence_refs")):
+        raw_label = "%s#%s" % (ref.get("flow_id", ""), ref.get("sequence", ""))
+        label = _cell(raw_label)
         screenshot = _screenshot(ref)
         refs.append("[%s](%s)" % (label, _markdown_target(screenshot)) if screenshot else label)
     if len(refs) > max_refs:
@@ -277,39 +406,42 @@ def _regression_values(change: dict) -> tuple[str, str, str]:
 def render_markdown(execution: dict, coverage_matrix: list[dict] | dict | None = None,
                     regression: dict | None = None) -> str:
     """Render execution, authoritative coverage, defects, evidence, and regression."""
-    results = [item for item in execution.get("results", []) if isinstance(item, dict)]
-    counts = {state: sum(1 for item in results if item.get("status") == state)
+    execution = _object(execution)
+    results = _object_list(execution.get("results"))
+    harness_results = [item for item in results if item.get("case_id") == "__HARNESS__"]
+    case_results = [item for item in results if item.get("case_id") != "__HARNESS__"]
+    counts = {state: sum(1 for item in case_results if item.get("status") == state)
               for state in ("passed", "failed", "xfailed", "skipped")}
-    total = len(results)
+    total = len(case_results)
     executed = counts["passed"] + counts["failed"] + counts["xfailed"]
     business_results = counts["passed"] + counts["failed"]
     unknown = total - executed - counts["skipped"]
-    case_elapsed = [_number(item.get("elapsed_ms")) for item in results]
-    case_elapsed = [value for value in case_elapsed if value is not None]
+    case_elapsed = [_number(item.get("elapsed_ms")) for item in case_results]
+    case_elapsed = [value for value in case_elapsed if value is not None and value >= 0]
     step_timings = []
-    for item in results:
-        for step in item.get("steps", []):
-            if not isinstance(step, dict):
-                continue
+    for item in case_results:
+        for step in _object_list(item.get("steps")):
             elapsed = _number(step.get("elapsed_ms"))
-            if elapsed is not None:
+            if elapsed is not None and elapsed >= 0:
                 step_timings.append((elapsed, item.get("case_id", ""), step))
     step_values = [item[0] for item in step_timings]
     coverage_rows = _coverage_rows(coverage_matrix)
-    screenshot_count = sum(
-        1 for item in results for ref in item.get("evidence_refs", [])
-        if isinstance(ref, dict) and _screenshot(ref)
-    )
+    screenshot_paths = {
+        str(_screenshot(ref))
+        for item in results for ref in _object_list(item.get("evidence_refs"))
+        if _screenshot(ref)
+    }
+    screenshot_count = len(screenshot_paths)
 
     lines = [
         "# 自动化测试报告", "", "## 执行环境", "",
         "| 项目 | 内容 |", "|---|---|",
-        "| 模块 | %s |" % _cell((execution.get("module_info") or {}).get("module_name", "-")),
+        "| 模块 | %s |" % _cell(_object(execution.get("module_info")).get("module_name", "-")),
         "| 开始时间 | %s |" % _cell(execution.get("started_at", "-")),
         "| 结束时间 | %s |" % _cell(execution.get("finished_at", "-")),
-        "| 会话检查 | %s |" % ("通过" if (execution.get("ready_gate") or {}).get("ok") else "未记录"),
-        "| 活动页面 | %s |" % _cell((((execution.get("ready_gate") or {}).get("frame") or {}).get("url", "-"))),
-        "| 补充执行文件 | %d |" % len(execution.get("supplemental_execution_files", [])),
+        "| 会话检查 | %s |" % ("通过" if _object(execution.get("ready_gate")).get("ok") is True else "未记录"),
+        "| 活动页面 | %s |" % _cell(_object(_object(execution.get("ready_gate")).get("frame")).get("url", "-")),
+        "| 补充执行文件 | %d |" % len(execution.get("supplemental_execution_files") if isinstance(execution.get("supplemental_execution_files"), list) else []),
         "", "## 执行摘要", "",
         "| 指标 | 数值 |", "|---|---:|",
         "| 计划用例 | %d |" % total,
@@ -319,6 +451,7 @@ def render_markdown(execution: dict, coverage_matrix: list[dict] | dict | None =
         "| 已知缺陷复现 | %d |" % counts["xfailed"],
         "| 跳过 | %d |" % counts["skipped"],
         "| 未知状态 | %d |" % unknown,
+        "| 回放框架失败 | %d |" % len(harness_results),
         "| 业务通过率 | %.1f%% |" % ((counts["passed"] / business_results * 100) if business_results else 0),
         "| 执行完成率 | %.1f%% |" % ((executed / total * 100) if total else 0),
         "| 平均用例耗时 | %.2f ms |" % (mean(case_elapsed) if case_elapsed else 0),
@@ -344,9 +477,13 @@ def render_markdown(execution: dict, coverage_matrix: list[dict] | dict | None =
             lines.append("| %s | %s | %d |" % (_cell(status), _cell(risk), count))
         lines.extend(["", "优先缺口：", ""])
         for item in gaps[:10]:
-            lines.append("- [%s] %s / %s：%s" % (
+            refs = item.get("asset_evidence_refs") or item.get("evidence_refs") or []
+            evidence = _evidence_text({"evidence_refs": refs})
+            evidence_suffix = "；证据：%s" % evidence if evidence != "-" else ""
+            lines.append("- [%s] %s / %s：%s%s" % (
                 _cell(item.get("status", "待验证")), _cell(item.get("function", "")),
                 _cell(item.get("risk", "")), _cell(item.get("scenario", "")),
+                evidence_suffix,
             ))
     else:
         lines.append("- 当前覆盖矩阵无未验证场景。")
@@ -361,7 +498,7 @@ def render_markdown(execution: dict, coverage_matrix: list[dict] | dict | None =
         lines.append("| %s | %s | %s | %s | %s | %s | %s |" % (
             _cell(item.get("case_id", "")), _cell(item.get("case_title", "")),
             _cell(item.get("status", "")),
-            ("%s ms" % elapsed) if elapsed is not None else "-",
+            _cell("%s ms" % elapsed) if elapsed is not None else "-",
             _cell(item.get("failure_type", "-")), _cell(item.get("reason", "")),
             _evidence_text(item),
         ))
@@ -371,9 +508,8 @@ def render_markdown(execution: dict, coverage_matrix: list[dict] | dict | None =
     for item in results:
         if item.get("status") == "failed":
             defects.append((item, item))
-        for cleanup_failure in item.get("cleanup_failures", []):
-            if isinstance(cleanup_failure, dict):
-                defects.append((item, cleanup_failure))
+        for cleanup_failure in _object_list(item.get("cleanup_failures")):
+            defects.append((item, cleanup_failure))
     if defects:
         lines.extend([
             "| 用例编号 | 类型 | 失败步骤 | 期望 | 实际 | 原因 | 执行证据 |",
@@ -390,7 +526,43 @@ def render_markdown(execution: dict, coverage_matrix: list[dict] | dict | None =
         lines.append("- 未发现执行失败。")
 
     lines.extend(["", "## 已知缺陷", ""])
-    known_defects = [item for item in execution.get("known_defects", []) if isinstance(item, dict)]
+    known_defects = []
+    known_by_key = {}
+
+    def add_known_defect(raw):
+        if not isinstance(raw, dict):
+            return
+        defect = dict(raw)
+        defect_id = str(defect.get("defect_id") or "").strip()
+        case_id = str(defect.get("case_id") or "").strip()
+        key = ("defect", defect_id) if defect_id else ("case", case_id)
+        if not key[1]:
+            key = ("anonymous", str(len(known_defects)))
+        existing = known_by_key.get(key)
+        if existing is None:
+            defect["evidence_refs"] = list(_object_list(defect.get("evidence_refs")))
+            known_by_key[key] = defect
+            known_defects.append(defect)
+            return
+        for field, value in defect.items():
+            if field != "evidence_refs" and existing.get(field) in (None, "") and value not in (None, ""):
+                existing[field] = value
+        for ref in _object_list(defect.get("evidence_refs")):
+            if ref not in existing["evidence_refs"]:
+                existing["evidence_refs"].append(ref)
+
+    for item in _object_list(execution.get("known_defects")):
+        add_known_defect(item)
+    for result in results:
+        defect = result.get("known_defect")
+        if result.get("status") != "xfailed" or not isinstance(defect, dict):
+            continue
+        derived = dict(defect)
+        derived.setdefault("case_id", result.get("case_id"))
+        derived.setdefault("title", result.get("case_title", ""))
+        derived.setdefault("actual", result.get("reason", ""))
+        derived.setdefault("evidence_refs", result.get("evidence_refs", []))
+        add_known_defect(derived)
     if known_defects:
         lines.extend([
             "| 缺陷编号 | 严重级别 | 状态 | 标题 | 期望 | 实际 | 证据 |",
@@ -425,17 +597,25 @@ def render_markdown(execution: dict, coverage_matrix: list[dict] | dict | None =
         lines.append("- 无执行步骤耗时数据。")
 
     lines.extend(["", "## 回归比较", ""])
-    if regression and regression.get("baseline_available"):
+    if regression and regression.get("ok") is False:
+        lines.append("- 回归比较失败：%s" % _cell(regression.get("reason", "未知错误")))
+    elif regression and regression.get("baseline_available"):
         changes = regression.get("changes", [])
+        lines.append("- 检测到回归：%s；回归项：%d；改善项：%d。" % (
+            "是" if regression.get("has_regressions") else "否",
+            int(regression.get("regression_count", 0) or 0),
+            int(regression.get("improvement_count", 0) or 0),
+        ))
         if changes:
-            lines.extend(["| 变化类型 | 对象 | 基线 | 当前 |", "|---|---|---|---|"])
+            lines.extend(["| 变化类型 | 方向 | 对象 | 基线 | 当前 |", "|---|---|---|---|---|"])
             for change in changes:
                 subject, before, after = _regression_values(change)
-                lines.append("| %s | %s | %s | %s |" % (
-                    _cell(change.get("kind", "")), _cell(subject), _cell(before), _cell(after),
+                lines.append("| %s | %s | %s | %s | %s |" % (
+                    _cell(change.get("kind", "")), _cell(change.get("direction", "neutral")),
+                    _cell(subject), _cell(before), _cell(after),
                 ))
         else:
             lines.append("- 与基线相比未检测到用例、状态、性能或覆盖变化。")
     else:
-        lines.append("- 未提供历史基线，本次结果已作为候选基线。")
+        lines.append("- 未提供历史基线，本次结果可作为候选基线。")
     return "\n".join(lines) + "\n"

@@ -8,11 +8,39 @@
 //          （避免在 iframe 内反查顶层 iframe 元素造成坐标偏移。）
 
 // ============ 1. 挂载 VTable 实例 ============
+function _duVisibleVTableElement(el) {
+  if (!el || !el.isConnected) return false;
+  var style = window.getComputedStyle(el);
+  if (style.display === 'none' || style.visibility === 'hidden') return false;
+  var rect = el.getBoundingClientRect();
+  if (rect.width <= 0 || rect.height <= 0) return false;
+  var left = Math.max(0, rect.left), right = Math.min(window.innerWidth, rect.right);
+  var top = Math.max(0, rect.top), bottom = Math.min(window.innerHeight, rect.bottom);
+  if (right <= left || bottom <= top) return false;
+  var hit = document.elementFromPoint((left + right) / 2, (top + bottom) / 2);
+  return !!(hit && (hit === el || el.contains(hit)));
+}
+
+function findVisibleVTableElement() {
+  var selectors = ['.vtable', '[class*="vtable"]'];
+  for (var si = 0; si < selectors.length; si++) {
+    var candidates = [].slice.call(document.querySelectorAll(selectors[si]));
+    for (var ci = 0; ci < candidates.length; ci++) {
+      var candidate = candidates[ci];
+      if (!_duVisibleVTableElement(candidate)) continue;
+      if (candidate.tagName === 'CANVAS' || candidate.querySelector('canvas')) return candidate;
+    }
+  }
+  var canvases = [].slice.call(document.querySelectorAll('canvas'));
+  for (var i = 0; i < canvases.length; i++) {
+    if (_duVisibleVTableElement(canvases[i])) return canvases[i].parentElement || canvases[i];
+  }
+  return null;
+}
+
 function mountVTable() {
-  var el = document.querySelector('.vtable') ||
-           document.querySelector('[class*="vtable"]') ||
-           (document.querySelector('canvas') && document.querySelector('canvas').parentElement);
-  if (!el || !el.parentElement) return { ok: false, reason: '.vtable not found' };
+  var el = findVisibleVTableElement();
+  if (!el || !el.parentElement) return { ok: false, reason: 'visible .vtable not found' };
 
   var parent = el.parentElement;
   var fk = Object.keys(parent).find(
@@ -35,6 +63,7 @@ function mountVTable() {
   for (var count = 0; fiber && count < 30; count++) {
     if (fiber.stateNode && fiber.stateNode.vtableInstance) {
       window._vtable = fiber.stateNode.vtableInstance;
+      window._vtableElement = el;
       return { ok: true, levels: count };
     }
     fiber = fiber.return;
@@ -136,13 +165,15 @@ function scanColumns(maxCol) {
   if (!t) return null;
   var headerLevelCount = t.columnHeaderLevelCount || 1;
   var results = [];
-  // .vtable 元素相对【iframe 自身视口】的偏移
-  var vtEl = document.querySelector('.vtable') || document.querySelector('[class*="vtable"]');
-  var vtRect = vtEl ? vtEl.getBoundingClientRect() : { left: 0, top: 0 };
+  // 可见 VTable 根元素相对【iframe 自身视口】的偏移。
+  var vtEl = window._vtableElement;
+  if (!_duVisibleVTableElement(vtEl)) vtEl = findVisibleVTableElement();
+  if (!vtEl) return null;
+  var vtRect = vtEl.getBoundingClientRect();
   // iframe 在顶层视口的偏移（JS 一次算完，Python 不再叠加）
   var ifrRect = window.frameElement ? window.frameElement.getBoundingClientRect() : { left: 0, top: 0 };
 
-  for (var col = 0; col < maxCol; col++) {
+  for (var col = 0; col < Math.min(maxCol, t.colCount || maxCol); col++) {
     var bodyInfo = classifyColumnBody(t, col);
     for (var row = 0; row < headerLevelCount; row++) {
       var isHeader = false;
@@ -156,9 +187,11 @@ function scanColumns(maxCol) {
       var icons = [];
       if (isHeader) { icons = getCellIconBounds(t, col, row); }
 
+      var titleText = typeof title === 'string' ? title : String(title);
       var entry = {
         col: col, row: row, isHeader: isHeader,
-        title: typeof title === 'string' ? title.substring(0, 30) : String(title).substring(0, 30),
+        title: titleText,
+        titlePreview: titleText.length > 80 ? titleText.substring(0, 80) + '…' : titleText,
         bodyBehavior: bodyInfo.behavior, bodyDetail: bodyInfo.detail,
         bodyType: bodyInfo.bodyType, bodyEditable: bodyInfo.editable,
         icons: icons.map(function (ic) {

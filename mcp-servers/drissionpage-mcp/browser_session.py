@@ -10,11 +10,14 @@ import os
 import shutil
 import sys
 import threading
+from functools import lru_cache
+from time import monotonic
 from pathlib import Path
 
 from DrissionPage import Chromium, ChromiumOptions
 
 import config
+import ui_contract
 
 logger = logging.getLogger("drissionpage-mcp")
 
@@ -29,8 +32,6 @@ _target_hint = config.DEFAULT_TARGET_HINT
 # 并发锁：FastMCP 支持并发调用，所有浏览器操作串行化避免竞态
 _lock = threading.RLock()
 
-# 活动业务 iframe 选择器（SCM：可见 tabpanel 内的 iframe）
-ACTIVE_FRAME_LOC = config.ACTIVE_FRAME_LOC
 
 # dp_configs.ini 路径（configs/ 目录）
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -40,6 +41,7 @@ _DP_INI = str(_PROJECT_ROOT / "configs" / "dp_configs.ini")
 _active_tab_name = ""
 
 
+@lru_cache(maxsize=None)
 def load_js(name: str) -> str:
     """读取 js/ 目录下的页面注入脚本。"""
     with open(os.path.join(_JS_DIR, name), encoding="utf-8") as f:
@@ -47,15 +49,24 @@ def load_js(name: str) -> str:
 
 
 def ele_with_fallback(target, css_selector, xpath_selector, timeout=1.0):
-    """尝试用 CSS 定位元素，失败后用 XPath 兜底。"""
+    """在一个总超时预算内先用 CSS、再用 XPath 定位。
+
+    固定 UI 的 CSS 是主契约，XPath 只承担兼容兜底。旧实现让两次查找各等待完整
+    timeout，空结果会耗时 2 倍；这里给 CSS 65% 的保底预算，并把实际剩余时间交
+    给 XPath，整个调用最多等待一次 timeout。
+    """
+    timeout = max(float(timeout or 0), 0.0)
+    deadline = monotonic() + timeout
+    css_timeout = timeout * 0.65 if xpath_selector else timeout
     try:
-        el = target.ele(css_selector, timeout=timeout)
+        el = target.ele(css_selector, timeout=css_timeout)
         if el and not isinstance(el, str):
             return el
     except Exception:
         pass
+    remaining = max(deadline - monotonic(), 0.0)
     try:
-        return target.ele(xpath_selector, timeout=timeout)
+        return target.ele(xpath_selector, timeout=remaining)
     except Exception:
         return None
 
@@ -112,93 +123,110 @@ def _ensure_display_env():
 
 
 def _pick_tab(browser, hint):
-    """优先选 url 含 hoolinks 的 tab，其次按标题，最后用 latest_tab。"""
+    """按固定 SCM 域、标题提示、最后激活顺序选择标签页。"""
     try:
-        t = browser.get_tab(url="hoolinks")
-        if t:
-            return t
-    except Exception as e:
-        logger.debug("get_tab(url=hoolinks) 失败: %s", e)
-    try:
-        for tid in browser.tab_ids:
-            t = browser.get_tab(tid)
-            if t and t.url and "hoolinks" in t.url:
-                return t
-    except Exception as e:
-        logger.debug("遍历 tab_ids 失败: %s", e)
-    try:
-        t = browser.get_tab(title=hint)
-        if t:
-            return t
-    except Exception as e:
-        logger.debug("get_tab(title=%r) 失败: %s", hint, e)
+        tab = browser.get_tab(url="hoolinks")
+        if tab:
+            return tab
+    except Exception as exc:
+        logger.debug("get_tab(url=hoolinks) 失败: %s", exc)
+    if hint:
+        try:
+            tab = browser.get_tab(title=hint)
+            if tab:
+                return tab
+        except Exception as exc:
+            logger.debug("get_tab(title=%r) 失败: %s", hint, exc)
     return browser.latest_tab
 
 
 def connect(
     port: int = config.DEFAULT_PORT, target_hint: str = config.DEFAULT_TARGET_HINT
 ):
-    """连接 Chrome：接管指定端口已运行实例，或按 dp_configs.ini 自启动。
+    """接管或启动 Chromium，并复用同端口的健康 4.2 浏览器连接。
 
-    交给 DrissionPage 的 Chromium() 处理——端口有实例则接管，无则启动
-    （existing_only=False），CDP 就绪等待由 DrissionPage 内部完成。
-    跨平台：Linux 有头自动补 DISPLAY/XAUTHORITY 并探测浏览器路径；
-    HL_HEADLESS 走无头 + --no-sandbox；Windows/macOS 交给 DrissionPage 探测。
+    启动参数只组合 DrissionPage 4.2 官方 API：Edge、账密代理、PDF 下载模式和
+    remove_test_type 均由项目环境变量显式控制。重连新浏览器时清空旧 Context
+    注册表，避免把失效对象暴露给后续工具。
     """
     with _lock:
-        global _browser, _tab, _port, _target_hint
-        _port = port
-        _target_hint = target_hint
+        global _browser, _tab, _port, _target_hint, _active_tab_name, _context_seq
         logger.info("connect port=%s target_hint=%r", port, target_hint)
 
+        if _browser is not None and port == _port:
+            try:
+                browser_alive = bool(_browser.states.is_alive)
+                tab_alive = _tab is not None and bool(_tab.states.is_alive)
+                if browser_alive:
+                    if not tab_alive or target_hint != _target_hint:
+                        _tab = _pick_tab(_browser, target_hint)
+                    _target_hint = target_hint
+                    return _tab
+            except Exception as exc:
+                logger.debug("现有浏览器连接不可复用: %s", exc)
+
+        _port = port
+        _target_hint = target_hint
         _ensure_display_env()
-        # A project-specific ini is optional. DrissionPage raises before trying
-        # CDP when read_file=True points at a missing file, which prevented a
-        # normal remote-debugging browser from being attached in fresh clones.
         if os.path.isfile(_DP_INI):
-            co = ChromiumOptions(read_file=True, ini_path=_DP_INI)
+            options = ChromiumOptions(read_file=True, ini_path=_DP_INI)
         else:
-            co = ChromiumOptions(read_file=False)
+            options = ChromiumOptions(read_file=False)
             logger.info("DrissionPage ini not found; using runtime options: %s", _DP_INI)
-        co.set_address(f"127.0.0.1:{port}")
-        # 浏览器路径（跨平台）：优先 HL_CHROME_PATH；否则 Linux 显式指向 google-chrome
-        # （ini 默认 'chrome' 在多数发行版无此命令），Windows/macOS 交给 DrissionPage 自动探测。
+        options.set_address(f"127.0.0.1:{port}")
+
         if config.CHROME_PATH:
-            co.set_browser_path(config.CHROME_PATH)
+            options.set_browser_path(config.CHROME_PATH)
+        elif config.EDGE_MODE:
+            options.set_browser_path(edge=True)
         elif sys.platform.startswith("linux"):
-            exe = (
+            executable = (
                 shutil.which("google-chrome")
                 or shutil.which("google-chrome-stable")
                 or shutil.which("chromium")
                 or shutil.which("chromium-browser")
             )
-            if exe:
-                co.set_browser_path(exe)
+            if executable:
+                options.set_browser_path(executable)
+        if config.PROXY:
+            options.set_proxy(config.PROXY)
+        if config.DISABLE_PDF_PREVIEW:
+            options.disable_pdf_preview()
+        if config.REMOVE_TEST_TYPE:
+            options.remove_test_type()
         if config.HEADLESS:
-            # CI/CD 无图形环境：无头 + 容器常需 no-sandbox
-            co.headless(True)
-            co.set_argument("--no-sandbox")
+            options.headless(True)
+            options.set_argument("--no-sandbox")
             logger.info("headless 模式启动")
-        _browser = Chromium(co)
 
+        _browser = Chromium(options)
         _tab = _pick_tab(_browser, target_hint)
+        _active_tab_name = ""
+        _contexts.clear()
+        _context_seq = 0
         logger.info("connected tab url=%s", (_tab.url or "")[:120])
         return _tab
 
 
 def list_tabs():
-    """列出所有 tab 的 url/title（供 server.py connect 工具使用，避免读 _browser 私有变量）。"""
+    """用 4.2 ``get_tabs()`` 一次取得标签页对象及当前状态。"""
     with _lock:
         if _browser is None:
             return []
-        tabs = []
         try:
-            for tid in _browser.tab_ids:
-                t = _browser.get_tab(tid)
-                tabs.append({"url": (t.url or "")[:120], "title": (t.title or "")[:40]})
-        except Exception as e:
-            logger.warning("list_tabs 失败: %s", e)
-        return tabs
+            current_id = getattr(_tab, "tab_id", None)
+            return [
+                {
+                    "tab_id": tab.tab_id,
+                    "url": (tab.url or "")[:120],
+                    "title": (tab.title or "")[:40],
+                    "is_current": tab.tab_id == current_id,
+                }
+                for tab in _browser.get_tabs()
+            ]
+        except Exception as exc:
+            logger.warning("list_tabs 失败: %s", exc)
+            return []
 
 
 def tab_count():
@@ -214,16 +242,17 @@ def tab_count():
 
 
 def get_tab():
-    """取活动 tab，连接失效则自愈重连。"""
+    """取活动 tab；用 4.2 ``states.is_alive`` 探活并自愈重连。"""
     with _lock:
         global _tab
         if _tab is None:
             connect(_port, _target_hint)
         else:
             try:
-                _ = _tab.url  # 探活
-            except Exception as e:
-                logger.warning("tab 探活失败，重连: %s", e)
+                if not _tab.states.is_alive:
+                    raise RuntimeError("tab is closed")
+            except Exception as exc:
+                logger.warning("tab 探活失败，重连: %s", exc)
                 connect(_port, _target_hint)
         return _tab
 
@@ -238,41 +267,36 @@ def get_browser():
 
 
 def get_active_frame(tab=None):
-    """取当前可见 tabpanel 内的业务 iframe（ChromiumFrame）；无则返回 None。"""
+    """用 4.2 ``get_frame()`` 获取当前可见业务 iframe，并同步模块名称。"""
     with _lock:
         tab = tab or get_tab()
         try:
-            # 1. 缓存激活 tab 名称供外部查询
             global _active_tab_name
-            tab_el = ele_with_fallback(
+            frame = tab.get_frame(ui_contract.ACTIVE_FRAME, timeout=1.0)
+            if not frame or getattr(frame, "_type", None) != "ChromiumFrame":
+                _active_tab_name = ""
+                return None
+
+            active_tab = ele_with_fallback(
                 tab,
                 'css:div[role="tab"][aria-selected="true"]',
                 'xpath://div[@role="tab" and @aria-selected="true"]',
-                timeout=0.5
+                timeout=0.5,
             )
-            if tab_el:
+            if active_tab:
                 trigger = ele_with_fallback(
-                    tab_el,
+                    active_tab,
                     'css:.ant-dropdown-trigger',
-                    'xpath:.//*[contains(@class, "ant-dropdown-trigger")]',
-                    timeout=0.1
-                ) or tab_el
+                    'xpath:.//*[contains(@class,"ant-dropdown-trigger")]',
+                    timeout=0.1,
+                ) or active_tab
                 _active_tab_name = (trigger.text or "").strip()
             else:
                 _active_tab_name = ""
-
-            # 2. 获取可见 iframe 对应的 ChromiumFrame 对象
-            fr = ele_with_fallback(
-                tab,
-                ACTIVE_FRAME_LOC,
-                'xpath://div[@role="tabpanel" and not(@aria-hidden="true")]//iframe',
-                timeout=1.0
-            )
-            if fr and not isinstance(fr, str) and getattr(fr, "_type", None) == "ChromiumFrame":
-                return fr
-            return None
-        except Exception as e:
-            logger.debug("get_active_frame 失败: %s", e)
+            return frame
+        except Exception as exc:
+            _active_tab_name = ""
+            logger.debug("get_active_frame 失败: %s", exc)
             return None
 
 
@@ -292,125 +316,100 @@ def get_tab_ro():
     """返回当前 tab（只读，不探活不重连）。仅在读锁保护下调用，确保无并发写。"""
     return _tab
 
+def set_tab(tab):
+    """更新 MCP 当前标签页并清空依赖旧页面的活动模块名称缓存。"""
+    with _lock:
+        global _tab, _active_tab_name
+        _tab = tab
+        _active_tab_name = ""
+        return _tab
 
-def get_active_frame_ro(tab=None):
-    """取活动 iframe（只读版本，不加 _lock，不重连）。
 
-    仅在读锁保护下调用：保证 _tab 不会被写操作替换。
-    """
+def get_active_frame_ro(tab=None, timeout: float = 1.0):
+    """只读路径用 4.2 ``get_frame()`` 获取活动 iframe，不触发重连。"""
     tab = tab or _tab
     if tab is None:
         return None
     try:
-        fr = ele_with_fallback(
-            tab,
-            ACTIVE_FRAME_LOC,
-            'xpath://div[@role="tabpanel" and not(@aria-hidden="true")]//iframe',
-            timeout=1.0
-        )
-        if fr and not isinstance(fr, str) and getattr(fr, "_type", None) == "ChromiumFrame":
-            return fr
+        frame = tab.get_frame(ui_contract.ACTIVE_FRAME, timeout=max(float(timeout or 0), 0.0))
+        return frame if frame and getattr(frame, "_type", None) == "ChromiumFrame" else None
+    except Exception as exc:
+        logger.debug("get_active_frame_ro 失败: %s", exc)
         return None
-    except Exception as e:
-        logger.debug("get_active_frame_ro 失败: %s", e)
-        return None
+
+
+def _remaining(deadline: float) -> float:
+    return max(deadline - monotonic(), 0.0)
+
+
+def _lookup_frame(tab, deadline: float):
+    """给 frame 解析最多 0.5 秒，且不突破调用方总预算。"""
+    return get_active_frame_ro(tab, timeout=min(_remaining(deadline), 0.5))
 
 
 def find(
     locator: str, in_frame: bool = True, timeout: float = 5, wait_clickable: bool = True
 ):
-    """按 DrissionPage 定位符查找元素：优先在活动 iframe 内，未命中再回退到 top 文档。
-
-    支持完整 DP 定位语法：
-      #id          — id 匹配（精确），#:ne 模糊，#^on 开头，#$ne 结尾
-      .cls         — class 匹配（精确），.:_cls 模糊，.^p_ 开头，.$_cls 结尾
-      text=文      — 文本精确匹配，text:文 模糊匹配（纯字符串默认模糊匹配文本）
-      tag:div      — 标签类型匹配（简化 t:div）
-      css:.cls     — CSS 选择器（简化 c:.cls）
-      xpath://div  — XPath 定位（简化 x://div）
-      @id=val      — 单属性精确匹配（@id:val 模糊，@id^val 开头，@id$val 结尾）
-      @@k1=v@@k2=v — 多属性与匹配（所有条件同时满足）
-      @|k1=v@|k2=v — 多属性或匹配（任一条件满足）
-      @!id=val     — 否定匹配（@!class 匹配无 class 属性的元素）
-      ax:@role=btn@name=xxx — 无障碍模式匹配
-    简化写法：text→tx, tag→t, css→c, xpath→x, @text()→@tx(), @tag()→@t()
-    链式：tab('#id')('.cls') 等价于 tab.ele('#id').ele('.cls')
-    shadow-root：ele.sr 等价于 ele.shadow_root
-    文档：https://drissionpage.cn/browser_control/get_elements/syntax
-
-    Args:
-        locator: DrissionPage 定位符
-        in_frame: 优先在活动 iframe 内查找，未命中再回退 top 文档
-        timeout: 查找超时秒数
-        wait_clickable: True 时找到后等待元素可点击；若超时仍不可点击则返回 None
-            （click/input 需可交互元素；截图/hover 等只读场景应传 False 跳过此校验）
-    """
+    """在单一 timeout 预算内按业务 iframe → 顶层顺序查找并等待可点击。"""
     with _lock:
+        timeout = max(float(timeout or 0), 0.0)
+        deadline = monotonic() + timeout
         tab = get_tab()
-        ele = None
-        # 优先在活动 iframe 内查找，未命中再回退 top 文档
+        element = None
         if in_frame:
-            fr = get_active_frame(tab)
-            if fr is not None:
-                ele = fr.ele(locator, timeout=timeout)
-        if not ele:
-            ele = tab.ele(locator, timeout=timeout)
-        if not ele:
+            frame = _lookup_frame(tab, deadline)
+            if frame is not None:
+                element = frame.ele(locator, timeout=_remaining(deadline) * 0.9)
+        if not element:
+            element = tab.ele(locator, timeout=_remaining(deadline))
+        if not element:
             return None
         if wait_clickable:
             try:
-                ele.wait.clickable(
-                    timeout=timeout, wait_stop=False
-                )  # 轮询至可点击或超时（超时不抛错）
-                if not ele.states.is_clickable:
+                element.wait.clickable(
+                    timeout=_remaining(deadline), wait_stop=False, raise_err=False
+                )
+                if not element.states.is_clickable:
                     logger.debug("元素已找到但不可点击: %s", locator)
             except Exception:
-                # 某些元素无 clickable 概念（如纯展示节点），忽略校验返回元素
+                # 纯展示节点没有 clickable 语义，定位成功仍应返回元素。
                 pass
-        return ele
+        return element
 
 
 def find_all(locator: str, in_frame: bool = True, timeout: float = 5):
-    """按 DrissionPage 定位符查找所有匹配元素（eles 封装）。
-
-    支持完整 DP 定位语法：tag:div / t:div / #id / .cls / @attr=v / @@k1=v@@k2=v / @|k1=v@|k2=v
-    text:文 / tx=文 / css:.cls / c:.cls / xpath://div / x://div / ax:@role=btn@name=xxx
-    纯文本自动匹配。简化写法见 https://drissionpage.cn/browser_control/get_elements/simplify
-    """
+    """在单一 timeout 预算内从业务 iframe 查找集合，空结果再查顶层。"""
     with _lock:
+        deadline = monotonic() + max(float(timeout or 0), 0.0)
         tab = get_tab()
         if in_frame:
-            fr = get_active_frame(tab)
-            if fr is not None:
-                els = fr.eles(locator, timeout=timeout)
-                if els:
-                    return els
-        return tab.eles(locator, timeout=timeout)
+            frame = _lookup_frame(tab, deadline)
+            if frame is not None:
+                elements = frame.eles(locator, timeout=_remaining(deadline) * 0.9)
+                if elements:
+                    return elements
+        return tab.eles(locator, timeout=_remaining(deadline))
 
 
 def find_static(
     locator: str = None, in_frame: bool = True, timeout: float = 5, index: int = 1
 ):
-    """按 DrissionPage 定位符查找元素的静态版本（s_ele 封装）。
-
-    静态元素（SessionElement）由纯文本构造，速度极快，适合批量数据采集。
-    返回的静态元素不能交互（点击/输入），只能读取属性/文本。
-    locator 为 None 时返回调用者本身的静态副本。
-    """
+    """在单一 timeout 预算内获取只读 SessionElement。"""
     with _lock:
+        deadline = monotonic() + max(float(timeout or 0), 0.0)
         tab = get_tab()
         if in_frame:
-            fr = get_active_frame(tab)
-            if fr is not None:
-                ele = (
-                    fr.s_ele(locator, index=index, timeout=timeout)
-                    if locator
-                    else fr.s_ele()
+            frame = _lookup_frame(tab, deadline)
+            if frame is not None:
+                element = (
+                    frame.s_ele(locator, index=index, timeout=_remaining(deadline) * 0.9)
+                    if locator else frame.s_ele()
                 )
-                if ele:
-                    return ele
+                if element:
+                    return element
         return (
-            tab.s_ele(locator, index=index, timeout=timeout) if locator else tab.s_ele()
+            tab.s_ele(locator, index=index, timeout=_remaining(deadline))
+            if locator else tab.s_ele()
         )
 
 
@@ -421,26 +420,29 @@ def find_batch(
     any_one: bool = True,
     first_ele: bool = True,
 ):
-    """同时匹配多个定位符（find 封装）。返回 dict{定位符: 元素} 或 tuple(定位符, 元素)。
-
-    any_one=True: 返回第一个有结果的 (定位符, 元素)
-    any_one=False: 返回 {定位符: 元素}（first_ele=True 每个定位符第一个，False 所有）
-    """
+    """在单一 timeout 预算内批量匹配业务 iframe，空结果再查顶层。"""
     with _lock:
+        deadline = monotonic() + max(float(timeout or 0), 0.0)
         tab = get_tab()
         if in_frame:
-            fr = get_active_frame(tab)
-            if fr is not None:
-                res = fr.find(
-                    locators, any_one=any_one, first_ele=first_ele, timeout=timeout
+            frame = _lookup_frame(tab, deadline)
+            if frame is not None:
+                result = frame.find(
+                    locators,
+                    any_one=any_one,
+                    first_ele=first_ele,
+                    timeout=_remaining(deadline) * 0.9,
                 )
-                if any_one:
-                    if res[0] is not None:
-                        return res
-                else:
-                    if any(v for v in res.values()):
-                        return res
-        return tab.find(locators, any_one=any_one, first_ele=first_ele, timeout=timeout)
+                if any_one and result and result[0] is not None:
+                    return result
+                if not any_one and result and any(result.values()):
+                    return result
+        return tab.find(
+            locators,
+            any_one=any_one,
+            first_ele=first_ele,
+            timeout=_remaining(deadline),
+        )
 
 
 def get_frame_by_locator(locator, timeout: float = 5):
@@ -463,36 +465,82 @@ _contexts = {}
 _context_seq = 0
 
 
-def register_context(ctx):
-    """注册一个 BrowserContext，返回稳定自增 id（跨调用可复现，不依赖 Python id()）。"""
-    global _context_seq
-    _context_seq += 1
-    cid = _context_seq
-    _contexts[cid] = ctx
-    return cid
+def register_context(context):
+    """线程安全地注册 BrowserContext，返回稳定自增 id。"""
+    with _lock:
+        global _context_seq
+        _context_seq += 1
+        context_id = _context_seq
+        _contexts[context_id] = context
+        return context_id
 
 
 def list_contexts():
-    """列出所有已注册上下文的 id 与 tab 列表。"""
-    return [
-        {"context_id": cid, "tab_ids": list(getattr(ctx, "tab_ids", []) or [])}
-        for cid, ctx in _contexts.items()
-    ]
-
-
-def switch_context(cid):
-    """切换活动 tab 到指定 context 的首个 tab；context 不存在或无 tab 返回 None。"""
+    """列出上下文 tab，并标记当前活动上下文。"""
     with _lock:
-        global _tab
-        ctx = _contexts.get(cid)
-        if ctx is None or _browser is None:
+        active_id = getattr(_tab, "tab_id", None)
+        result = []
+        for context_id, context in _contexts.items():
+            tab_ids = list(getattr(context, "tab_ids", []) or [])
+            result.append({
+                "context_id": context_id,
+                "tab_ids": tab_ids,
+                "is_active": active_id in tab_ids,
+            })
+        return result
+
+
+def switch_context(context_id):
+    """激活 BrowserContext 管理的首个标签页并同步 MCP 活动 tab。"""
+    with _lock:
+        context = _contexts.get(context_id)
+        if context is None:
             return None
-        tids = list(getattr(ctx, "tab_ids", []) or [])
-        if not tids:
+        tab_ids = list(getattr(context, "tab_ids", []) or [])
+        if not tab_ids:
             return None
         try:
-            _tab = _browser.get_tab(tids[0])
-            return _tab
-        except Exception as e:
-            logger.warning("switch_context 取 tab 失败: %s", e)
+            tab = context.get_tab(tab_ids[0])
+            tab.activate()
+            return set_tab(tab)
+        except Exception as exc:
+            logger.warning("switch_context 取 tab 失败: %s", exc)
             return None
+
+
+def close_context(context_id) -> dict:
+    """关闭并注销上下文；若其正在使用，自动切回主浏览器标签页。"""
+    with _lock:
+        context = _contexts.pop(context_id, None)
+        if context is None:
+            return {"ok": False, "reason": "context 不存在", "context_id": context_id}
+        tab_ids = set(getattr(context, "tab_ids", []) or [])
+        was_active = getattr(_tab, "tab_id", None) in tab_ids
+        try:
+            context.close()
+        except Exception as exc:
+            _contexts[context_id] = context
+            return {
+                "ok": False,
+                "reason": "关闭 context 失败: %s" % exc,
+                "context_id": context_id,
+            }
+
+        replacement = None
+        if was_active:
+            if _browser is not None:
+                try:
+                    replacement = _pick_tab(_browser, _target_hint)
+                except Exception:
+                    replacement = None
+                if replacement is None:
+                    try:
+                        replacement = _browser.new_tab()
+                    except Exception:
+                        pass
+            set_tab(replacement)
+        return {
+            "ok": True,
+            "context_id": context_id,
+            "switched_tab_id": getattr(replacement, "tab_id", None),
+        }

@@ -1,6 +1,8 @@
 import os
 import urllib.parse
 
+import pytest
+
 
 def test_simple_filename_is_saved_under_active_module(monkeypatch, tmp_path):
     import resource_store
@@ -81,3 +83,28 @@ def test_read_text_resource_accepts_url_encoded_nested_path(monkeypatch, tmp_pat
     encoded = urllib.parse.quote("生产动态表/dom.yml", safe="")
 
     assert resource_store.read_text_resource(encoded) == "tag: body"
+
+
+@pytest.mark.parametrize(("name", "content", "message"), [
+    ("duplicate.json", '{"a": 1, "a": 2}', "duplicate JSON key"),
+    ("nan.json", '{"value": NaN}', "non-finite JSON number"),
+    ("deep.json", "[" * 102 + "0" + "]" * 102, "nesting depth"),
+])
+def test_read_json_resource_rejects_ambiguous_or_unbounded_json(
+        monkeypatch, tmp_path, name, content, message):
+    import resource_store
+
+    monkeypatch.setattr(resource_store.config, "SHOT_DIR", str(tmp_path))
+    (tmp_path / name).write_text(content, encoding="utf-8")
+
+    with pytest.raises(ValueError, match=message):
+        resource_store.read_json_resource(name)
+
+
+def test_write_text_atomic_persists_complete_utf8_content(tmp_path):
+    import resource_store
+
+    target = tmp_path / "report.md"
+    resource_store.write_text_atomic(str(target), "第一行\n第二行\n")
+
+    assert target.read_text(encoding="utf-8") == "第一行\n第二行\n"

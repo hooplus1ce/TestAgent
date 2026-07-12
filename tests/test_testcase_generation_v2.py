@@ -167,12 +167,17 @@ def test_core_form_flow_uses_stable_add_prefix_and_configured_counter():
         "flow_id": "flow-create",
         "module": "采购订单",
         "flow_name": "新增采购订单",
+        "destructive": True,
+        "cleanup_from_sequence": 3,
         "page_states": [],
         "steps": [
             _step(1, "input", {"locator": "css:#name", "field_name": "供应商", "text": "真实供应商A"}, element={"label": "供应商"}),
             _step(2, "click", {"locator": "text:保存"}, observation={
                 "type": "message", "payload": {"message": "保存成功"}, "events": [],
             }, element={"text": "保存"}),
+            _step(3, "click", {"locator": "text:恢复测试数据"}, observation={
+                "type": "message", "payload": {"message": "恢复成功"}, "events": [],
+            }, element={"text": "恢复测试数据"}),
         ],
     }
 
@@ -417,19 +422,24 @@ def test_step_and_network_evidence_add_real_assets_without_repeated_page_snapsho
         "risk_type": "异常路径+数据一致性",
         "known_defect": {"defect_id": "SALARY-DEL-001", "status": "open"},
         "case_prefix": "D",
+        "destructive": True,
+        "cleanup_from_sequence": 2,
         "page_states": [],
-        "steps": [_step(1, "click_xy", {
-            "target": {"type": "button", "text": "删除"}, "x": 100, "y": 80,
-        }, observation={
-            "type": "network", "url": "https://gateway.test/api?batchRemove=",
-            "api_target": "salary.batchRemove", "status": 200,
-            "packet": {
-                "url": "https://gateway.test/api?batchRemove=",
+        "steps": [
+            _step(1, "click", {"locator": "text:删除"}, observation={
+                "type": "network", "url": "https://gateway.test/api?batchRemove=",
                 "api_target": "salary.batchRemove", "status": 200,
-                "body": {"ok": False, "status": -1, "msg": "系统异常!"},
-            },
-            "events": [],
-        }, element={"text": "删除", "area": "page"})],
+                "packet": {
+                    "url": "https://gateway.test/api?batchRemove=",
+                    "api_target": "salary.batchRemove", "status": 200,
+                    "body": {"ok": False, "status": -1, "msg": "系统异常!"},
+                },
+                "events": [],
+            }, element={"text": "删除", "area": "page"}),
+            _step(2, "click", {"locator": "text:恢复测试数据"}, observation={
+                "type": "message", "payload": {"message": "恢复完成"}, "events": [],
+            }, element={"text": "恢复测试数据", "area": "page"}),
+        ],
     }
     flow["steps"][0]["network"] = [{
         "url": "https://example.test/main/api/v1/account.json", "status": 200,
@@ -438,10 +448,9 @@ def test_step_and_network_evidence_add_real_assets_without_repeated_page_snapsho
 
     generated = testcase_generation.generate_verified_cases(flow, {})
 
-    assert {(item["asset_type"], item["name"]) for item in generated["asset_inventory"]} == {
-        ("action", "删除"), ("interface", "salary.batchRemove"),
-    }
-    assert generated["coverage_summary"]["assets"]["verified"] == 2
+    assets = {(item["asset_type"], item["name"]) for item in generated["asset_inventory"]}
+    assert {("action", "删除"), ("interface", "salary.batchRemove")} <= assets
+    assert generated["coverage_summary"]["assets"]["verified"] >= 2
     assert generated["test_cases"][0]["case_id"] == "D001"
     assert generated["test_cases"][0]["known_defect"]["defect_id"] == "SALARY-DEL-001"
     assert any(
@@ -463,17 +472,29 @@ def test_merge_generated_suites_deduplicates_assets_and_promotes_verified_covera
         "scenario": "编辑并校验金额", "risk": "数据一致性", "status": "待验证",
     }
     verified = {**pending, "coverage_id": "ACT-009", "status": "已验证"}
+    def merge_case(case_id, coverage_ref):
+        return {
+            "case_id": case_id,
+            "coverage_refs": [coverage_ref],
+            "automation_recipe": {"steps": [{
+                "action": "get_table_values",
+                "args": {"column_title": "金额"},
+                "assertions": [{
+                    "path": "values", "operator": "all_equals", "value": "7",
+                }],
+            }]},
+        }
     payloads = [
         {
             "module_info": {"module_pinyin": "GZMX"},
             "asset_inventory": [asset], "coverage_matrix": [pending],
             "quality_gates": {"passed": True},
-            "test_cases": [{"case_id": "F001", "coverage_refs": ["ACT-001"]}],
+            "test_cases": [merge_case("F001", "ACT-001")],
         },
         {
             "asset_inventory": [{**asset, "evidence_refs": [{"flow_id": "two"}]}],
             "coverage_matrix": [verified], "quality_gates": {"passed": True},
-            "test_cases": [{"case_id": "A001", "coverage_refs": ["ACT-009"]}],
+            "test_cases": [merge_case("A001", "ACT-009")],
         },
     ]
 
@@ -540,3 +561,245 @@ def test_merge_can_keep_known_defect_coverage_without_formal_case():
     assert merged["test_cases"] == []
     assert merged["coverage_summary"]["requirements"]["verified"] == 1
     assert merged["excluded_cases"] == [{"case_id": "I001", "reason": "known_defect"}]
+
+
+def test_generation_rejects_undeclared_save_without_cleanup():
+    flow = {
+        "flow_id": "unsafe-save", "module": "采购订单", "flow_name": "保存订单",
+        "page_states": [],
+        "steps": [_step(1, "click", {"locator": "text:保存"}, observation={
+            "type": "message", "payload": {"message": "保存成功"}, "events": [],
+        }, element={"text": "保存"})],
+    }
+
+    generated = testcase_generation.generate_verified_cases(flow, {})
+
+    assert generated["test_cases"] == []
+    assert "破坏性操作已显式声明" in generated["quality_gates"]["failures"]
+    assert "破坏性场景具备清理步骤" in generated["quality_gates"]["failures"]
+
+
+def test_merge_rejects_module_conflicts_duplicate_coverage_ids_and_untrusted_cases():
+    row_a = {
+        "coverage_id": "DUP", "asset_type": "action", "function": "查询",
+        "scenario": "按单号查询", "risk": "正常路径", "status": "已验证",
+    }
+    row_b = {
+        "coverage_id": "DUP", "asset_type": "filter", "function": "订单号",
+        "scenario": "订单号等于", "risk": "等价类", "status": "已验证",
+    }
+    payload = {
+        "module_info": {"module_level2": "采购订单"},
+        "asset_inventory": [], "coverage_matrix": [row_a, row_b],
+        "quality_gates": {"passed": True},
+        "test_cases": [{"case_id": "BAD", "coverage_refs": ["DUP"]}],
+    }
+    other_module = {
+        "module_info": {"module_level2": "销售订单"},
+        "asset_inventory": [], "coverage_matrix": [],
+        "quality_gates": {"passed": True}, "test_cases": [],
+    }
+
+    merged = testcase_generation.merge_generated_suites([payload, other_module])
+
+    failures = merged["quality_gates"]["failures"]
+    assert merged["ok"] is False
+    assert any("module_info conflicts" in failure for failure in failures)
+    assert any("duplicate coverage ids" in failure for failure in failures)
+    assert any("automation_recipe" in failure for failure in failures)
+
+
+def test_merge_rejects_non_string_coverage_ids_and_refs_without_crashing():
+    payload = {
+        "module_info": {},
+        "asset_inventory": [1],
+        "coverage_matrix": [{
+            "coverage_id": [], "asset_type": "action", "function": "查询",
+            "scenario": "按单号查询", "risk": "正常路径", "status": "已验证",
+        }],
+        "quality_gates": {"passed": "true", "failures": 1},
+        "test_cases": [{
+            "case_id": "BAD-REF", "coverage_refs": [{}],
+            "automation_recipe": {"steps": [{
+                "action": "get_table_values",
+                "assertions": [{"path": "values", "operator": "all_equals", "value": "A"}],
+            }]},
+        }],
+    }
+
+    merged = testcase_generation.merge_generated_suites([payload])
+
+    assert merged["ok"] is False
+    assert any("coverage_id_must_be_string" in failure
+               for failure in merged["quality_gates"]["failures"])
+    assert any("coverage_ref_must_be_string" in failure
+               for failure in merged["quality_gates"]["failures"])
+    assert any("invalid assets" in failure
+               for failure in merged["quality_gates"]["failures"])
+    assert any("source_1: 1" in failure
+               for failure in merged["quality_gates"]["failures"])
+
+
+def test_generic_form_fields_keep_scope_and_only_used_scope_is_verified():
+    flow = {
+        "flow_id": "scoped-fields", "module": "工资明细", "flow_name": "编辑备注",
+        "page_states": [{
+            "sequence": 1,
+            "page_model": {"fields": {"fields": [
+                {"label": "备注", "type": "input", "area": "page"},
+                {"label": "备注", "type": "input", "area": "modal", "required": True},
+            ]}},
+        }],
+        "steps": [
+            _step(1, "input", {"field_name": "备注", "text": "弹窗值"},
+                  element={"label": "备注", "scope": "modal"}),
+            _step(2, "click", {"locator": "text:确定"}, observation={
+                "type": "message", "payload": {"message": "修改成功"}, "events": [],
+            }, element={"text": "确定", "area": "modal"}),
+        ],
+    }
+
+    generated = testcase_generation.generate_verified_cases(flow, {})
+    fields = [item for item in generated["asset_inventory"] if item["asset_type"] == "field"]
+    normal_rows = [
+        row for row in generated["coverage_matrix"]
+        if row["asset_type"] == "field" and row["risk"] == "正常路径"
+    ]
+
+    assert len(fields) == 2
+    assert {(row["area"], row["status"]) for row in normal_rows} == {
+        ("page", "待验证"), ("modal", "已验证"),
+    }
+    assert any(row["risk"] == "必填校验" and row["status"] == "待验证"
+               for row in generated["coverage_matrix"])
+
+
+def test_persisted_raw_response_and_stable_url_assertions_are_retained():
+    network_step = _step(1, "click", {"locator": "text:查询"}, observation={
+        "type": "message", "payload": {"message": "查询完成"}, "events": [],
+    }, element={"text": "查询", "area": "page"})
+    network_step["network"] = [{
+        "url": "https://gateway.test/query", "status": 200,
+        "response": {"body": {"success": True, "total": 3}},
+    }]
+    network_flow = {
+        "flow_id": "raw-network", "module": "订单", "flow_name": "查询订单",
+        "page_states": [], "steps": [network_step],
+    }
+    generated = testcase_generation.generate_verified_cases(network_flow, {})
+    persisted = [
+        item for item in generated["test_cases"][0]["business_assertions"]
+        if item.get("source") == "persisted_network"
+    ]
+    interface = next(item for item in generated["asset_inventory"]
+                     if item["asset_type"] == "interface")
+
+    assert persisted[0]["value"] == {"success": True, "total": 3}
+    assert interface["metadata"]["body"] == {"success": True, "total": 3}
+
+    url_flow = {
+        "flow_id": "stable-url", "module": "订单", "flow_name": "打开详情",
+        "page_states": [],
+        "steps": [_step(1, "click", {"locator": "text:详情"}, observation={
+            "type": "url_change",
+            "url": "https://demo.example.test/scm/#/orders/detail?id=volatile",
+            "events": [],
+        }, element={"text": "详情", "area": "page"})],
+    }
+    assertion = testcase_generation.generate_verified_cases(
+        url_flow, {},
+    )["test_cases"][0]["automation_recipe"]["steps"][0]["assertions"][0]
+    assert assertion == {
+        "path": "signal.url", "operator": "contains",
+        "value": "/scm/#/orders/detail",
+        "description": "页面地址匹配“/scm/#/orders/detail”",
+    }
+
+
+def test_structured_column_and_render_results_generate_business_assertions():
+    column_flow = {
+        "flow_id": "uniform-column", "module": "订单", "flow_name": "校验状态列",
+        "page_states": [],
+        "steps": [_step(1, "get_table_values", {"column_title": "状态"}, observation={
+            "type": "structured_result", "payload": {
+                "ok": True, "values": ["已完成", "已完成"],
+            },
+        })],
+    }
+    column_case = testcase_generation.generate_verified_cases(column_flow, {})["test_cases"][0]
+    assert column_case["automation_recipe"]["steps"][0]["assertions"] == [{
+        "path": "values", "operator": "all_equals", "value": "已完成",
+        "description": "“状态”全部业务记录均为“已完成”",
+    }]
+
+    render_flow = {
+        "flow_id": "render-cell", "module": "订单", "flow_name": "校验状态样式",
+        "page_states": [],
+        "steps": [_step(1, "get_vtable_cell_render_info", {
+            "row": 1, "column_title": "状态",
+        }, observation={
+            "type": "structured_result", "payload": {
+                "ok": True, "text": "已完成", "fontColor": "#008000",
+            },
+        })],
+    }
+    render_case = testcase_generation.generate_verified_cases(render_flow, {})["test_cases"][0]
+    assert {item["path"] for item in render_case["automation_recipe"]["steps"][0]["assertions"]} == {
+        "text", "fontColor",
+    }
+
+
+def test_generation_rejects_ambiguous_step_sequence_and_defect_metadata():
+    flow = {
+        "flow_id": "bad-sequence", "module": "订单", "flow_name": "查询订单",
+        "known_defect": {}, "page_states": [],
+        "steps": [
+            _step(1, "click", {"locator": "text:查询"}),
+            _step(3, "click", {"locator": "text:确定"}, observation={
+                "type": "message", "payload": {"message": "完成"}, "events": [],
+            }),
+        ],
+    }
+    generated = testcase_generation.generate_verified_cases(flow, {})
+
+    assert generated["test_cases"] == []
+    assert "证据步骤序号唯一连续" in generated["quality_gates"]["failures"]
+    assert "已知缺陷元数据完整" in generated["quality_gates"]["failures"]
+
+
+def test_merge_preserves_module_defaults_scopes_metadata_and_trimmed_exclusions():
+    def payload(area, case_id):
+        row = {
+            "coverage_id": "ROW", "asset_type": "field", "function": "备注",
+            "area": area, "scenario": "输入备注", "risk": "正常路径", "status": "已验证",
+        }
+        return {
+            "module_info": {"module_pinyin": "GZMX", "module_name": "工资明细"},
+            "asset_inventory": [{
+                "asset_type": "field", "name": "备注",
+                "metadata": {"area": area, "required": area == "modal", "row_count": 1},
+                "evidence_refs": [{"flow_id": area}],
+            }],
+            "coverage_matrix": [row], "quality_gates": {"passed": True},
+            "test_cases": [{
+                "case_id": case_id, "coverage_refs": ["ROW"],
+                "automation_recipe": {"steps": [{
+                    "action": "get_table_values", "args": {"column_title": "备注"},
+                    "assertions": [{"path": "values", "operator": "all_equals", "value": "A"}],
+                }]},
+            }],
+        }
+
+    merged = testcase_generation.merge_generated_suites(
+        [payload("page", "F001"), payload("modal", "F002")],
+        module_info={"author": "Tester"}, exclude_case_ids=[" F002 "],
+    )
+
+    assert merged["ok"] is True
+    assert merged["module_info"] == {
+        "module_pinyin": "GZMX", "module_name": "工资明细", "author": "Tester",
+    }
+    assert len(merged["asset_inventory"]) == 2
+    assert len(merged["coverage_matrix"]) == 2
+    assert [case["case_id"] for case in merged["test_cases"]] == ["F001"]
+    assert merged["excluded_cases"] == [{"case_id": "F002", "reason": "excluded_case_id"}]

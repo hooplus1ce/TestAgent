@@ -522,14 +522,16 @@ PYTHONIOENCODING=utf-8 uv run python verify_live.py
 |------|------|
 | 连接/会话 | `connect` `refresh_session` `check_session` |
 | 导航/frame | `enter_module` `get_active_frame` |
-| 页面理解 | `scan_page_elements` `dom_tree` `find_elements` `find_batch` |
-| 通用交互 | `click` `click_xy` `input` `insert_text` `hover` |
-| 表格 facade | `scan_table` `get_table_values` `get_table_data` `get_vtable_cell_render_info` `get_vtable_cell_icons` `vtable_action` `click_table_cell` `hover_table_cell` `resize_table_column` |
-| 筛选区 | `scan_filter_fields` `select_date_range` |
-| 观察/弹窗 | `observe_start` `observe_wait` `close_modal` |
-| 网络断言 | `listen_start` `listen_wait` `listen_stop` |
-| 高级/调试 | `screenshot` `run_js` `mouse_trail` `download_by_browser` `listen_ws_start` `listen_ws_wait` `set_permission` |
-| 上下文 | `new_context` `switch_context` `list_contexts` |
+| 页面理解 | `scan_page_elements` `find_elements` `find_batch` `dom_tree` `capture_page_model` `scan_toolbar_actions` `scan_form_fields` `scan_pagination` `screenshot` `get_element_coords` |
+| 通用交互 | `click` `click_xy` `input` `set_field_value` `insert_text` `hover` `set_date` |
+| 浏览器管理 | `browser_tabs` `browser_scroll` `browser_press_key` `browser_get_element_state` `browser_list_caps` |
+| 表格 facade | `scan_table` `get_table_values` `find_vtable_row` `count_vtable_rows` `get_vtable_row_values` `get_table_data` `get_all_table_data` `scan_action_availability_by_selection` `get_vtable_cell_render_info` `get_vtable_cell_icons` `vtable_action` `click_table_cell` `hover_table_cell` `resize_table_column` |
+| 筛选区 | `scan_filter_fields` `select_date_range` `select_option` |
+| 观察/弹窗 | `observe_snapshot` `observe_start` `observe_wait` `explore_action` `close_modal` |
+| 网络 | `listen_start` `listen_wait` `listen_stop` `listen_ws_start` `listen_ws_wait` `network_record_start` `network_record_stop` `network_record_export` |
+| 工作流 | `flow_start` `flow_status` `flow_capture_page_state` `flow_stop` `generate_test_cases_from_flow` `combine_test_case_files` `run_test_cases` `generate_test_report` `compare_regression_report` |
+| 上下文/权限 | `new_context` `switch_context` `close_context` `list_contexts` `set_permission` |
+| 高级/调试 | `run_js` `mouse_trail` `download_by_browser` `browser_console_messages` `browser_save_pdf` |
 
 ---
 

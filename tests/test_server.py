@@ -8,7 +8,7 @@ import urllib.parse
 from types import SimpleNamespace
 import threading
 import time
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 
 EXPECTED_PUBLIC_TOOLS = {
@@ -82,6 +82,7 @@ EXPECTED_PUBLIC_TOOLS = {
     "listen_ws_start",
     "listen_ws_wait",
     "new_context",
+    "close_context",
     "switch_context",
     "list_contexts",
     "set_permission",
@@ -160,6 +161,11 @@ def test_public_tools_include_mcp_annotations():
     assert tools["connect"].annotations.destructiveHint is False
     assert tools["connect"].annotations.idempotentHint is True
     assert tools["screenshot"].annotations.destructiveHint is False
+    for name in ("listen_wait", "listen_ws_wait"):
+        assert tools[name].annotations.readOnlyHint is False
+        assert tools[name].annotations.destructiveHint is False
+    assert server.listen_wait._du_access == "write"
+    assert server.listen_ws_wait._du_access == "write"
 
 
 def test_resources_and_templates_are_exposed():
@@ -208,6 +214,7 @@ def test_evidence_resource_template_reads_encoded_nested_file(monkeypatch, tmp_p
 def test_drission_ui_caps_filters_public_tools():
     """DRISSION_UI_CAPS 应实际影响 MCP tools/list，而不只是报告能力分组。"""
     env = os.environ.copy()
+    env.pop("DRISSIONPAGE_MCP_CAPS", None)
     env["DRISSION_UI_CAPS"] = "core"
     script = """
 import asyncio, json, sys
@@ -233,6 +240,39 @@ asyncio.run(main())
     assert "scan_floats" not in names
     assert "scan_table" not in names
     assert "run_js" not in names
+
+
+def test_every_capability_group_exposes_exact_tool_union():
+    """每个分组独立启动时只暴露该组工具和常驻的能力查询工具。"""
+    import caps
+
+    script = """
+import asyncio, json, sys
+sys.path.insert(0, 'mcp-servers/drissionpage-mcp')
+import server
+
+async def main():
+    tools = await server.mcp.list_tools()
+    print(json.dumps(sorted(t.name for t in tools)))
+
+asyncio.run(main())
+"""
+    root = os.path.dirname(os.path.dirname(__file__))
+    for capability, grouped_tools in caps.CAP_GROUPS.items():
+        env = os.environ.copy()
+        env.pop("DRISSION_UI_CAPS", None)
+        env["DRISSIONPAGE_MCP_CAPS"] = capability
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            cwd=root,
+            env=env,
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+        exposed = set(json.loads(result.stdout))
+        expected = set(grouped_tools) | {"browser_list_caps"}
+        assert exposed == expected, capability
 
 
 def test_list_parameters_have_typed_items_schema():
@@ -638,11 +678,17 @@ def test_scan_table_routes_to_vtable_backend():
         scan.assert_called_once_with(50)
 
 
-def test_scan_table_routes_to_html_backend():
+def test_scan_table_routes_to_selected_visible_html_backend():
     import server
-    with patch.object(server.html_table, "scan_html_table", return_value={"ok": True, "tables": []}) as scan:
-        assert server.scan_table(kind="html") == {"ok": True, "tables": [], "kind": "html"}
-        scan.assert_called_once_with()
+    tables = [{"index": 0}, {"index": 1}]
+    with patch.object(server.html_table, "scan_html_table", return_value={"ok": True, "tables": tables}) as scan:
+        result = server.scan_table(kind="html", table_index=1)
+
+    assert result == {
+        "ok": True, "tables": [{"index": 1}], "kind": "html",
+        "table_index": 1, "table_count": 2,
+    }
+    scan.assert_called_once_with()
 
 
 def test_scan_table_auto_falls_back_to_html_backend():
@@ -657,11 +703,30 @@ def test_scan_table_auto_falls_back_to_html_backend():
         scan_html.assert_called_once_with()
 
 
-def test_get_table_values_routes_to_html_backend():
+def test_get_table_values_routes_to_html_backend_with_scalar_values():
     import server
-    with patch.object(server.html_table, "get_html_table_values", return_value={"ok": True, "values": []}) as get_values:
-        assert server.get_table_values("订单号", kind="html") == {"ok": True, "values": [], "kind": "html"}
-        get_values.assert_called_once_with("订单号", 0)
+    backend = {"ok": True, "values": ["SO-1"], "cells": [{"row": 0, "text": "SO-1"}]}
+    with patch.object(server.html_table, "get_html_table_values", return_value=backend) as get_values:
+        result = server.get_table_values("订单号", kind="html")
+
+    assert result == {**backend, "kind": "html", "raw": False}
+    get_values.assert_called_once_with("订单号", 0)
+
+
+def test_html_table_facade_rejects_missing_index_and_raw_mode():
+    import server
+
+    with patch.object(server.html_table, "scan_html_table", return_value={"ok": True, "tables": []}):
+        missing = server.scan_table(kind="html", table_index=0)
+    raw = server.get_table_values("订单号", kind="html", raw=True)
+    fractional = server.scan_table(kind="html", table_index=0.5)
+
+    assert missing["ok"] is False
+    assert missing["table_count"] == 0
+    assert raw["ok"] is False
+    assert "raw=true" in raw["reason"]
+    assert fractional["ok"] is False
+    assert "非负整数" in fractional["reason"]
 
 
 def test_get_all_table_data_auto_prefers_vtable_backend():
@@ -670,16 +735,141 @@ def test_get_all_table_data_auto_prefers_vtable_backend():
     with patch.object(server.page_model.vtable, "scan_vtable_columns", return_value={
         "ok": True,
         "columns": [{"title": "订单号", "col": 1, "bodyBehavior": "none"}],
-    }), patch.object(server.page_model.vtable, "get_column_values", return_value={
+    }), patch.object(server.page_model.vtable, "get_columns_values", return_value={
         "ok": True,
-        "values": ["SO001"],
+        "values": {"订单号": ["SO001"]},
     }) as get_values:
         result = server.get_all_table_data(kind="auto")
 
     assert result["ok"] is True
     assert result["kind"] == "vtable"
     assert result["rows"] == [{"订单号": "SO001"}]
-    get_values.assert_called_once_with("订单号", raw=False)
+    get_values.assert_called_once_with(["订单号"], raw=False)
+
+
+def test_vtable_full_read_uses_unique_leaf_headers_and_skips_controls():
+    import page_model
+
+    scan = {
+        "ok": True,
+        "columns": [
+            {"col": 0, "row": 0, "title": "_vtable_checkbox", "bodyBehavior": "control:checkbox"},
+            {"col": 1, "row": 0, "title": "订单信息", "bodyBehavior": "none"},
+            {"col": 1, "row": 1, "title": "订单号", "bodyBehavior": "none"},
+            {"col": 2, "row": 0, "title": "订单信息", "bodyBehavior": "none"},
+            {"col": 2, "row": 1, "title": "客户", "bodyBehavior": "none"},
+        ],
+    }
+    bulk = {
+        "ok": True,
+        "values": {"订单号": ["SO-1"], "客户": ["诺贝"]},
+        "header_rows": 2,
+    }
+
+    with patch.object(page_model.vtable, "scan_vtable_columns", return_value=scan), \
+         patch.object(page_model.vtable, "get_columns_values", return_value=bulk) as read_columns:
+        result = page_model._read_vtable_rows(max_columns=10, max_rows=10)
+
+    assert result["ok"] is True
+    assert [column["title"] for column in result["columns"]] == ["订单号", "客户"]
+    assert result["rows"] == [{"订单号": "SO-1", "客户": "诺贝"}]
+    read_columns.assert_called_once_with(["订单号", "客户"], raw=False)
+
+
+def test_vtable_column_resolution_rejects_duplicate_titles():
+    import server
+
+    with patch.object(server.vtable, "scan_vtable_columns", return_value={
+        "ok": True,
+        "columns": [
+            {"col": 4, "title": "操作"},
+            {"col": 8, "title": "操作"},
+        ],
+    }):
+        col, reason = server._find_vtable_col("操作")
+
+    assert col is None
+    assert "匹配不唯一" in reason
+
+
+def test_get_all_table_data_rejects_html_raw_mode():
+    import server
+
+    result = server.get_all_table_data(kind="html", raw=True)
+
+    assert result["ok"] is False
+    assert result["kind"] == "html"
+    assert "raw=true" in result["reason"]
+
+
+def test_selection_scan_rejects_negative_row_without_mutating_page():
+    import server
+
+    with patch.object(server.page_model, "scan_toolbar_actions") as scan_actions, \
+         patch.object(server.vtable, "click_cell") as click_cell:
+        result = server.scan_action_availability_by_selection(row=-1)
+
+    assert result["ok"] is False
+    assert "非负整数" in result["reason"]
+    scan_actions.assert_not_called()
+    click_cell.assert_not_called()
+
+
+def test_selection_scan_does_not_click_when_before_snapshot_fails():
+    import server
+
+    with patch.object(server.page_model, "scan_toolbar_actions", return_value={
+        "ok": False, "reason": "scan failed",
+    }), patch.object(server.vtable, "click_cell") as click_cell:
+        result = server.scan_action_availability_by_selection()
+
+    assert result["ok"] is False
+    assert result["mutated_page"] is False
+    click_cell.assert_not_called()
+
+
+def test_html_pagination_rejects_click_without_page_transition():
+    import page_model
+
+    class ButtonWait:
+        def clickable(self, **kwargs):
+            return True
+
+    class Button:
+        wait = ButtonWait()
+
+        def click(self, **kwargs):
+            return True
+
+    button = Button()
+
+    class Next:
+        attrs = {}
+
+        def ele(self, locator, timeout=None):
+            return button
+
+    class RootWait:
+        def stop_moving(self, **kwargs):
+            return True
+
+    class Root:
+        wait = RootWait()
+
+        def ele(self, locator, timeout=None):
+            if "item-active" in locator:
+                return SimpleNamespace(text="1")
+            if "pagination-next" in locator:
+                return Next()
+            return None
+
+    with patch.object(page_model.html_table, "_visible_table_wrappers", return_value=[Root()]):
+        result = page_model._click_next_page(object(), table_index=0)
+
+    assert result["ok"] is False
+    assert result["page_before"] == "1"
+    assert result["page_after"] == "1"
+    assert "did not change" in result["reason"]
 
 
 def test_scan_floats_includes_ant_calendar_by_dom_presence():
@@ -710,12 +900,51 @@ def test_scan_floats_includes_ant_calendar_by_dom_presence():
     assert result["floats"][0]["scope"] == "top"
     assert captured_js
     js = captured_js[0]
-    assert ".ant-calendar-picker-container, .ant-calendar" in js
+    assert ".ant-calendar-picker-container" in js
+    assert ".ant-calendar" in js
+    assert ".ant-select-dropdown" in js
     assert "function duCalendarActive" in js
     assert "title: title\n  };\n}\nfunction duScanCalendar" in js
     assert "return !!(el && el.isConnected);" in js
-    assert "var nodes = nodeList.filter(duKeepFloatNode);" in js
+    assert "var nodes = nodeList.filter(duKeepFloatNode).slice(0, 100);" in js
     assert "nodeList.filter(duVisible)" not in js
+    assert "\x08" not in js
+    assert "classList.contains(name)" in js
+    assert "duHasClass(n, 'ant-calendar')" in js
+
+
+def test_scan_form_fields_does_not_fall_back_to_page_for_missing_overlay_scope():
+    import page_model
+
+    scripts = []
+
+    def capture(target, js, default):
+        scripts.append(js)
+        return {"ok": True, "scope": "modal", "rootCount": 0, "total": 0, "fields": []}
+
+    with patch.object(page_model, "_target", return_value=(object(), None, object())), \
+         patch.object(page_model, "_run_json", side_effect=capture):
+        result = page_model.scan_form_fields(scope="modal")
+
+    assert result["fields"] == []
+    assert "if (!roots.length && false) roots = [document.body];" in scripts[0]
+    assert "rootCount:roots.length" in scripts[0]
+
+
+def test_scan_floats_classifies_top_confirm_without_losing_flag():
+    import page_model
+
+    def fake_run_json(target, js, default):
+        return {"ok": True, "floats": [{"type": "modal", "isConfirm": True}]}
+
+    with patch.object(page_model, "_targets", return_value=(object(), None, [("top", object())])), \
+         patch.object(page_model, "_run_json", side_effect=fake_run_json), \
+         patch.object(page_model.browser_session, "get_active_tab_name", return_value="active"):
+        result = page_model.scan_floats()
+
+    assert result["floats"] == [{
+        "type": "modal", "scope": "top", "modalType": "system_confirm",
+    }]
 
 
 def test_scan_floats_includes_visible_vtable_filter_menu_by_display_state():
@@ -852,8 +1081,9 @@ import sys
 sys.path.insert(0, 'mcp-servers/drissionpage-mcp')
 import observe
 import page_model
+import ui_contract
 
-source_consts = page_model._COMMON_JS + "\n" + "\n".join(str(c) for c in page_model.scan_floats.__code__.co_consts)
+source_consts = (page_model._COMMON_JS + "\n" + "\n".join(str(c) for c in page_model.scan_floats.__code__.co_consts) + "\n" + "\n".join(ui_contract.FLOAT_ROOTS))
 data = {
     "observer_selector": ".vtable-filter-menu" in observe._INSTALL_OBSERVER_JS,
     "observer_tooltip_selector": ".vtable__bubble-tooltip-element" in observe._INSTALL_OBSERVER_JS,
@@ -944,6 +1174,8 @@ def test_observe_start_creates_active_session():
             "watched": ["message", "modal"],
             "base_url": "https://example.test/frame",
             "base_tab_count": 3,
+            "observer_scopes": [],
+            "network_active": False,
         }
         with observe._session_lock:
             assert observe._session["active"] is True
@@ -951,6 +1183,31 @@ def test_observe_start_creates_active_session():
     finally:
         with observe._session_lock:
             observe._session.clear()
+
+
+def test_observer_baseline_and_ui_event_priority_are_stable():
+    import observe
+
+    before_click = observe._observer_script(False)
+    after_click = observe._observer_script(True)
+    assert "var CAPTURE_EXISTING = false;" in before_click
+    assert "var CAPTURE_EXISTING = true;" in after_click
+    assert "__DU_CAPTURE_EXISTING__" not in before_click + after_click
+
+    duplicated = [
+        {"type": "interactive", "scope": "iframe", "payload": {
+            "title": "添加工资明细", "content": "字段", "rect": {"x": 1},
+        }},
+        {"type": "interactive", "scope": "iframe", "payload": {
+            "title": "添加工资明细", "content": "字段", "rect": {"x": 9},
+        }},
+    ]
+    unique, _ = observe._compact_events(duplicated)
+    assert len(unique) == 1
+    assert observe._pick_primary([
+        {"type": "network", "url": "/query"},
+        {"type": "calendar", "payload": {"title": "日期范围选择器"}},
+    ])["type"] == "calendar"
 
 
 def test_observe_wait_attaches_snapshot_after_signal():
@@ -1298,7 +1555,7 @@ def test_listen_wait_passes_fit_count_to_drissionpage():
         result = server.listen_wait(count=3, timeout=1, fit_count=False)
 
     assert result["ok"] is False
-    assert fake_listen.wait_kwargs == {"count": 3, "timeout": 1, "fit_count": False}
+    assert fake_listen.wait_kwargs == {"count": 3, "timeout": 1, "fit_count": False, "raise_err": False}
 
 
 def test_listen_ws_start_sets_websocket_listener_state_for_drissionpage_42():
@@ -1363,7 +1620,7 @@ def test_network_record_stop_returns_packet_timeline():
     assert result["count"] == 1
     assert result["packets"][0]["api_target"] == "scm.order.list"
     assert result["packets"][0]["status"] == 200
-    assert fake_listen.wait_kwargs == {"count": 5, "timeout": 1, "fit_count": False}
+    assert fake_listen.wait_kwargs == {"count": 5, "timeout": 1.0, "fit_count": False, "raise_err": False}
     assert fake_listen.stopped is True
 
 
@@ -1406,6 +1663,45 @@ def test_browser_console_messages_collects_and_filters():
     assert fake_console.started is True
     assert result["count"] == 1
     assert result["messages"][0]["text"] == "boom"
+
+
+def test_browser_get_element_state_reads_only_requested_drission_property():
+    import server
+
+    element = SimpleNamespace(states=SimpleNamespace(is_displayed=True))
+    with patch.object(server.browser_session, "find", return_value=element):
+        result = server.browser_get_element_state("tag:body", state="displayed")
+
+    assert result == {
+        "ok": True, "locator": "tag:body", "state": "displayed", "value": True,
+    }
+
+
+def test_browser_get_element_state_derives_and_normalizes_all_states():
+    import server
+
+    states = SimpleNamespace(
+        is_displayed=False,
+        is_enabled=False,
+        is_selected=None,
+        is_checked=1,
+        is_clickable=0,
+        is_covered=987,
+        is_alive=True,
+        is_in_viewport=False,
+        is_whole_in_viewport=False,
+        has_rect=((0, 0), (1, 1)),
+    )
+    with patch.object(server.browser_session, "find", return_value=SimpleNamespace(states=states)):
+        result = server.browser_get_element_state("#target")
+
+    assert result["ok"] is True
+    assert result["states"]["hidden"] is True
+    assert result["states"]["disabled"] is True
+    assert result["states"]["checked"] is True
+    assert result["states"]["covered"] is True
+    assert result["states"]["has_rect"] is True
+    assert all(type(value) is bool for value in result["states"].values())
 
 
 def test_click_xy_cleans_transient_overlays_before_click():
@@ -1487,3 +1783,263 @@ def test_click_text_locator_prefers_clickable_xpath_before_inner_text():
     assert "self::button" in find.call_args.args[0]
     assert "normalize-space(.)='重置'" in find.call_args.args[0]
     assert result == {"ok": True, "locator": "text:重置"}
+
+
+def test_click_xy_rejects_invalid_repeat_without_browser_side_effects():
+    import server
+
+    with patch.object(server.browser_session, "get_tab") as get_tab:
+        result = server.click_xy(10, 20, times=0)
+
+    assert result["ok"] is False and "times" in result["reason"]
+    get_tab.assert_not_called()
+
+
+def test_click_xy_returns_structured_action_failure():
+    import server
+
+    actions = MagicMock()
+    actions.move_to.side_effect = RuntimeError("detached")
+    with patch.object(server.modal, "clear_transient_overlays", return_value={"ok": True, "closed": [], "errors": []}), \
+         patch.object(server.browser_session, "get_tab", return_value=SimpleNamespace(actions=actions)):
+        result = server.click_xy(10, 20)
+
+    assert result["ok"] is False and "detached" in result["reason"]
+
+
+def test_browser_scroll_falls_back_to_top_with_matching_scroll_scope():
+    import server
+
+    element = SimpleNamespace()
+    top = SimpleNamespace(scroll=MagicMock(), ele=MagicMock(return_value=element))
+    frame = SimpleNamespace(scroll=MagicMock(), ele=MagicMock(return_value=None))
+    with patch.object(server.browser_session, "get_tab", return_value=top), \
+         patch.object(server.browser_session, "get_active_frame", return_value=frame):
+        result = server.browser_scroll(direction="see", locator="#top-target")
+
+    frame.ele.assert_called_once()
+    top.ele.assert_called_once()
+    top.scroll.to_see.assert_called_once_with(element)
+    frame.scroll.to_see.assert_not_called()
+    assert result["scope"] == "top"
+
+
+def test_browser_save_pdf_handles_drission_bytes_return_without_leaking_payload(tmp_path):
+    import server
+
+    payload = b"%PDF-current-api"
+
+    def save(path, name, as_pdf):
+        with open(os.path.join(path, name), "wb") as stream:
+            stream.write(payload)
+        return payload
+
+    with patch.object(server.browser_session, "get_tab", return_value=SimpleNamespace(save=save)):
+        result = server.browser_save_pdf(path=str(tmp_path), filename="bytes.pdf")
+
+    assert result["ok"] is True
+    assert result["size"] == len(payload)
+    assert result["path"] == str(tmp_path / "bytes.pdf")
+    assert "result" not in result
+
+
+def test_browser_scroll_rejects_invalid_arguments_before_connecting():
+    import server
+
+    with patch.object(server.browser_session, "get_tab") as get_tab:
+        invalid_pixel = server.browser_scroll(direction="down", pixel=-1)
+        missing_location = server.browser_scroll(direction="location", x=None, y=0)
+
+    assert invalid_pixel["ok"] is False
+    assert missing_location["ok"] is False
+    get_tab.assert_not_called()
+
+
+def test_set_permission_passes_explicit_allow_value_and_rejects_attributes():
+    import server
+
+    permission = MagicMock()
+    browser = SimpleNamespace(set=SimpleNamespace(perm=SimpleNamespace(notifications=permission)))
+    with patch.object(server.browser_session, "get_browser", return_value=browser) as get_browser:
+        denied = server.set_permission("notifications", allow=False)
+        invalid = server.set_permission("__class__", allow=True)
+
+    assert denied == {"ok": True, "perm": "notifications", "allow": False}
+    permission.assert_called_once_with(allow=False)
+    assert invalid["ok"] is False
+    assert get_browser.call_count == 1
+
+
+def test_browser_save_pdf_verifies_created_file_and_sanitizes_name(tmp_path):
+    import server
+
+    calls = []
+
+    def save(path, name, as_pdf):
+        calls.append((path, name, as_pdf))
+        output = os.path.join(path, name)
+        with open(output, "wb") as stream:
+            stream.write(b"%PDF-1.7")
+        return output
+
+    with patch.object(server.browser_session, "get_tab", return_value=SimpleNamespace(save=save)):
+        result = server.browser_save_pdf(path=str(tmp_path), filename="../proof")
+
+    assert result["ok"] is True and result["size"] == 8
+    assert calls == [(str(tmp_path), "proof.pdf", True)]
+    assert result["filename"] == "proof.pdf"
+
+
+def test_browser_save_pdf_rejects_missing_output_file(tmp_path):
+    import server
+
+    fake = SimpleNamespace(save=lambda **_: str(tmp_path / "missing.pdf"))
+    with patch.object(server.browser_session, "get_tab", return_value=fake):
+        result = server.browser_save_pdf(path=str(tmp_path), filename="missing.pdf")
+
+    assert result["ok"] is False and "未生成" in result["reason"]
+
+
+def test_browser_press_key_validates_before_accessing_browser():
+    import server
+
+    with patch.object(server.browser_session, "get_tab") as get_tab:
+        bad_modifier = server.browser_press_key("a", modifiers=["Enter"])
+        bad_interval = server.browser_press_key("a", interval=-0.1)
+
+    assert bad_modifier["ok"] is False and "modifiers" in bad_modifier["reason"]
+    assert bad_interval["ok"] is False and "interval" in bad_interval["reason"]
+    get_tab.assert_not_called()
+
+
+def test_press_key_releases_modifiers_when_main_key_release_fails():
+    import server
+
+    class Actions:
+        def __init__(self):
+            self.events = []
+
+        def key_down(self, key):
+            self.events.append(("down", key))
+
+        def key_up(self, key):
+            self.events.append(("up", key))
+            if key == server.Keys.ENTER:
+                raise RuntimeError("main release failed")
+
+    actions = Actions()
+    target = SimpleNamespace(actions=actions)
+    try:
+        server._press_key_raw(target, "Enter", modifiers=["Ctrl", "Shift"])
+    except RuntimeError as exc:
+        assert "main release failed" in str(exc)
+    else:
+        raise AssertionError("main key release failure must propagate")
+
+    assert actions.events[-2:] == [
+        ("up", server.Keys.SHIFT),
+        ("up", server.Keys.CTRL),
+    ]
+
+
+def test_browser_press_key_types_plain_character_in_active_frame():
+    import server
+
+    actions = MagicMock()
+    tab = SimpleNamespace(actions=MagicMock())
+    frame = SimpleNamespace(actions=actions)
+    with patch.object(server.browser_session, "get_tab", return_value=tab), \
+         patch.object(server.browser_session, "get_active_frame", return_value=frame):
+        result = server.browser_press_key("a", interval=0.02)
+
+    actions.type.assert_called_once_with("a", interval=0.02)
+    assert result == {"ok": True, "key": "a", "modifiers": [], "scope": "iframe"}
+
+
+def test_browser_tabs_rejects_invalid_action_before_connecting():
+    import server
+
+    with patch.object(server.browser_session, "get_browser") as get_browser:
+        result = server.browser_tabs(action="destroy")
+
+    assert result["ok"] is False
+    get_browser.assert_not_called()
+
+
+def test_browser_tabs_closing_current_prefers_business_tab():
+    import server
+
+    current = SimpleNamespace(tab_id="temporary")
+    business = SimpleNamespace(
+        tab_id="business", url="https://demo19-scm.hoolinks.com/", title="诺贝科技",
+    )
+    browser = MagicMock()
+    browser.tab_ids = ["temporary", "business"]
+    with patch.object(server.browser_session, "get_browser", return_value=browser), \
+         patch.object(server.browser_session, "get_tab", return_value=current), \
+         patch.object(server.browser_session, "_pick_tab", return_value=business) as pick, \
+         patch.object(server.browser_session, "set_tab") as set_tab:
+        result = server.browser_tabs(action="close", index=0)
+
+    browser.close_tabs.assert_called_once_with("temporary")
+    pick.assert_called_once_with(browser, server.browser_session._target_hint)
+    set_tab.assert_called_once_with(business)
+    assert result == {
+        "ok": True, "closed_tab_id": "temporary", "active_tab_id": "business",
+    }
+
+
+def test_browser_tabs_lists_stable_zero_based_indexes():
+    import server
+
+    tabs = [{"tab_id": "a"}, {"tab_id": "b"}]
+    with patch.object(server.browser_session, "get_browser", return_value=object()), \
+         patch.object(server.browser_session, "list_tabs", return_value=tabs):
+        result = server.browser_tabs(action="list")
+
+    assert [item["index"] for item in result["tabs"]] == [0, 1]
+    assert tabs == [{"tab_id": "a"}, {"tab_id": "b"}]
+
+
+def test_download_by_browser_returns_json_safe_absolute_path(tmp_path):
+    import server
+
+    downloaded = tmp_path / "proof.txt"
+    downloaded.write_text("proof", encoding="utf-8")
+    mission = SimpleNamespace(
+        wait=MagicMock(return_value=downloaded),
+        final_path=downloaded,
+        total_bytes=5,
+        state="completed",
+        name="proof.txt",
+    )
+    by_browser = MagicMock(return_value=mission)
+    tab = SimpleNamespace(download=SimpleNamespace(by_browser=by_browser))
+    with patch.object(server.browser_session, "get_tab", return_value=tab):
+        result = server.download_by_browser(
+            "data:text/plain,proof", save_path=tmp_path,
+            rename="proof", suffix="txt", timeout=2,
+        )
+
+    assert result["ok"] is True
+    assert type(result["path"]) is str
+    assert result["path"] == str(downloaded)
+    mission.wait.assert_called_once_with(show=False)
+    by_browser.assert_called_once_with(
+        url="data:text/plain,proof", timeout=2.0, file_exists="rename",
+        save_path=str(tmp_path), rename="proof", suffix="txt",
+    )
+
+
+def test_download_by_browser_rejects_invalid_input_before_browser_access():
+    import server
+
+    with patch.object(server.browser_session, "get_tab") as get_tab:
+        empty_url = server.download_by_browser("")
+        invalid_policy = server.download_by_browser("https://example.test/file", file_exists="replace")
+        invalid_timeout = server.download_by_browser("https://example.test/file", timeout=-1)
+
+    assert empty_url["ok"] is False
+    assert invalid_policy["ok"] is False
+    assert invalid_timeout["ok"] is False
+    get_tab.assert_not_called()

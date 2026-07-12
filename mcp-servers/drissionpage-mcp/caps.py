@@ -1,7 +1,7 @@
 """能力分组（Capability Tiers）
 
 按场景分组暴露工具，
-避免所有 40+ 工具一次性加载到 LLM 上下文造成 token 浪费。
+避免一次性加载全部工具造成上下文浪费。
 
 使用方式：
   export DRISSIONPAGE_MCP_CAPS=core,vtable,filter  # 启用指定分组
@@ -76,7 +76,7 @@ CAP_GROUPS = {
     ],
     "storage": [
         # 存储/上下文
-        "new_context", "switch_context", "list_contexts",
+        "new_context", "switch_context", "close_context", "list_contexts",
         "set_permission",
     ],
     "devtools": [

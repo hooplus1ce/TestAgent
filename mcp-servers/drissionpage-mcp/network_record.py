@@ -10,11 +10,15 @@ import time
 import browser_session
 import resource_store
 
+_SENSITIVE_HEADERS = frozenset({
+    "authorization", "cookie", "proxy-authorization", "set-cookie", "x-api-key"
+})
 
 _session = {
     "active": False,
     "started_at": None,
     "targets": None,
+    "started_monotonic": None,
     "method": None,
     "packets": [],
 }
@@ -110,14 +114,30 @@ def start_ws_listener(listener, targets=None) -> tuple[str, str, str | None]:
 
 
 def _json_safe(value, max_chars: int = 12000):
+    """保留小型 JSON 值；大型结构也按序列化字符数硬截断。"""
+    max_chars = max(int(max_chars or 0), 0)
     try:
-        json.dumps(value, ensure_ascii=False)
-        out = value
+        encoded = json.dumps(value, ensure_ascii=False)
+        output = value
     except (TypeError, ValueError):
-        out = str(value)
-    if isinstance(out, str) and len(out) > max_chars:
-        return out[:max_chars] + "...(_truncated)"
-    return out
+        output = str(value)
+        encoded = output
+    if len(encoded) <= max_chars:
+        return output
+    if isinstance(output, str):
+        return output[:max_chars] + "...(_truncated)"
+    return encoded[:max_chars] + "...(_truncated JSON)"
+
+
+def _safe_headers(raw_headers) -> dict:
+    try:
+        headers = dict(raw_headers or {})
+    except Exception:
+        return {}
+    return {
+        key: "<redacted>" if str(key).lower() in _SENSITIVE_HEADERS else value
+        for key, value in headers.items()
+    }
 
 
 def packet_to_dict(packet, max_body_chars: int = 12000) -> dict:
@@ -128,11 +148,12 @@ def packet_to_dict(packet, max_body_chars: int = 12000) -> dict:
     post_data = None
     if request:
         try:
-            headers = dict(request.headers) if hasattr(request, "headers") else {}
+            raw_headers = dict(request.headers) if hasattr(request, "headers") else {}
         except Exception:
-            headers = {}
-        api_target = headers.get("api-target", "") or headers.get("Api-Target", "")
-        post_data = getattr(request, "postData", None)
+            raw_headers = {}
+        api_target = raw_headers.get("api-target", "") or raw_headers.get("Api-Target", "")
+        headers = _safe_headers(raw_headers)
+        post_data = getattr(request, "postData", getattr(request, "post_data", None))
 
     body = getattr(response, "body", None) if response else None
     return {
@@ -147,19 +168,33 @@ def packet_to_dict(packet, max_body_chars: int = 12000) -> dict:
     }
 
 
+def ws_packet_to_dict(packet, max_payload_chars: int = 12000) -> dict:
+    return {
+        "is_sent": getattr(packet, "is_sent", None),
+        "payload": _json_safe(getattr(packet, "data", None), max_payload_chars),
+        "url": getattr(packet, "url", None),
+        "timestamp": getattr(packet, "timestamp", None),
+    }
+
+
 def start(targets=None, method: str = None) -> dict:
     tab = browser_session.get_tab()
     urls = _normalize_targets(targets)
+    _session["active"] = False
     try:
         tab.listen.stop()
     except Exception:
         pass
-    effective_method, resource_type = start_http_listener(tab.listen, urls, method)
+    try:
+        effective_method, resource_type = start_http_listener(tab.listen, urls, method)
+    except Exception as exc:
+        return {"ok": False, "reason": "network listener start failed: %s" % exc}
 
     _session.clear()
     _session.update({
         "active": True,
         "started_at": time.time(),
+        "started_monotonic": time.monotonic(),
         "targets": urls,
         "method": effective_method,
         "packets": [],
@@ -173,29 +208,52 @@ def stop(timeout: float = 3.0, max_packets: int = 50,
     if not _session.get("active"):
         return {"ok": False, "reason": "no active network record session; call network_record_start first"}
     tab = browser_session.get_tab()
+    max_packets = max(int(max_packets or 0), 1)
+    timeout = max(float(timeout or 0), 0.0)
     packets = []
+    wait_error = None
     try:
-        caught = tab.listen.wait(count=max_packets, timeout=timeout, fit_count=fit_count)
+        try:
+            caught = tab.listen.wait(
+                count=max_packets,
+                timeout=timeout,
+                fit_count=fit_count,
+                raise_err=False,
+            )
+        except TypeError:
+            caught = tab.listen.wait(
+                count=max_packets, timeout=timeout, fit_count=fit_count
+            )
         if caught:
             if not isinstance(caught, list):
                 caught = [caught]
-            packets = [packet_to_dict(p, max_body_chars=max_body_chars) for p in caught[:max_packets]]
+            packets = [
+                packet_to_dict(packet, max_body_chars=max_body_chars)
+                for packet in caught[:max_packets]
+            ]
+    except Exception as exc:
+        wait_error = str(exc)
     finally:
         try:
             tab.listen.stop()
         except Exception:
             pass
+        _session["active"] = False
+        _session["packets"] = packets
 
-    _session["active"] = False
-    _session["packets"] = packets
-    return {
-        "ok": True,
+    result = {
+        "ok": wait_error is None,
         "packets": packets,
         "count": len(packets),
         "targets": _session.get("targets"),
         "method": _session.get("method"),
-        "elapsedMs": int((time.time() - (_session.get("started_at") or time.time())) * 1000),
+        "elapsedMs": int(
+            (time.monotonic() - (_session.get("started_monotonic") or time.monotonic())) * 1000
+        ),
     }
+    if wait_error:
+        result["reason"] = "network listener wait failed: %s" % wait_error
+    return result
 
 
 def export(filename: str = None) -> dict:

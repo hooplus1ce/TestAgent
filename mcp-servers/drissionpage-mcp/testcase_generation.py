@@ -12,12 +12,15 @@ from collections import Counter
 from copy import deepcopy
 from urllib.parse import parse_qsl, urlsplit
 
+import test_execution
+
 
 _RECIPE_KEYS = {
     "action", "target", "locator", "x", "y", "field_name", "text", "date",
     "start_date", "end_date", "row", "col", "column_title", "kind",
     "table_index", "icon_name", "option_text", "key", "modifiers", "by_js",
-    "in_frame", "expect", "signals", "listen_targets", "observe_mode",
+    "in_frame", "timeout", "expect", "signals", "listen_targets", "observe_mode",
+    "detail", "clean_overlays",
 }
 _DIRECT_RECIPE_ACTIONS = {
     "find_vtable_row", "count_vtable_rows", "get_vtable_row_values",
@@ -36,8 +39,8 @@ _INPUT_ACTIONS = {"input", "select_option", "set_date", "date_range"}
 _MODAL_TYPES = {"interactive", "confirm", "system_confirm", "drawer", "popover"}
 _TOAST_TYPES = {"message", "notification"}
 _VOLATILE_BODY_KEYS = {
-    "id", "uuid", "timestamp", "time", "created_at", "updated_at", "traceid",
-    "trace_id", "requestid", "request_id",
+    "id", "uuid", "timestamp", "time", "created_at", "updated_at", "createdat",
+    "updatedat", "traceid", "trace_id", "requestid", "request_id", "nonce",
 }
 
 
@@ -68,6 +71,13 @@ def _as_list(value) -> list:
     if isinstance(value, tuple):
         return list(value)
     return []
+def _sequence_number(value, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
 
 
 def _business_name(step: dict) -> str:
@@ -124,11 +134,39 @@ def _nested_items(section, keys: tuple[str, ...]) -> list:
     return []
 
 
+def _merge_asset_metadata(current: dict, incoming: dict):
+    for key, value in incoming.items():
+        if value in (None, "", []):
+            continue
+        previous = current.get(key)
+        if previous in (None, "", []):
+            current[key] = deepcopy(value)
+        elif isinstance(previous, list) and isinstance(value, list):
+            for item in value:
+                if item not in previous:
+                    previous.append(deepcopy(item))
+        elif key == "row_count" and isinstance(previous, (int, float)) and isinstance(value, (int, float)):
+            current[key] = max(previous, value)
+        elif key in {"required", "editable", "has_dropdown"}:
+            current[key] = bool(previous) or bool(value)
+        elif previous != value:
+            variants = current.setdefault(key + "_values", [deepcopy(previous)])
+            if value not in variants:
+                variants.append(deepcopy(value))
+
+
 def _asset(assets: dict, kind: str, name: str, state: dict, metadata: dict | None = None):
     name = _display_name(name)
     if not name:
         return
-    key = (kind, _norm(name))
+    metadata = dict(metadata or {})
+    default_area = {
+        "filter": "筛选区", "field": "表单", "action": "页面",
+        "table_column": "数据表格", "modal": "弹窗", "interface": "接口",
+    }.get(kind, "页面")
+    metadata.setdefault("area", default_area)
+    area_key = _area_category(metadata.get("area")) or _norm(metadata.get("area"))
+    key = (kind, _norm(name), area_key)
     current = assets.get(key)
     if state.get("evidence_source") == "flow_step":
         evidence = {
@@ -143,12 +181,12 @@ def _asset(assets: dict, kind: str, name: str, state: dict, metadata: dict | Non
         }
     if current is None:
         current = {
-            "asset_type": kind, "name": name, "metadata": dict(metadata or {}),
+            "asset_type": kind, "name": name, "metadata": deepcopy(metadata),
             "evidence_refs": [evidence],
         }
         assets[key] = current
     else:
-        current["metadata"].update({k: v for k, v in (metadata or {}).items() if v not in (None, "", [])})
+        _merge_asset_metadata(current["metadata"], metadata)
         if evidence not in current["evidence_refs"]:
             current["evidence_refs"].append(evidence)
 
@@ -169,6 +207,20 @@ def _extract_page_assets(flow: dict) -> list[dict]:
                 "options": item.get("options") or [],
             })
 
+        fields = _nested_items(model.get("fields"), ("fields", "items", "controls"))
+        for item in fields:
+            item = item if isinstance(item, dict) else {"label": item}
+            name = item.get("label") or item.get("name") or item.get("placeholder") or item.get("field")
+            area = item.get("area") or "表单"
+            kind = "filter" if _area_category(area) == "filter" else "field"
+            _asset(assets, kind, name, state, {
+                "area": area,
+                "value_mode": item.get("type") or item.get("valueMode") or item.get("value_mode"),
+                "required": bool(item.get("required")),
+                "disabled": bool(item.get("disabled")),
+                "read_only": bool(item.get("readOnly") or item.get("read_only")),
+                "has_dropdown": bool(item.get("hasDropdown") or item.get("has_dropdown")),
+            })
         actions = _nested_items(model.get("actions"), ("actions", "buttons", "items"))
         # Compatibility with early page models that stored ``actions`` as a list.
         if isinstance(model.get("actions"), list):
@@ -224,6 +276,7 @@ def _extract_page_assets(flow: dict) -> list[dict]:
                 item = item if isinstance(item, dict) else {"url": item}
                 name = item.get("api_target") or item.get("name") or item.get("url") or item.get("path")
                 _asset(assets, "interface", name, state, {
+                    "area": "接口",
                     "method": item.get("method", ""), "status": item.get("status"),
                     "body": item.get("body") or (item.get("response") or {}).get("body")
                     if isinstance(item.get("response"), dict) else item.get("body"),
@@ -242,30 +295,75 @@ def _extract_page_assets(flow: dict) -> list[dict]:
             "screenshot": ((step.get("artifacts") or {}).get("screenshot")),
         }
         action = _action_name(step)
-        if action in {"click", "click_xy", "field_click"}:
+        data = _action_input(step)
+        element = step.get("element") if isinstance(step.get("element"), dict) else {}
+        target = data.get("target") if isinstance(data.get("target"), dict) else {}
+        target_type = str(target.get("type") or "").lower()
+        is_field_action = (
+            action in (_INPUT_ACTIONS | {"field_click"})
+            or target_type in {"field", "input", "select", "date", "date_range"}
+        )
+        if is_field_action:
+            name = data.get("field_name") or target.get("name") or target.get("label") or _business_name(step)
+            area = element.get("area") or target.get("area") or target.get("scope") or "表单"
+            kind = "filter" if _step_area_category(step) == "filter" else "field"
+            _asset(assets, kind, name, state, {
+                "area": area,
+                "value_mode": target.get("control_type") or action,
+                "evidence_source": "flow_step",
+            })
+        elif action in {"click", "click_xy"}:
             name = _business_name(step)
             if name not in {"", "页面操作", "页面按钮"}:
-                element = step.get("element") or {}
                 _asset(assets, "action", name, state, {
                     "area": element.get("area", "页面"),
                     "kind": ((element.get("matched") or {}).get("kind", "")),
                     "evidence_source": "flow_step",
                 })
 
-        observation = step.get("observation") or {}
+        observation = step.get("observation") if isinstance(step.get("observation"), dict) else {}
+        payload = observation.get("payload") if isinstance(observation.get("payload"), dict) else {}
+        if _step_area_category(step) == "table":
+            columns = [data.get("column_title"), data.get("key_column"), payload.get("column_title")]
+            columns.extend(_as_list(data.get("column_titles")))
+            if isinstance(payload.get("values"), dict):
+                columns.extend(payload["values"].keys())
+            for column in columns:
+                _asset(assets, "table_column", column, state, {
+                    "area": "数据表格", "evidence_source": "flow_step",
+                })
+
+        modal_items = []
+        if observation.get("type") in _MODAL_TYPES:
+            modal_items.append({
+                "title": payload.get("title") or observation.get("title"),
+                "kind": observation.get("type"),
+                "fields": payload.get("fields") or [],
+                "buttons": payload.get("buttons") or [],
+            })
+        snapshot = observation.get("snapshot_after") if isinstance(observation.get("snapshot_after"), dict) else {}
+        modal_items.extend(item for item in _as_list(snapshot.get("overlays")) if isinstance(item, dict))
+        for index, item in enumerate(modal_items, start=1):
+            kind = item.get("type") or item.get("kind") or "modal"
+            name = item.get("title") or item.get("name") or item.get("message") or "%s%d" % (kind, index)
+            _asset(assets, "modal", name, state, {
+                "area": "弹窗", "kind": kind,
+                "fields": item.get("fields") or [], "buttons": item.get("buttons") or [],
+                "evidence_source": "flow_step",
+            })
+
         network_items = []
-        if isinstance(observation, dict) and observation.get("type") == "network":
+        if observation.get("type") == "network":
             network_items.append(observation)
         network_items.extend(item for item in _as_list(step.get("network")) if isinstance(item, dict))
         for item in network_items:
-            packet = item.get("packet") if isinstance(item.get("packet"), dict) else {}
-            name = item.get("api_target") or packet.get("api_target") or item.get("url") or packet.get("url")
-            if not name or _is_network_noise(name):
+            packet = item.get("packet") if isinstance(item.get("packet"), dict) else item
+            request = packet.get("request") if isinstance(packet.get("request"), dict) else {}
+            name, status, body, _ = _network_parts(item)
+            if not name or name == "接口" or _is_network_noise(name):
                 continue
-            status = item.get("status", packet.get("status"))
-            body = packet.get("body") if "body" in packet else item.get("body")
             _asset(assets, "interface", name, state, {
-                "method": item.get("method") or packet.get("method", ""),
+                "method": item.get("method") or packet.get("method") or request.get("method", ""),
                 "status": status,
                 "body": body,
                 "area": "接口",
@@ -341,17 +439,37 @@ def _network_identity(value: str) -> tuple[str, str]:
     return "equals", text
 
 
+def _url_identity(value: str) -> tuple[str, str]:
+    """Return an origin-independent identity for page navigation assertions."""
+    text = str(value or "").strip()
+    parsed = urlsplit(text)
+    path = "/" + parsed.path.lstrip("/") if parsed.path else ""
+    fragment = parsed.fragment.split("?", 1)[0].strip()
+    identity = path
+    if fragment:
+        identity += "#" + fragment
+    if identity and identity != "/":
+        return "contains", identity
+    if parsed.netloc:
+        return "contains", parsed.netloc
+    return "equals", text
+
+
 def _network_parts(event: dict):
-    packet = event.get("packet") if isinstance(event.get("packet"), dict) else {}
+    nested_packet = event.get("packet") if isinstance(event.get("packet"), dict) else None
+    packet = nested_packet or event
+    request = packet.get("request") if isinstance(packet.get("request"), dict) else {}
     response = packet.get("response") if isinstance(packet.get("response"), dict) else {}
-    target = event.get("api_target") or packet.get("api_target") or event.get("url") or packet.get("url") or "接口"
+    target = (event.get("api_target") or packet.get("api_target")
+              or event.get("url") or packet.get("url") or request.get("url") or "接口")
     status = event.get("status")
     if status is None:
         status = packet.get("status", response.get("status"))
+    prefix = "signal.packet" if nested_packet is not None else "signal"
     if "body" in packet:
-        return target, status, packet.get("body"), "signal.packet.body"
+        return target, status, packet.get("body"), prefix + ".body"
     if "body" in response:
-        return target, status, response.get("body"), "signal.packet.response.body"
+        return target, status, response.get("body"), prefix + ".response.body"
     return target, status, event.get("body"), "signal.body"
 
 
@@ -398,11 +516,16 @@ def _event_assertions(step: dict) -> tuple[list[dict], list[dict]]:
             add("modal", _canonical(path, "contains", _clean_text(content), "弹窗内容包含“%s”" % _clean_text(content)), "observation")
     elif event_type == "url_change" and observation.get("url"):
         url = observation["url"]
-        add("url", _canonical("signal.url", "equals", url, "页面地址跳转为“%s”" % _clean_text(url)), "observation")
+        operator, identity = _url_identity(url)
+        add("url", _canonical(
+            "signal.url", operator, identity,
+            "页面地址匹配“%s”" % _clean_text(identity),
+        ), "observation")
     elif event_type == "tab_change" and observation.get("tab_count") is not None:
         count = observation["tab_count"]
         add("tab", _canonical("signal.tab_count", "equals", count, "浏览器页签数量变为 %s" % count), "observation")
-    elif event_type == "network":
+    elif (event_type == "network"
+          and not _is_network_noise(_network_parts(observation)[0])):
         target, status, body, body_path = _network_parts(observation)
         packet = observation.get("packet") if isinstance(observation.get("packet"), dict) else {}
         api_target = observation.get("api_target") or packet.get("api_target")
@@ -439,6 +562,30 @@ def _event_assertions(step: dict) -> tuple[list[dict], list[dict]]:
                     "values.%s" % column, "equals", value,
                     "目标业务记录的“%s”为“%s”" % (_clean_text(column), _clean_text(value)),
                 ), "structured_result")
+        elif action == "get_table_values" and isinstance(payload.get("values"), list):
+            values = payload["values"]
+            column = _action_input(step).get("column_title") or "目标列"
+            if not values:
+                add("table_data", _canonical(
+                    "values", "equals", [],
+                    "“%s”没有业务记录" % _clean_text(column),
+                ), "structured_result")
+            elif all(value == values[0] for value in values):
+                add("table_data", _canonical(
+                    "values", "all_equals", values[0],
+                    "“%s”全部业务记录均为“%s”" % (_clean_text(column), _clean_text(values[0])),
+                ), "structured_result")
+        elif action == "get_vtable_cell_render_info":
+            labels = {
+                "text": "文本", "fontColor": "字体色", "tagColor": "标签底色",
+                "backgroundColor": "单元格背景色", "borderColor": "边框色",
+            }
+            for field, label in labels.items():
+                if payload.get(field) not in (None, ""):
+                    add("table_render", _canonical(
+                        field, "equals", payload[field],
+                        "目标单元格%s为“%s”" % (label, _clean_text(payload[field])),
+                    ), "structured_result")
 
     # Secondary events are compact summaries at replay time.  They can assert
     # API identity/status, but their response bodies are not available there.
@@ -613,10 +760,18 @@ def _is_replayable(command: dict) -> bool:
         if runner_action == "select_option":
             return bool(args.get("field_name") and args.get("option_text"))
         return runner_action in _DIRECT_RECIPE_ACTIONS
-    if action in {"click", "click_xy", "field_click"}:
-        return bool(args.get("target") or args.get("locator") or (args.get("x") is not None and args.get("y") is not None) or (action == "field_click" and args.get("field_name")))
+    target = args.get("target")
+    if args.get("by_js") or action == "click_xy":
+        return False
+    if isinstance(target, dict) and str(target.get("type") or "").lower() == "xy":
+        return False
+    if action in {"click", "field_click"}:
+        return bool(args.get("target") or args.get("locator")
+                    or (action == "field_click" and args.get("field_name")))
     if action == "input":
-        return args.get("text") is not None and bool(args.get("locator") or args.get("target") or args.get("field_name"))
+        return args.get("text") is not None and bool(
+            args.get("locator") or args.get("target") or args.get("field_name")
+        )
     if action == "select_option":
         return bool(args.get("field_name") and args.get("option_text"))
     if action == "set_date":
@@ -624,7 +779,9 @@ def _is_replayable(command: dict) -> bool:
     if action == "date_range":
         return bool(args.get("field_name") and args.get("start_date") and args.get("end_date"))
     if action == "table_cell":
-        return args.get("row") is not None and (args.get("col") is not None or bool(args.get("column_title")))
+        return args.get("row") is not None and (
+            args.get("col") is not None or bool(args.get("column_title"))
+        )
     if action == "press_key":
         return bool(args.get("key"))
     return False
@@ -639,7 +796,7 @@ def _build_recipe(flow: dict, steps: list[dict]) -> tuple[dict, list[dict]]:
         cleanup_from = None
     for index, step in enumerate(steps, start=1):
         assertions, traces = _event_assertions(step)
-        is_cleanup = cleanup_from is not None and int(step.get("sequence", index)) >= cleanup_from
+        is_cleanup = cleanup_from is not None and _sequence_number(step.get("sequence"), index) >= cleanup_from
         for trace in traces:
             trace["phase"] = "cleanup" if is_cleanup else "steps"
         action = _action_name(step)
@@ -696,7 +853,7 @@ def _area_category(value) -> str | None:
         return "modal"
     if any(word in text for word in ("表格", "table", "vtable", "grid")):
         return "table"
-    if any(word in text for word in ("页面", "page", "toolbar", "工具栏")):
+    if any(word in text for word in ("页面", "page", "toolbar", "工具栏", "表单", "form")):
         return "page"
     return None
 
@@ -731,13 +888,23 @@ def _step_matching_asset(step: dict, asset: dict) -> bool:
         candidates = []
         if isinstance(observation, dict):
             packet = observation.get("packet") if isinstance(observation.get("packet"), dict) else {}
-            candidates.extend((observation.get("api_target"), observation.get("url"), packet.get("api_target"), packet.get("url")))
+            observed_target, _, _, _ = _network_parts(observation)
+            candidates.extend((
+                observation.get("api_target"), observation.get("url"),
+                packet.get("api_target"), packet.get("url"), observed_target,
+            ))
         for item in _as_list(step.get("network")):
             if isinstance(item, dict):
-                candidates.extend((item.get("api_target"), item.get("url")))
+                target_value, _, _, _ = _network_parts(item)
+                candidates.extend((item.get("api_target"), item.get("url"), target_value))
         return any(target and (target in _norm(value) or _norm(value) in target) for value in candidates if value)
-    if asset_type == "filter" and _step_area_category(step) != "filter":
-        return False
+    if asset_type in {"filter", "field"}:
+        step_area = _step_area_category(step)
+        if asset_type == "filter" and step_area != "filter":
+            return False
+        asset_area = _area_category((asset.get("metadata") or {}).get("area"))
+        if asset_area and step_area and asset_area != step_area:
+            return False
     if asset_type == "table_column":
         if _step_area_category(step) != "table":
             return False
@@ -785,7 +952,7 @@ def _coverage_row(row_id: str, asset: dict, scenario: str, test_type: str, statu
 def build_coverage_matrix(flow: dict) -> list[dict]:
     """Build coverage from captured assets and typed business risks."""
     assets = _extract_page_assets(flow)
-    steps = sorted(_as_list(flow.get("steps")), key=lambda item: item.get("sequence", 0) if isinstance(item, dict) else 0)
+    steps = sorted(_as_list(flow.get("steps")), key=lambda item: _sequence_number(item.get("sequence")) if isinstance(item, dict) else 0)
     try:
         cleanup_from = int(flow.get("cleanup_from_sequence")) if flow.get("cleanup_from_sequence") not in (None, "") else None
     except (TypeError, ValueError):
@@ -793,7 +960,7 @@ def build_coverage_matrix(flow: dict) -> list[dict]:
     business_steps = [
         step for step in steps
         if isinstance(step, dict)
-        and (cleanup_from is None or int(step.get("sequence", 0) or 0) < cleanup_from)
+        and (cleanup_from is None or _sequence_number(step.get("sequence")) < cleanup_from)
     ]
     step_assertions = {
         step.get("sequence"): _event_assertions(step)[0] for step in business_steps
@@ -808,7 +975,7 @@ def build_coverage_matrix(flow: dict) -> list[dict]:
     def add(asset, scenario, test_type, status, evidence, sequence=None, risk=""):
         kind = asset["asset_type"]
         number[kind] += 1
-        code = {"filter": "FLT", "action": "ACT", "table_column": "COL", "modal": "MOD", "interface": "API"}.get(kind, "AST")
+        code = {"filter": "FLT", "field": "FLD", "action": "ACT", "table_column": "COL", "modal": "MOD", "interface": "API"}.get(kind, "AST")
         rows.append(_coverage_row("%s-%03d" % (code, number[kind]), asset, scenario, test_type, status, evidence, sequence, risk))
 
     flow_asset = {
@@ -845,6 +1012,22 @@ def build_coverage_matrix(flow: dict) -> list[dict]:
             else:
                 risk = "空值、超长值及特殊字符边界"
             add(asset, risk, "边界值测试", "待验证", "由字段类型和值域推导，需在真实页面执行", risk="边界值")
+        elif kind == "field":
+            metadata = asset.get("metadata") or {}
+            add(asset, "输入或选择真实业务值并校验后续反馈", "功能测试",
+                "已验证" if verified else "待验证", evidence, sequence, "正常路径")
+            if metadata.get("required"):
+                add(asset, "留空后提交时显示必填校验且不产生业务数据", "异常测试",
+                    "待验证", "必填属性已采集，真实拦截反馈尚未执行", risk="必填校验")
+            if metadata.get("disabled") or metadata.get("read_only"):
+                add(asset, "页面呈现只读或禁用状态且不可修改", "状态测试",
+                    "已验证", "真实页面快照已采集只读或禁用属性", risk="权限/状态")
+            else:
+                mode = str(metadata.get("value_mode") or "")
+                boundary = ("清空、起止边界及非法日期" if "date" in mode
+                            else "清空、超长值及特殊字符")
+                add(asset, boundary, "边界值测试", "待验证",
+                    "由组件类型与属性推导，需在真实页面执行", risk="边界值")
         elif kind == "action":
             observed_abnormal = (
                 verified
@@ -940,13 +1123,17 @@ def _coverage_summary(coverage: list[dict], assets: list[dict]) -> dict:
     }
 
     verified_asset_keys = {
-        (row.get("asset_type"), _norm(row.get("function")))
+        (row.get("asset_type"), _norm(row.get("function")),
+         _area_category(row.get("area")) or _norm(row.get("area")))
         for row in coverage if row.get("status") == "已验证"
     }
     asset_items = {}
     for asset in assets:
-        key = "%s:%s" % (asset.get("asset_type", "unknown"), asset.get("name", ""))
-        asset_items[key] = (asset.get("asset_type"), _norm(asset.get("name"))) in verified_asset_keys
+        metadata = asset.get("metadata") if isinstance(asset.get("metadata"), dict) else {}
+        area = metadata.get("area", "")
+        scope = _area_category(area) or _norm(area)
+        key = "%s:%s:%s" % (asset.get("asset_type", "unknown"), area, asset.get("name", ""))
+        asset_items[key] = (asset.get("asset_type"), _norm(asset.get("name")), scope) in verified_asset_keys
     verified_assets = sum(asset_items.values())
     asset_coverage = {
         "label": "页面资产覆盖",
@@ -1028,19 +1215,76 @@ def _expected_result(traces: list[dict], include_cleanup: bool = False) -> str:
     return "\n".join("%d. %s" % (index, value) for index, value in enumerate(descriptions, start=1))
 
 
-def _quality_gates(flow: dict, steps: list[dict], recipe: dict, traces: list[dict], assets: list[dict]) -> dict:
+def _quality_gates(flow: dict, steps: list[dict], recipe: dict,
+                   traces: list[dict], assets: list[dict]) -> dict:
     commands = recipe.get("steps", [])
     cleanup = recipe.get("cleanup", [])
     all_commands = commands + cleanup
-    business = [item for item in traces if item.get("phase") == "steps" and item.get("executable") and item.get("kind") in {"toast", "modal", "url", "tab", "network_identity", "network_status", "network_body", "row_count", "table_data"}]
-    destructive = bool(flow.get("destructive"))
+    business = [
+        item for item in traces
+        if item.get("phase") == "steps" and item.get("executable")
+        and item.get("kind") in {
+            "toast", "modal", "url", "tab", "network_identity", "network_status",
+            "network_body", "row_count", "table_data", "table_render",
+        }
+    ]
+    declared_destructive = bool(flow.get("destructive"))
+    mutating_commands = [
+        command for command in commands if test_execution.is_destructive_command(command)
+    ]
+    requires_cleanup = declared_destructive or bool(mutating_commands)
+
+    # Flow recorder emits strict 1..N integer sequences. Reject imported or
+    # hand-edited evidence that would make cleanup boundaries and refs ambiguous.
+    raw_steps = _as_list(flow.get("steps"))
+    sequences = [step.get("sequence") for step in steps]
+    sequence_chain_valid = (
+        len(raw_steps) == len(steps)
+        and all(isinstance(value, int) and not isinstance(value, bool) for value in sequences)
+        and sequences == list(range(1, len(steps) + 1))
+    )
+    cleanup_boundary = flow.get("cleanup_from_sequence")
+    cleanup_boundary_valid = (
+        cleanup_boundary in (None, "")
+        or (isinstance(cleanup_boundary, int) and not isinstance(cleanup_boundary, bool)
+            and 1 <= cleanup_boundary <= len(steps))
+    )
+    known_defect = flow.get("known_defect")
+    known_defect_valid = (
+        known_defect is None
+        or (isinstance(known_defect, dict)
+            and isinstance(known_defect.get("defect_id"), str)
+            and bool(known_defect["defect_id"].strip()))
+    )
     checks = [
-        {"name": "存在真实业务步骤", "required": True, "passed": bool(commands), "detail": "业务步骤 %d 个，清理步骤 %d 个" % (len(commands), len(cleanup))},
-        {"name": "步骤全部成功执行", "required": True, "passed": bool(steps) and all(step.get("outcome") == "passed" for step in steps), "detail": "失败步骤不会进入正式用例"},
-        {"name": "完整步骤链可回放", "required": True, "passed": len(all_commands) == len(steps) and all(_is_replayable(command) for command in all_commands), "detail": "自动化配方覆盖 %d/%d 个步骤" % (len(all_commands), len(steps))},
-        {"name": "包含真实业务断言", "required": True, "passed": bool(business), "detail": "共 %d 条可执行业务断言" % len(business)},
-        {"name": "破坏性场景具备清理步骤", "required": destructive, "passed": not destructive or bool(cleanup), "detail": "破坏性场景必须用 cleanup_from_sequence 划分清理动作"},
-        {"name": "已采集真实资产", "required": False, "passed": bool(assets), "detail": "共 %d 个页面或接口资产" % len(assets)},
+        {"name": "存在真实业务步骤", "required": True, "passed": bool(commands),
+         "detail": "业务步骤 %d 个，清理步骤 %d 个" % (len(commands), len(cleanup))},
+        {"name": "证据步骤序号唯一连续", "required": True,
+         "passed": sequence_chain_valid,
+         "detail": "正式用例只接受从 1 开始的连续整数证据序号"},
+        {"name": "步骤全部成功执行", "required": True,
+         "passed": bool(steps) and all(step.get("outcome") == "passed" for step in steps),
+         "detail": "失败步骤不会进入正式用例"},
+        {"name": "完整步骤链可回放", "required": True,
+         "passed": len(all_commands) == len(steps)
+                   and all(_is_replayable(command) for command in all_commands),
+         "detail": "自动化配方覆盖 %d/%d 个步骤" % (len(all_commands), len(steps))},
+        {"name": "包含真实业务断言", "required": True, "passed": bool(business),
+         "detail": "共 %d 条可执行业务断言" % len(business)},
+        {"name": "破坏性操作已显式声明", "required": bool(mutating_commands),
+         "passed": not mutating_commands or declared_destructive,
+         "detail": "识别到 %d 个持久化数据变更步骤" % len(mutating_commands)},
+        {"name": "破坏性场景具备清理步骤", "required": requires_cleanup,
+         "passed": not requires_cleanup or bool(cleanup),
+         "detail": "破坏性场景必须用 cleanup_from_sequence 划分清理动作"},
+        {"name": "清理边界合法", "required": cleanup_boundary not in (None, "") or requires_cleanup,
+         "passed": cleanup_boundary_valid,
+         "detail": "cleanup_from_sequence 必须指向已记录步骤"},
+        {"name": "已知缺陷元数据完整", "required": known_defect is not None,
+         "passed": known_defect_valid,
+         "detail": "known_defect 必须包含非空 defect_id"},
+        {"name": "已采集真实资产", "required": False, "passed": bool(assets),
+         "detail": "共 %d 个页面或接口资产" % len(assets)},
     ]
     failures = [item["name"] for item in checks if item["required"] and not item["passed"]]
     return {"passed": not failures, "checks": checks, "failures": failures}
@@ -1048,10 +1292,11 @@ def _quality_gates(flow: dict, steps: list[dict], recipe: dict, traces: list[dic
 
 def generate_verified_cases(flow: dict, module_info: dict) -> dict:
     """Generate at most one formal case for one complete, asserted evidence flow."""
-    module_info = dict(module_info or {})
+    flow = flow if isinstance(flow, dict) else {}
+    module_info = dict(module_info) if isinstance(module_info, dict) else {}
     steps = sorted(
         [step for step in _as_list(flow.get("steps")) if isinstance(step, dict)],
-        key=lambda item: item.get("sequence", 0),
+        key=lambda item: _sequence_number(item.get("sequence")),
     )
     assets = _extract_page_assets(flow)
     coverage = build_coverage_matrix(flow)
@@ -1096,7 +1341,9 @@ def generate_verified_cases(flow: dict, module_info: dict) -> dict:
         test_type = flow.get("scenario_type") or module_info.get("scenario_type")
         if not test_type:
             test_type = "边界值测试" if "边界" in risk_type else ("异常测试" if any(word in risk_type for word in ("异常", "反向", "非法")) else "功能测试")
-        preconditions = ["已登录 SCM-MOM 系统", "已进入%s页面" % flow.get("module", "目标模块"), "页面与业务数据已加载"]
+        system_name = (module_info.get("system_name") or module_info.get("domain")
+                       or "目标系统")
+        preconditions = ["已登录%s" % system_name, "已进入%s页面" % flow.get("module", "目标模块"), "页面与业务数据已加载"]
         if flow.get("verify_fixture_in_setup"):
             preconditions.append("测试环境预置业务夹具存在，自动化执行前会核验其初始值")
         case = {
@@ -1136,39 +1383,137 @@ def generate_verified_cases(flow: dict, module_info: dict) -> dict:
 def merge_generated_suites(payloads: list[dict], module_info: dict | None = None,
                            exclude_case_ids: list[str] | None = None,
                            exclude_known_defects: bool = False) -> dict:
-    """Merge multi-flow outputs without double-counting shared assets/scenarios."""
-    payloads = [item for item in payloads or [] if isinstance(item, dict)]
-    info = dict(module_info or next((item.get("module_info") for item in payloads if item.get("module_info")), {}) or {})
+    """合并多条真实业务流；覆盖场景去重，冲突用例编号确定性重编号而不丢用例。"""
+    raw_payloads = list(payloads) if isinstance(payloads, (list, tuple)) else []
+    invalid_sources = ["source_%d:non_object" % (index + 1)
+                       for index, item in enumerate(raw_payloads) if not isinstance(item, dict)]
+    payloads = [item for item in raw_payloads if isinstance(item, dict)]
+    inherited_info = next((
+        item.get("module_info") for item in payloads
+        if isinstance(item.get("module_info"), dict)
+    ), {})
+    provided_info = dict(module_info) if isinstance(module_info, dict) else {}
+    info = {**dict(inherited_info or {}), **provided_info}
+    module_conflicts = []
+    for key in ("system_name", "domain", "module_level1", "module_level2", "module_name", "menu_text"):
+        values = {
+            _norm(payload.get("module_info", {}).get(key))
+            for payload in payloads if isinstance(payload.get("module_info"), dict)
+            and payload["module_info"].get(key)
+        }
+        if provided_info.get(key):
+            values.add(_norm(provided_info[key]))
+        if len(values) > 1:
+            module_conflicts.append(key)
 
     assets_by_key = {}
+    invalid_assets = []
     for payload in payloads:
-        for asset in payload.get("asset_inventory", []):
+        for asset in _as_list(payload.get("asset_inventory")):
             if not isinstance(asset, dict):
+                invalid_assets.append("source asset must be an object")
                 continue
-            key = (asset.get("asset_type"), _norm(asset.get("name")))
-            current = assets_by_key.setdefault(key, dict(asset))
-            refs = current.setdefault("evidence_refs", [])
-            for ref in asset.get("evidence_refs", []):
+            asset_type, asset_name = asset.get("asset_type"), asset.get("name")
+            if (not isinstance(asset_type, str) or not asset_type.strip()
+                    or not isinstance(asset_name, str) or not asset_name.strip()):
+                invalid_assets.append("source asset_type/name must be non-empty strings")
+                continue
+            metadata = asset.get("metadata", {})
+            if not isinstance(metadata, dict):
+                invalid_assets.append("asset metadata must be an object")
+                metadata = {}
+            area = metadata.get("area", "")
+            scope = _area_category(area) or _norm(area)
+            key = (_norm(asset_type), _norm(asset_name), scope)
+            current = assets_by_key.get(key)
+            if current is None:
+                current = deepcopy(asset)
+                current["metadata"] = deepcopy(metadata)
+                current["evidence_refs"] = []
+                assets_by_key[key] = current
+            else:
+                _merge_asset_metadata(current["metadata"], metadata)
+            refs = current["evidence_refs"]
+            raw_refs = asset.get("evidence_refs", [])
+            if not isinstance(raw_refs, (list, tuple)):
+                invalid_assets.append("asset evidence_refs must be a list")
+                raw_refs = []
+            for ref in raw_refs:
+                if not isinstance(ref, dict):
+                    invalid_assets.append("asset evidence_refs entries must be objects")
+                    continue
                 if ref not in refs:
-                    refs.append(ref)
+                    refs.append(deepcopy(ref))
 
     status_rank = {"工具缺口": 0, "需用户确认": 1, "待验证": 2, "已验证": 3}
     coverage_by_key = {}
     source_ref_keys = []
-    for payload in payloads:
+    invalid_coverage_rows = []
+    duplicate_coverage_ids = []
+    invalid_coverage_statuses = []
+    for source_index, payload in enumerate(payloads, start=1):
         ref_keys = {}
-        for row in payload.get("coverage_matrix", []):
+        for row in _as_list(payload.get("coverage_matrix")):
             if not isinstance(row, dict):
+                invalid_coverage_rows.append("source_%d" % source_index)
                 continue
+            area = row.get("area", "")
+            scope = _area_category(area) or _norm(area)
             key = (
-                row.get("asset_type"), _norm(row.get("function")),
+                _norm(row.get("asset_type")), _norm(row.get("function")), scope,
                 _norm(row.get("scenario")), _norm(row.get("risk")),
             )
-            if row.get("coverage_id"):
-                ref_keys[row["coverage_id"]] = key
+            coverage_id = row.get("coverage_id")
+            if not key[0] or not key[1] or not key[3]:
+                invalid_coverage_rows.append("source_%d:%s" % (
+                    source_index, coverage_id if isinstance(coverage_id, str) else "missing_id",
+                ))
+                continue
+            if not isinstance(coverage_id, str) or not coverage_id.strip():
+                invalid_coverage_rows.append("source_%d:coverage_id_must_be_string" % source_index)
+                continue
+            coverage_id = coverage_id.strip()
+            if coverage_id in ref_keys and ref_keys[coverage_id] != key:
+                duplicate_coverage_ids.append("source_%d:%s" % (source_index, coverage_id))
+            else:
+                ref_keys[coverage_id] = key
+            if row.get("status") not in status_rank:
+                invalid_coverage_statuses.append("source_%d:%s" % (
+                    source_index, coverage_id or "missing_id",
+                ))
+                continue
             current = coverage_by_key.get(key)
-            if current is None or status_rank.get(row.get("status"), -1) > status_rank.get(current.get("status"), -1):
-                coverage_by_key[key] = dict(row)
+            winner = row if (
+                current is None
+                or status_rank.get(row.get("status"), -1)
+                > status_rank.get(current.get("status"), -1)
+            ) else current
+            merged = dict(winner)
+            evidence_refs = []
+            evidence_texts = []
+            for candidate in (current, row):
+                if not isinstance(candidate, dict):
+                    continue
+                raw_refs = candidate.get("asset_evidence_refs")
+                if raw_refs is not None and not isinstance(raw_refs, (list, tuple)):
+                    invalid_coverage_rows.append("source_%d:%s:evidence_refs_must_be_list" % (
+                        source_index, coverage_id,
+                    ))
+                for ref in _as_list(raw_refs):
+                    if not isinstance(ref, dict):
+                        invalid_coverage_rows.append("source_%d:%s:evidence_ref_must_be_object" % (
+                            source_index, coverage_id,
+                        ))
+                        continue
+                    if ref not in evidence_refs:
+                        evidence_refs.append(ref)
+                text = _clean_text(candidate.get("evidence"), 500)
+                if text and text not in evidence_texts:
+                    evidence_texts.append(text)
+            merged["asset_evidence_refs"] = evidence_refs
+            if evidence_texts:
+                merged["evidence_sources"] = evidence_texts
+            coverage_by_key[key] = merged
         source_ref_keys.append(ref_keys)
 
     coverage = list(coverage_by_key.values())
@@ -1177,26 +1522,77 @@ def merge_generated_suites(payloads: list[dict], module_info: dict | None = None
         row["coverage_id"] = "SUITE-%03d" % index
         final_id_by_key[key] = row["coverage_id"]
 
-    excluded_ids = {str(value) for value in (exclude_case_ids or [])}
+    excluded_ids = {str(value).strip() for value in (exclude_case_ids or []) if str(value).strip()}
     cases, excluded_cases, case_ids = [], [], set()
-    duplicate_ids = []
+    next_number = {}
+    renumbered_cases = []
+    invalid_cases = []
     invalid_coverage_refs = []
+
+    def reserve_case_id(raw_id):
+        raw_id = str(raw_id or "").strip()
+        if not raw_id:
+            return None
+        match = re.match(r"^(.*?)(\d+)$", raw_id)
+        if raw_id not in case_ids:
+            case_ids.add(raw_id)
+            if match:
+                prefix, digits = match.groups()
+                next_number[prefix] = max(next_number.get(prefix, 1), int(digits) + 1)
+            return raw_id
+        prefix, digits = match.groups() if match else (raw_id + "-", "001")
+        width = max(len(digits), 3)
+        number = next_number.get(prefix, int(digits) + 1 if match else 1)
+        candidate = "%s%0*d" % (prefix, width, number)
+        while candidate in case_ids:
+            number += 1
+            candidate = "%s%0*d" % (prefix, width, number)
+        next_number[prefix] = number + 1
+        case_ids.add(candidate)
+        renumbered_cases.append({"from": raw_id, "to": candidate})
+        return candidate
+
     for source_index, payload in enumerate(payloads):
-        for case in payload.get("test_cases", []):
-            case_id = case.get("case_id")
-            if str(case_id) in excluded_ids or (exclude_known_defects and isinstance(case.get("known_defect"), dict)):
+        for case in _as_list(payload.get("test_cases")):
+            if not isinstance(case, dict):
+                invalid_cases.append("source_%d:non_object" % (source_index + 1))
+                continue
+            original_id = case.get("case_id")
+            if str(original_id).strip() in excluded_ids or (
+                exclude_known_defects and isinstance(case.get("known_defect"), dict)
+            ):
                 excluded_cases.append({
-                    "case_id": case_id,
-                    "reason": "known_defect" if isinstance(case.get("known_defect"), dict) else "excluded_case_id",
+                    "case_id": original_id,
+                    "reason": ("known_defect" if isinstance(case.get("known_defect"), dict)
+                               else "excluded_case_id"),
                 })
                 continue
-            if case_id in case_ids:
-                duplicate_ids.append(case_id)
+            if not isinstance(original_id, str) or not original_id.strip():
+                invalid_cases.append("source_%d:case_id_must_be_string" % (source_index + 1))
                 continue
-            case_ids.add(case_id)
+            recipe_reasons = test_execution.weak_recipe_reasons(case)
+            if recipe_reasons:
+                invalid_cases.append("source_%d:%s:%s" % (
+                    source_index + 1, original_id or "missing_case_id", ";".join(recipe_reasons),
+                ))
+                continue
+            source_coverage_refs = _as_list(case.get("coverage_refs"))
+            if not source_coverage_refs:
+                invalid_cases.append("source_%d:%s:missing_coverage_refs" %
+                                     (source_index + 1, original_id or "missing_case_id"))
+                continue
+            case_id = reserve_case_id(original_id)
+            if case_id is None:
+                invalid_cases.append("source_%d:missing_case_id" % (source_index + 1))
+                continue
             merged_case = dict(case)
+            merged_case["case_id"] = case_id
             mapped_refs = []
-            for source_ref in case.get("coverage_refs", []):
+            for source_ref in source_coverage_refs:
+                if not isinstance(source_ref, str) or not source_ref.strip():
+                    invalid_coverage_refs.append("%s:coverage_ref_must_be_string" % case_id)
+                    continue
+                source_ref = source_ref.strip()
                 key = source_ref_keys[source_index].get(source_ref)
                 final_ref = final_id_by_key.get(key)
                 if not final_ref:
@@ -1206,15 +1602,34 @@ def merge_generated_suites(payloads: list[dict], module_info: dict | None = None
             if "coverage_refs" in case:
                 merged_case["coverage_refs"] = mapped_refs
             cases.append(merged_case)
+
     assets = list(assets_by_key.values())
     summary = _coverage_summary(coverage, assets)
-    source_quality = [item.get("quality_gates") or {} for item in payloads]
     failures = []
-    for index, quality in enumerate(source_quality, start=1):
-        if not quality.get("passed"):
-            failures.append("source_%d: %s" % (index, ", ".join(quality.get("failures") or ["quality gate failed"])))
-    if duplicate_ids:
-        failures.append("duplicate case ids: %s" % ", ".join(str(item) for item in duplicate_ids))
+    if not payloads:
+        failures.append("no generated suites")
+    if invalid_sources:
+        failures.append("invalid sources: %s" % ", ".join(invalid_sources))
+    if module_conflicts:
+        failures.append("module_info conflicts: %s" % ", ".join(module_conflicts))
+    for index, payload in enumerate(payloads, start=1):
+        quality = payload.get("quality_gates") if isinstance(payload.get("quality_gates"), dict) else {}
+        if quality.get("passed") is not True:
+            raw_failures = quality.get("failures")
+            source_failures = ([str(item) for item in raw_failures]
+                               if isinstance(raw_failures, list)
+                               else [str(raw_failures)] if raw_failures else ["quality gate failed"])
+            failures.append("source_%d: %s" % (index, ", ".join(source_failures)))
+    if invalid_cases:
+        failures.append("invalid cases: %s" % ", ".join(invalid_cases))
+    if invalid_coverage_rows:
+        failures.append("invalid coverage rows: %s" % ", ".join(invalid_coverage_rows))
+    if duplicate_coverage_ids:
+        failures.append("duplicate coverage ids: %s" % ", ".join(duplicate_coverage_ids))
+    if invalid_assets:
+        failures.append("invalid assets: %s" % ", ".join(invalid_assets))
+    if invalid_coverage_statuses:
+        failures.append("invalid coverage statuses: %s" % ", ".join(invalid_coverage_statuses))
     if invalid_coverage_refs:
         failures.append("invalid coverage refs: %s" % ", ".join(invalid_coverage_refs))
     return {
@@ -1228,4 +1643,5 @@ def merge_generated_suites(payloads: list[dict], module_info: dict | None = None
         "unverified_count": sum(row.get("status") != "已验证" for row in coverage),
         "source_count": len(payloads),
         "excluded_cases": excluded_cases,
+        "renumbered_cases": renumbered_cases,
     }

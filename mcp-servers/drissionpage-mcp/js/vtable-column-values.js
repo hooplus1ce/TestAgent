@@ -6,16 +6,23 @@
 function getColumnValuesByTitle(vtable, title, raw) {
   if (!vtable || !title) return null;
   var headerLevelCount = vtable.columnHeaderLevelCount || vtable.frozenRowCount || 1;
-  var targetCol = -1;
+  var exactCols = [];
+  var partialCols = [];
   for (var col = 0; col < vtable.colCount; col++) {
+    var exact = false;
+    var partial = false;
     for (var row = 0; row < headerLevelCount; row++) {
       var headerValue = '';
-      try { headerValue = vtable.getCellValue(col, row) || ''; } catch (e) {}
-      if (headerValue === title || headerValue.indexOf(title) !== -1) { targetCol = col; break; }
+      try { headerValue = String(vtable.getCellValue(col, row) || '').trim(); } catch (e) {}
+      if (headerValue === title) exact = true;
+      else if (headerValue.indexOf(title) !== -1) partial = true;
     }
-    if (targetCol !== -1) break;
+    if (exact) exactCols.push(col);
+    else if (partial) partialCols.push(col);
   }
-  if (targetCol === -1) return null;
+  var matches = exactCols.length ? exactCols : partialCols;
+  if (matches.length !== 1) return null;
+  var targetCol = matches[0];
 
   var values = [];
   for (var r = headerLevelCount; r < vtable.rowCount; r++) {
@@ -31,6 +38,21 @@ function getColumnValuesByTitle(vtable, title, raw) {
     values.push(val);
   }
   return values;
+}
+
+function getColumnsValuesByTitle(vtable, titles, raw) {
+  var values = {};
+  var missing = [];
+  (titles || []).forEach(function(title) {
+    var columnValues = getColumnValuesByTitle(vtable, title, raw);
+    if (columnValues === null) missing.push(title);
+    else values[title] = columnValues;
+  });
+  return {
+    values: values,
+    missing: missing,
+    headerRows: vtable ? (vtable.columnHeaderLevelCount || vtable.frozenRowCount || 1) : 1
+  };
 }
 
 // ---- 场景图渲染后视觉文本 ----
@@ -49,6 +71,37 @@ function getVisualCellText(vtable, col, row) {
   } catch (e) { return null; }
 }
 
+function _duVisibleVTableElement(el) {
+  if (!el || !el.isConnected) return false;
+  var style = window.getComputedStyle(el);
+  if (style.display === 'none' || style.visibility === 'hidden') return false;
+  var rect = el.getBoundingClientRect();
+  if (rect.width <= 0 || rect.height <= 0) return false;
+  var left = Math.max(0, rect.left), right = Math.min(window.innerWidth, rect.right);
+  var top = Math.max(0, rect.top), bottom = Math.min(window.innerHeight, rect.bottom);
+  if (right <= left || bottom <= top) return false;
+  var hit = document.elementFromPoint((left + right) / 2, (top + bottom) / 2);
+  return !!(hit && (hit === el || el.contains(hit)));
+}
+
+function _duVTableElement() {
+  var cached = window._vtableElement;
+  if (_duVisibleVTableElement(cached)) return cached;
+  var selectors = ['.vtable', '[class*="vtable"]'];
+  for (var si = 0; si < selectors.length; si++) {
+    var candidates = [].slice.call(document.querySelectorAll(selectors[si]));
+    for (var ci = 0; ci < candidates.length; ci++) {
+      var candidate = candidates[ci];
+      if (_duVisibleVTableElement(candidate) &&
+          (candidate.tagName === 'CANVAS' || candidate.querySelector('canvas'))) {
+        window._vtableElement = candidate;
+        return candidate;
+      }
+    }
+  }
+  return null;
+}
+
 // ---- 单元格中心【顶层视口坐标】（供 click_xy / actions.move_to 直接使用）----
 // 内部通过 window.frameElement.getBoundingClientRect() 一次算到顶层视口，
 // Python 侧不再叠加 iframe 偏移。
@@ -56,8 +109,9 @@ function getCellCenterViewport(col, row) {
   var t = window._vtable;
   if (!t) return null;
   var ifrRect = window.frameElement ? window.frameElement.getBoundingClientRect() : { left: 0, top: 0 };
-  var vtEl = document.querySelector('.vtable') || document.querySelector('[class*="vtable"]');
-  var vtRect = vtEl ? vtEl.getBoundingClientRect() : { left: 0, top: 0 };
+  var vtEl = _duVTableElement();
+  if (!vtEl) return null;
+  var vtRect = vtEl.getBoundingClientRect();
   var cx = null, cy = null;
   // 优先用 scenegraph 的 globalAABBBounds
   try {
@@ -109,9 +163,10 @@ function _duBounds(node) {
 }
 
 function _duViewportOrigin() {
+  var vtEl = _duVTableElement();
+  if (!vtEl) return null;
   var ifrRect = window.frameElement ? window.frameElement.getBoundingClientRect() : { left: 0, top: 0 };
-  var vtEl = document.querySelector('.vtable') || document.querySelector('[class*="vtable"]');
-  var vtRect = vtEl ? vtEl.getBoundingClientRect() : { left: 0, top: 0 };
+  var vtRect = vtEl.getBoundingClientRect();
   return { left: ifrRect.left + vtRect.left, top: ifrRect.top + vtRect.top };
 }
 
@@ -244,6 +299,7 @@ function getCellIconsViewport(col, row, iconName, detail) {
   var cell = t.scenegraph.getCell(col, row);
   if (!cell) return { ok: false, reason: 'cell not rendered', col: col, row: row };
   var origin = _duViewportOrigin();
+  if (!origin) return { ok: false, reason: 'visible vtable root not found', col: col, row: row };
   var low = (iconName || '').toLowerCase();
   var icons = [], all = [];
   var MAX_COORD = 1e15;

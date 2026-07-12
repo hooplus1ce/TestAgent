@@ -17,6 +17,7 @@ DOM 信号走 MutationObserver：元素被添加到 DOM 的当帧即捕获，非
 网络用后台线程 wait，不阻塞 DOM 轮询。
 """
 import json
+from collections import deque
 import logging
 import queue
 import threading
@@ -24,21 +25,19 @@ import time
 
 import browser_session
 import network_record
+import ui_contract
 
 _COLLECT_WINDOW = 0.6  # 首次信号后继续收集的窗口秒数，避免 first-signal-wins 漏掉 .ant-message
+# 固定 UI 框架的所有可见反馈优先于导航和网络；否则“打开日历 + 请求接口”会把
+# network 误选为主事件，生成器无法知道用户实际看到的组件状态。
 _SIGNAL_PRIORITY = {
-    "message": 0,
-    "notification": 0,
-    "confirm": 0,
-    "interactive": 0,
-    "drawer": 0,
-    "vtable-filter-menu": 0,
-    "vtable-tooltip": 0,
-    "vtable-menu": 0,
-    "url_change": 1,
-    "tab_change": 1,
-    "network": 2,
+    signal_type: 0 for signal_type in (
+        "message", "notification", "confirm", "interactive", "drawer",
+        "popover", "tooltip", "dropdown", "select-dropdown", "calendar",
+        "vtable-filter-menu", "vtable-tooltip", "vtable-menu",
+    )
 }
+_SIGNAL_PRIORITY.update({"url_change": 1, "tab_change": 1, "network": 2})
 
 
 def _pick_primary(events: list) -> dict:
@@ -92,14 +91,19 @@ def _event_identity(event: dict):
     message = payload.get("message") or event.get("message") or ""
     content = payload.get("content") or event.get("content") or ""
     options = payload.get("options") or []
+    option_key = tuple(
+        _short_text(item.get("text") if isinstance(item, dict) else item, 80)
+        for item in options[:10]
+    ) if isinstance(options, list) else ()
+    semantic_key = (_short_text(title, 80), _short_text(message or content, 120), option_key)
+    # Ant modal 入场动画会连续改变 rect，MutationObserver 因而收到多次属性事件；
+    # 有标题/正文/选项时以语义去重，只有无文本浮层才用几何位置区分。
     rect = payload.get("rect") or event.get("rect") or {}
     return (
         etype,
         event.get("scope") or payload.get("scope") or "",
-        _short_text(title, 80),
-        _short_text(message or content, 120),
-        tuple(options[:10]) if isinstance(options, list) else (),
-        _rect_key(rect),
+        *semantic_key,
+        () if any(semantic_key) else _rect_key(rect),
     )
 
 
@@ -169,47 +173,28 @@ def _compact_events(events: list) -> tuple[list, list]:
 logger = logging.getLogger("drissionpage-mcp")
 
 # ---- 信号选择器 ----
-_SEL_MODAL = ".ant-modal-content"
-_SEL_NOTIFICATION = ".ant-notification-notice"
-_SEL_MESSAGE = ".ant-message-notice"
-_ALL_SELS = [
-    _SEL_MODAL,
-    ".ant-drawer",
-    ".ant-popover",
-    ".ant-tooltip",
-    ".ant-dropdown",
-    ".ant-select-dropdown",
-    ".vtable-filter-menu",
-    ".vtable__bubble-tooltip-element",
-    ".vtable__menu-element",
-    ".ant-calendar-picker-container",
-    ".ant-calendar",
-    _SEL_NOTIFICATION,
-    _SEL_MESSAGE,
-]
+_SEL_MODAL = ui_contract.MODAL_CONTENT
+_SEL_NOTIFICATION = ui_contract.NOTIFICATION
+_SEL_MESSAGE = ui_contract.MESSAGE
+_ALL_SELS = list(ui_contract.OBSERVABLE_OVERLAYS)
 
-# ---- MutationObserver 注入脚本（在 target.document 内安装；含初始扫描，捕获已存在的信号）----
-# 注意：必须用顶层 return（不能用 IIFE），否则 DrissionPage run_js 拿不到返回值
+# ---- MutationObserver 注入脚本（在 target.document 内安装）----
+# 注意：必须用顶层 return（不能用 IIFE），否则 DrissionPage run_js 拿不到返回值。
+# 两段式 observe_start 默认忽略安装前已存在的浮层；observe_post_click 才采集现状。
 _INSTALL_OBSERVER_JS = r"""
 if (window.__du_obs) { try{ window.__du_obs.disconnect(); }catch(e){} }
 window.__du_signals = [];
 window.__du_t0 = Date.now();
-var SELS = [
-  '.ant-modal-content',
-  '.ant-drawer',
-  '.ant-popover',
-  '.ant-tooltip',
-  '.ant-dropdown',
-  '.ant-select-dropdown',
-  '.vtable-filter-menu',
-  '.vtable__bubble-tooltip-element',
-  '.vtable__menu-element',
-  '.ant-calendar-picker-container',
-  '.ant-calendar',
-  '.ant-notification-notice',
-  '.ant-message-notice'
-];
+// 选择器由 ui_contract.OBSERVABLE_OVERLAYS 注入；前端组件升级只改契约文件，
+// 不再维护观察器与页面模型两份容易漂移的列表。
+var SELS = __DU_OVERLAY_SELECTORS__;
+var CAPTURE_EXISTING = __DU_CAPTURE_EXISTING__;
 var scope = (window.top === window) ? 'top' : 'iframe';
+function queueSignal(sig){
+  if (!sig) return;
+  if (window.__du_signals.length >= 50) window.__du_signals.shift();
+  window.__du_signals.push(sig);
+}
 function cleanText(t){ return (t || '').replace(/\s+/g, ' ').trim(); }
 function rectOf(el){
   var r = el.getBoundingClientRect();
@@ -328,9 +313,17 @@ function vtableOverlayPayload(el){
     rect:rectOf(el)
   };
 }
+function hasClass(el, name){
+  return !!(el && el.classList && el.classList.contains(name));
+}
 function isCalendarNode(el){
-  var cls = el.className || ''; if (typeof cls !== 'string') cls = '';
-  return cls.indexOf('ant-calendar-picker-container') >= 0 || cls.indexOf('ant-calendar') >= 0;
+  return hasClass(el, 'ant-calendar-picker-container') || hasClass(el, 'ant-calendar');
+}
+function canonicalSignalElement(el){
+  if (hasClass(el, 'ant-calendar')) {
+    return el.closest('.ant-calendar-picker-container') || el;
+  }
+  return el;
 }
 function isVTableFilterNode(el){
   var cls = el.className || ''; if (typeof cls !== 'string') cls = '';
@@ -374,19 +367,21 @@ function classify(el){
             buttons: buttonTexts(el), hasClose: !!el.querySelector('.ant-drawer-close'),
             rect: rectOf(el)};
   }
-  if (cls.indexOf('ant-calendar-picker-container') >= 0 || cls.indexOf('ant-calendar') >= 0) {
-    var root = cls.indexOf('ant-calendar') >= 0 ? el : (el.querySelector('.ant-calendar') || el);
-    var isRange = (root.className || '').indexOf('ant-calendar-range') >= 0 ||
+  if (isCalendarNode(el)) {
+    var root = hasClass(el, 'ant-calendar') ? el : (el.querySelector('.ant-calendar') || el);
+    var isRange = hasClass(root, 'ant-calendar-range') ||
       !!root.querySelector('.ant-calendar-range-left,.ant-calendar-range-right');
     var ye = root.querySelector('.ant-calendar-year-select');
     var me = root.querySelector('.ant-calendar-month-select');
-    var cells = [].slice.call(root.querySelectorAll('td[title] .ant-calendar-date')).map(function(c){
+    var cellNodes = [].slice.call(root.querySelectorAll('td[title] .ant-calendar-date'));
+    var cells = cellNodes.map(function(c){
       var td = c.closest('td');
       return {title: td ? (td.getAttribute('title') || '') : '', text: cleanText(c.textContent)};
     }).filter(function(c){ return c.title || c.text; }).slice(0, 80);
     return {type:'calendar', scope:scope, mode:isRange ? 'range' : 'single',
             title: [cleanText(ye ? ye.textContent : ''), cleanText(me ? me.textContent : '')].filter(Boolean).join(''),
-            cellCount: cells.length, cells: cells, rect: rectOf(el)};
+            cellCount: cellNodes.length, cells: cells, cellsTruncated: cellNodes.length > cells.length,
+            rect: rectOf(el)};
   }
   if (cls.indexOf('ant-select-dropdown') >= 0) {
     return {type:'select-dropdown', scope:scope, options: optionTexts(el), rect: rectOf(el)};
@@ -448,37 +443,48 @@ function isActiveSignal(el){
 function signalFromNode(n){
   if (!n || n.nodeType !== 1) return null;
   for (var k=0;k<SELS.length;k++){
-    if (n.matches && n.matches(SELS[k]) && isActiveSignal(n)) return classify(n);
+    if (n.matches && n.matches(SELS[k])) {
+      var direct = canonicalSignalElement(n);
+      if (isActiveSignal(direct)) return classify(direct);
+    }
   }
   if (n.querySelector) {
     for (var k=0;k<SELS.length;k++){
       var e = n.querySelector(SELS[k]);
-      if (e && isActiveSignal(e)) return classify(e);
+      if (e) {
+        e = canonicalSignalElement(e);
+        if (isActiveSignal(e)) return classify(e);
+      }
     }
   }
   return null;
 }
-// 初始扫描：捕获 observer 安装前已存在的信号（如点击与观察之间已渲染完的 toast）
-for (var i=0;i<SELS.length;i++){
-  var els = document.querySelectorAll(SELS[i]);
-  for (var j=0;j<els.length;j++){
-    if (!isActiveSignal(els[j])) continue;
-    var s0 = classify(els[j]); if (s0) { s0.elapsedMs = 0; window.__du_signals.push(s0); break; }
+// 点击前安装时旧浮层是基线，不应抢占本次动作反馈；点击后便捷观察才读取现状。
+if (CAPTURE_EXISTING) {
+  var initialSeen = [];
+  for (var i=0;i<SELS.length;i++){
+    var els = document.querySelectorAll(SELS[i]);
+    for (var j=0;j<els.length;j++){
+      var candidate = canonicalSignalElement(els[j]);
+      if (initialSeen.indexOf(candidate) >= 0 || !isActiveSignal(candidate)) continue;
+      initialSeen.push(candidate);
+      var s0 = classify(candidate); if (s0) { s0.elapsedMs = 0; queueSignal(s0); }
+      break;
+    }
   }
-  if (window.__du_signals.length) break;
 }
 var obs = new MutationObserver(function(muts){
   for (var i=0;i<muts.length;i++){
     var sig = null;
     if (muts[i].type === 'attributes') {
       sig = signalFromNode(muts[i].target);
-      if (sig) { sig.elapsedMs = Date.now() - window.__du_t0; window.__du_signals.push(sig); continue; }
+      if (sig) { sig.elapsedMs = Date.now() - window.__du_t0; queueSignal(sig); continue; }
     }
     var added = muts[i].addedNodes;
     for (var j=0;j<added.length;j++){
       var n = added[j];
       sig = signalFromNode(n);
-      if (sig) { sig.elapsedMs = Date.now() - window.__du_t0; window.__du_signals.push(sig); }
+      if (sig) { sig.elapsedMs = Date.now() - window.__du_t0; queueSignal(sig); }
     }
   }
 });
@@ -491,12 +497,20 @@ obs.observe(document.body, {
 window.__du_obs = obs;
 return JSON.stringify({installed:true, scope:scope, initialCount: window.__du_signals.length});
 """
+_INSTALL_OBSERVER_JS = _INSTALL_OBSERVER_JS.replace(
+    "__DU_OVERLAY_SELECTORS__", json.dumps(_ALL_SELS, ensure_ascii=False)
+)
+
+def _observer_script(capture_existing: bool) -> str:
+    return _INSTALL_OBSERVER_JS.replace(
+        "__DU_CAPTURE_EXISTING__", "true" if capture_existing else "false"
+    )
 
 # 读取并清空信号缓冲（消费语义，避免重复回报）
 _POLL_SIGNALS_JS = r"""
 var s = window.__du_signals || [];
-var out = s.slice(0, 5);
-s.length = 0;
+var out = s.slice(0, 20);
+s.splice(0, out.length);
 return JSON.stringify(out);
 """
 
@@ -535,127 +549,154 @@ _session = {}
 _session_lock = threading.Lock()
 
 
-def _build_session(signals, listen_targets, timeout_for_net=None, native_wait: bool = False):
-    """安装 MutationObserver + 启动网络监听，写入 _session。返回 session dict。"""
+def _build_session(signals, listen_targets, timeout_for_net=None,
+                   native_wait: bool = False, capture_existing: bool = False):
+    """清理旧会话后安装观察器；点击前默认把现有浮层视为基线。"""
     if signals is None:
         signals = ["overlay", "notification", "message", "tab", "url"]
-    sigset = set(s.lower() for s in signals)
+    sigset = {str(signal).lower() for signal in signals}
 
-    dom_types = set()
     overlay_types = {
         "interactive", "confirm", "drawer", "popover", "tooltip",
         "dropdown", "select-dropdown", "vtable-filter-menu",
         "vtable-tooltip", "vtable-menu", "calendar",
     }
+    dom_types = set()
     if "overlay" in sigset:
-        dom_types |= overlay_types
+        dom_types.update(overlay_types)
     if "modal" in sigset:
-        dom_types |= {"interactive", "confirm"}
-    if "drawer" in sigset:
-        dom_types.add("drawer")
-    if "popover" in sigset:
-        dom_types.add("popover")
-    if "tooltip" in sigset:
-        dom_types.add("tooltip")
+        dom_types.update({"interactive", "confirm"})
+    for signal in overlay_types | {"notification", "message"}:
+        if signal in sigset:
+            dom_types.add(signal)
     if "dropdown" in sigset:
-        dom_types |= {"dropdown", "select-dropdown", "vtable-filter-menu"}
+        dom_types.update({"dropdown", "select-dropdown", "vtable-filter-menu"})
     if "vtable-filter" in sigset or "vtable-filter-menu" in sigset:
         dom_types.add("vtable-filter-menu")
-    if "calendar" in sigset:
-        dom_types.add("calendar")
-    if "notification" in sigset:
-        dom_types.add("notification")
-    if "message" in sigset:
-        dom_types.add("message")
+
+    with _session_lock:
+        old = dict(_session) if _session.get("active") else None
+        _session.clear()
+    if old:
+        _teardown_session(old)
+
     watch_tab = "tab" in sigset
     watch_url = "url" in sigset
     watch_network = "network" in sigset and bool(listen_targets)
-
     tab = browser_session.get_tab()
     fr = browser_session.get_active_frame(tab)
     base_tab_count = browser_session.tab_count()
     base_url = (fr.url if fr else tab.url) or ""
 
-    # 安装 MutationObserver（top + iframe）
-    _run_js_safe(tab, _INSTALL_OBSERVER_JS)
-    if fr is not None:
-        _run_js_safe(fr, _INSTALL_OBSERVER_JS)
+    observer_scopes = []
+    if dom_types:
+        install_script = _observer_script(capture_existing)
+        top_status = _parse_json(_run_js_safe(tab, install_script))
+        if isinstance(top_status, dict) and top_status.get("installed"):
+            observer_scopes.append("top")
+        if fr is not None:
+            frame_status = _parse_json(_run_js_safe(fr, install_script))
+            if isinstance(frame_status, dict) and frame_status.get("installed"):
+                observer_scopes.append("iframe")
 
-    # 网络监听。正式回放由 observe_wait() 直接调用 DrissionPage
-    # listen.wait()，避免 Python 轮询或后台线程竞争消费数据包。
     net_queue = queue.Queue()
+    net_thread = None
     if watch_network:
-        tg = listen_targets
-        if isinstance(tg, str):
-            tg = [t.strip() for t in tg.split(",") if t.strip()]
+        targets = listen_targets
+        if isinstance(targets, str):
+            targets = [item.strip() for item in targets.split(",") if item.strip()]
         try:
-            # 观察器默认看普通 HTTP GET+POST，避免继承 WS-only 等上一次状态。
-            network_record.start_http_listener(tab.listen, tg or True, None)
-        except Exception as e:
-            logger.debug("listen start 失败: %s", e)
+            try:
+                tab.listen.stop()
+            except Exception:
+                pass
+            network_record.start_http_listener(tab.listen, targets or True, None)
+        except Exception as exc:
+            logger.debug("listen start 失败: %s", exc)
             watch_network = False
 
-        if not native_wait:
+        if watch_network and not native_wait:
             net_timeout = timeout_for_net if timeout_for_net is not None else 120
+
             def _net_waiter():
                 try:
-                    pkt = tab.listen.wait(count=1, timeout=net_timeout)
-                    if pkt:
-                        net_queue.put(pkt)
-                except Exception as e:
-                    logger.debug("net waiter 失败: %s", e)
+                    try:
+                        packet = tab.listen.wait(
+                            count=1, timeout=net_timeout, raise_err=False
+                        )
+                    except TypeError:
+                        packet = tab.listen.wait(count=1, timeout=net_timeout)
+                    if packet:
+                        net_queue.put(packet)
+                except Exception as exc:
+                    logger.debug("net waiter 失败: %s", exc)
 
-            threading.Thread(target=_net_waiter, daemon=True).start()
+            net_thread = threading.Thread(target=_net_waiter, daemon=True)
+            net_thread.start()
 
-    new_sess = {
+    new_session = {
         "active": True,
-        "tab": tab, "fr": fr, "sigset": sigset, "dom_types": dom_types,
-        "watch_tab": watch_tab, "watch_url": watch_url, "watch_network": watch_network,
+        "tab": tab,
+        "fr": fr,
+        "sigset": sigset,
+        "dom_types": dom_types,
+        "observer_scopes": observer_scopes,
+        "pending_dom": deque(),
+        "watch_tab": watch_tab,
+        "watch_url": watch_url,
+        "watch_network": watch_network,
         "native_wait": bool(native_wait),
-        "base_url": base_url, "base_tab_count": base_tab_count,
-        "net_queue": net_queue, "start": time.time(),
+        "base_url": base_url,
+        "base_tab_count": base_tab_count,
+        "net_queue": net_queue,
+        "net_thread": net_thread,
+        "start": time.monotonic(),
     }
     with _session_lock:
-        old = dict(_session) if _session.get("active") else None
-        _session.clear()
-        _session.update(new_sess)
-    if old:
-        _teardown_session(old)  # 清理上一轮残留
-    return new_sess
+        _session.update(new_session)
+    return new_session
 
 
 def _teardown_session(sess):
-    """清理 observer + listener。"""
-    _run_js_safe(sess["tab"], _CLEANUP_OBSERVER_JS)
-    if sess.get("fr") is not None:
-        _run_js_safe(sess["fr"], _CLEANUP_OBSERVER_JS)
+    """清理 observer、listener，并短暂等待网络消费线程退出。"""
+    if sess.get("dom_types"):
+        _run_js_safe(sess.get("tab"), _CLEANUP_OBSERVER_JS)
+        if sess.get("fr") is not None:
+            _run_js_safe(sess["fr"], _CLEANUP_OBSERVER_JS)
     if sess.get("watch_network"):
         try:
             sess["tab"].listen.stop()
         except Exception:
             pass
+        thread = sess.get("net_thread")
+        if thread is not None and thread is not threading.current_thread() and thread.is_alive():
+            thread.join(timeout=0.5)
 
 
 def _poll_once(sess, now):
     """单次轮询。命中返回信号 dict，未命中返回 None。"""
-    # ① DOM 信号（MutationObserver 缓冲，即时）
+    # ① DOM 信号（MutationObserver 有界缓冲，批量读取后逐个消费）
     if sess["dom_types"]:
-        for target in (sess["fr"], sess["tab"]):
-            if target is None:
-                continue
-            sigs = _parse_json(_run_js_safe(target, _POLL_SIGNALS_JS))
-            if not sigs:
-                continue
-            for sig in sigs:
-                if not isinstance(sig, dict):
+        pending = sess["pending_dom"]
+        if not pending:
+            for target in (sess["fr"], sess["tab"]):
+                if target is None:
                     continue
-                if sig.get("type") in sess["dom_types"]:
-                    return {
-                        "type": sig["type"],
-                        "scope": sig.get("scope"),
-                        "payload": sig,
-                        "elapsedMs": int(sig.get("elapsedMs", 0) or (now - sess["start"]) * 1000),
-                    }
+                signals = _parse_json(_run_js_safe(target, _POLL_SIGNALS_JS)) or []
+                pending.extend(
+                    signal for signal in signals
+                    if isinstance(signal, dict) and signal.get("type") in sess["dom_types"]
+                )
+        if pending:
+            signal = pending.popleft()
+            return {
+                "type": signal["type"],
+                "scope": signal.get("scope"),
+                "payload": signal,
+                "elapsedMs": int(
+                    signal.get("elapsedMs", 0) or (now - sess["start"]) * 1000
+                ),
+            }
     # ② Tab 变化
     if sess["watch_tab"]:
         cur = browser_session.tab_count()
@@ -685,7 +726,7 @@ def _poll_once(sess, now):
                 "url": packet.get("url", ""),
                 "method": packet.get("method", ""),
                 "api_target": packet.get("api_target", ""),
-                "post_data": (packet.get("request") or {}).get("post_data"),
+                "post_data": packet.get("post_data"),
                 "status": packet.get("status"),
                 "packet": packet,
                 "elapsedMs": int((now - sess["start"]) * 1000),
@@ -750,37 +791,44 @@ def _attach_snapshot(result: dict, include_snapshot: bool, include_table_data: b
     return result
 
 
-def observe_start(signals=None, listen_targets=None, native_wait: bool = False) -> dict:
-    """两段式观察器·启动：**点击前**调用，安装 MutationObserver + 网络监听，立即返回。
-    observer 在点击前就已监听，消除「点击→观察」调用间隙（agent 思考时间可能 > toast 寿命），
-    可靠捕获短寿命 toast（如保存成功 ~3s）。
+def observe_start(signals=None, listen_targets=None, native_wait: bool = False,
+                  capture_existing: bool = False) -> dict:
+    """两段式观察器·启动：点击前安装 MutationObserver + 网络监听。
 
-    必须配对调用 observe_wait() 读取信号并清理（否则 observer 泄漏）。
-
-    Args:
-        signals: 监听信号类型列表，默认 ['overlay','notification','message','tab','url']。
-                 可选：'overlay'/'modal'/'drawer'/'dropdown'/'vtable-filter-menu'/'vtable-tooltip'/'vtable-menu'/'calendar'/
-                 'notification'/'message'/'tab'/'url'/'network'。
-        listen_targets: 网络监听 URL 特征（逗号分隔）；仅 signals 含 'network' 时生效。
-
-    Returns:
-        {ok, session:'active', watched:[...], base_url, base_tab_count}
+    默认忽略安装前已存在的 modal/dropdown 等基线组件，避免在弹窗内继续操作时把旧
+    modal 误报为本次动作结果。只有点击已经发生的 ``observe_post_click`` 会显式设置
+    ``capture_existing=True``。
     """
-    sess = _build_session(signals, listen_targets, native_wait=native_wait)
-    return {"ok": True, "session": "active", "watched": sorted(sess["sigset"]),
-            "base_url": sess["base_url"], "base_tab_count": sess["base_tab_count"]}
+    sess = _build_session(
+        signals, listen_targets, native_wait=native_wait,
+        capture_existing=capture_existing,
+    )
+    return {
+        "ok": True,
+        "session": "active",
+        "watched": sorted(sess["sigset"]),
+        "base_url": sess["base_url"],
+        "base_tab_count": sess["base_tab_count"],
+        "observer_scopes": sess["observer_scopes"],
+        "network_active": sess["watch_network"],
+    }
 
 
 def _observe_wait_native(sess: dict, timeout: float, include_snapshot: bool,
                          detail: str) -> dict:
     """Wait through DrissionPage primitives only for formal recipe execution."""
     try:
-        signal = _poll_once(sess, time.time())
+        signal = _poll_once(sess, time.monotonic())
         if not signal:
             if sess.get("watch_network"):
-                packet = sess["tab"].listen.wait(
-                    count=1, timeout=timeout, fit_count=False, raise_err=False,
-                )
+                try:
+                    packet = sess["tab"].listen.wait(
+                        count=1, timeout=timeout, fit_count=False, raise_err=False,
+                    )
+                except TypeError:
+                    packet = sess["tab"].listen.wait(
+                        count=1, timeout=timeout, fit_count=False,
+                    )
                 if packet:
                     sess["net_queue"].put(packet)
             elif sess.get("dom_types"):
@@ -790,9 +838,11 @@ def _observe_wait_native(sess: dict, timeout: float, include_snapshot: bool,
                 if target is not None:
                     target.wait.ele_displayed(selector, timeout=timeout, raise_err=False)
             elif sess.get("watch_url") and sess.get("fr") is not None:
-                sess["fr"].wait.url_change(sess.get("base_url", ""), timeout=timeout, raise_err=False)
+                sess["fr"].wait.url_change(
+                    sess.get("base_url", ""), exclude=True, timeout=timeout, raise_err=False
+                )
 
-            signal = _poll_once(sess, time.time())
+            signal = _poll_once(sess, time.monotonic())
 
         if signal:
             events, summaries = _compact_events([signal])
@@ -802,7 +852,7 @@ def _observe_wait_native(sess: dict, timeout: float, include_snapshot: bool,
         else:
             result = {
                 "type": "none", "events": [],
-                "elapsedMs": int((time.time() - sess["start"]) * 1000),
+                "elapsedMs": int((time.monotonic() - sess["start"]) * 1000),
                 "watched": sorted(sess["sigset"]),
             }
         return _attach_snapshot(result, include_snapshot, detail=detail)
@@ -843,24 +893,34 @@ def observe_wait(timeout: float = 8.0, poll_interval: float = 0.12,
     if use_native_wait:
         return _observe_wait_native(sess, timeout, include_snapshot, detail)
 
-    deadline = time.time() + timeout
+    timeout = max(float(timeout or 0), 0.0)
+    poll_interval = max(float(poll_interval or 0), 0.01)
+    deadline = time.monotonic() + timeout
     collect_deadline = None
     events = []
+    first_pass = True
     try:
-        while time.time() < deadline:
-            sig = _poll_once(sess, time.time())
-            if sig:
-                events.append(sig)
+        while first_pass or time.monotonic() < deadline:
+            first_pass = False
+            now = time.monotonic()
+            signal = _poll_once(sess, now)
+            if signal:
+                events.append(signal)
                 if collect_deadline is None:
-                    collect_deadline = time.time() + _COLLECT_WINDOW
-            if collect_deadline and time.time() >= collect_deadline:
+                    collect_deadline = now + _COLLECT_WINDOW
+            now = time.monotonic()
+            if collect_deadline is not None and now >= collect_deadline:
                 break
-            time.sleep(poll_interval)
+            wait_until = min(deadline, collect_deadline or deadline)
+            remaining = wait_until - now
+            if remaining <= 0:
+                break
+            time.sleep(min(poll_interval, remaining))
 
         if not events:
             result = {"type": "none",
                       "events": [],
-                      "elapsedMs": int((time.time() - sess["start"]) * 1000),
+                      "elapsedMs": int((time.monotonic() - sess["start"]) * 1000),
                       "watched": sorted(sess["sigset"])}
         else:
             events, summaries = _compact_events(events)
@@ -895,7 +955,7 @@ def observe_post_click(timeout: float = 10.0, signals=None, listen_targets=None,
     Returns:
         同 observe_wait：{type, payload?, events, event_count, elapsedMs, snapshot_after, ...}
     """
-    observe_start(signals=signals, listen_targets=listen_targets)
+    observe_start(signals=signals, listen_targets=listen_targets, capture_existing=True)
     return observe_wait(timeout=timeout, poll_interval=poll_interval,
                         include_snapshot=include_snapshot, detail=detail)
 
@@ -903,50 +963,57 @@ def observe_post_click(timeout: float = 10.0, signals=None, listen_targets=None,
 # ==================== 原子检测工具（单点排查用） ====================
 
 def _detect_toast(selector: str, content_selector: str, timeout: float, toast_type: str) -> dict:
-    """原子 toast 检测通用实现：iframe 优先，回退 top。ele(timeout) 事件驱动等待。"""
+    """用 DrissionPage 可见元素 waiter 在总预算内检测 iframe 与顶层 toast。"""
+    timeout = max(float(timeout or 0), 0.0)
+    started = time.monotonic()
+    deadline = started + timeout
     tab = browser_session.get_tab_ro()
-    fr = browser_session.get_active_frame_ro(tab)
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        for target, scope in ((fr, "iframe"), (tab, "top")):
+    fr = browser_session.get_active_frame_ro(tab, timeout=min(timeout, 0.5))
+    first_pass = True
+    while first_pass or time.monotonic() < deadline:
+        first_pass = False
+        scopes = ((fr, "iframe"), (tab, "top"))
+        for target, scope in scopes:
             if target is None:
                 continue
+            remaining = max(deadline - time.monotonic(), 0.0)
             try:
-                n = target.ele('c:%s' % selector, timeout=0.15)
+                notice = target.wait.ele_displayed(
+                    'c:%s' % selector,
+                    timeout=min(remaining, 0.15),
+                    raise_err=False,
+                )
             except Exception:
-                n = None
-            if not n:
+                notice = None
+            if not notice:
                 continue
-            try:
-                if not n.states.is_displayed:
-                    continue
-            except Exception:
-                pass
             text = ""
             if content_selector:
                 try:
-                    ce = n.ele('c:%s' % content_selector, timeout=0.1)
-                    if ce:
-                        text = (ce.text or "").strip()
+                    content = notice.ele('c:%s' % content_selector, timeout=0.1)
+                    if content:
+                        text = (content.text or "").strip()
                 except Exception:
                     pass
             kind = ""
             if toast_type == "message":
                 try:
-                    cc = n.ele('c:[class*="ant-message-"]', timeout=0.05)
-                    if cc:
+                    content = notice.ele('c:[class*="ant-message-"]', timeout=0.05)
+                    if content:
                         import re
-                        m = re.search(r"ant-message-(success|info|warning|error|loading)", cc.attr("class") or "")
-                        if m:
-                            kind = m.group(1)
+                        match = re.search(
+                            r"ant-message-(success|info|warning|error|loading)",
+                            content.attr("class") or "",
+                        )
+                        if match:
+                            kind = match.group(1)
                 except Exception:
                     pass
-            out = {"type": toast_type, "scope": scope, "message": text[:200]}
+            result = {"type": toast_type, "scope": scope, "message": text[:200]}
             if kind:
-                out["kind"] = kind
-            return out
-        time.sleep(0.08)
-    return {"type": "none", "waited": round(timeout, 2)}
+                result["kind"] = kind
+            return result
+    return {"type": "none", "waited": round(time.monotonic() - started, 2)}
 
 
 def detect_notification(timeout: float = 2.0) -> dict:
@@ -962,25 +1029,36 @@ def detect_message(timeout: float = 2.0) -> dict:
 
 
 def detect_url_change(old_url: str, timeout: float = 5.0) -> dict:
-    """原子工具：等待活动 iframe URL 变化。用 DrissionPage wait.url_change 事件驱动。
-    点击后判断是否跳转（如新增保存后 saleOrderCreate → saleOrderDetail）。"""
+    """等待活动 iframe URL 离开 old_url；超时必须返回 none。"""
     tab = browser_session.get_tab_ro()
-    fr = browser_session.get_active_frame_ro(tab)
+    fr = browser_session.get_active_frame_ro(tab, timeout=min(max(timeout, 0), 0.5))
     if fr is None:
         return {"type": "none", "reason": "无活动 iframe"}
     try:
-        fr.wait.url_change(old_url, timeout=timeout)
-        return {"type": "url_change", "url": getattr(fr, "url", "") or "", "old_url": old_url}
+        changed = fr.wait.url_change(
+            old_url,
+            exclude=True,
+            timeout=timeout,
+            raise_err=False,
+        )
+        if changed:
+            return {
+                "type": "url_change",
+                "url": getattr(fr, "url", "") or "",
+                "old_url": old_url,
+            }
     except Exception:
-        return {"type": "none", "waited": round(timeout, 2)}
+        pass
+    return {"type": "none", "waited": round(timeout, 2)}
 
 
 def detect_tab_change(old_count: int, timeout: float = 5.0) -> dict:
-    """原子工具：等待浏览器 tab 数量变化（新 tab 打开/关闭）。短轮询 tab_count()。"""
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        cur = browser_session.tab_count()
-        if cur != old_count:
-            return {"type": "tab_change", "tab_count": cur, "old_count": old_count}
-        time.sleep(0.15)
+    """等待浏览器标签数量变化；用 Tab waiter 限速而非 Python 固定 sleep。"""
+    deadline = time.monotonic() + max(float(timeout or 0), 0.0)
+    tab = browser_session.get_tab_ro()
+    while time.monotonic() < deadline:
+        current = browser_session.tab_count()
+        if current != old_count:
+            return {"type": "tab_change", "tab_count": current, "old_count": old_count}
+        tab.wait(min(0.15, max(deadline - time.monotonic(), 0.0)))
     return {"type": "none", "waited": round(timeout, 2)}

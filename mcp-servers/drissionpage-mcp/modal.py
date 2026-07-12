@@ -6,35 +6,14 @@
 """
 import json
 import logging
-import time
+from time import monotonic
 
 import browser_session
+import ui_contract
 
 logger = logging.getLogger("drissionpage-mcp")
 
 
-_VISIBLE_ELEMENT_JS = r"""
-function isVisible(el){
-  if (!el || !el.isConnected) return false;
-  var cur = el;
-  while (cur && cur.nodeType === 1) {
-    var s = window.getComputedStyle(cur);
-    if (s.display === 'none' || s.visibility === 'hidden' || s.visibility === 'collapse') {
-      return false;
-    }
-    cur = cur.parentElement;
-  }
-  var r = el.getBoundingClientRect();
-  return r.width > 0 && r.height > 0;
-}
-"""
-
-
-_VISIBLE_MODAL_STATE_JS = _VISIBLE_ELEMENT_JS + r"""
-var m = this;
-var w = m ? (m.closest('.ant-modal-wrap') || document.querySelector('.ant-modal-wrap')) : null;
-return JSON.stringify({visible: !!(m && isVisible(m) && (!w || isVisible(w)))});
-"""
 
 
 def _parse_json(res):
@@ -48,91 +27,120 @@ def _parse_json(res):
     return res
 
 
-def _modal_visibility(modal_ele):
-    """Return False for hidden/closed modal residue, True for visible, None if unknown."""
-    try:
-        info = _parse_json(modal_ele.run_js(_VISIBLE_MODAL_STATE_JS))
-        if isinstance(info, dict) and "visible" in info:
-            return bool(info["visible"])
-    except Exception:
-        pass
-    try:
-        return bool(modal_ele.states.is_displayed)
-    except Exception:
-        return False
 
 
 def _detect_in_target(target):
-    """用 JS 检测 target 自身文档内的弹窗（document.querySelector 不递归 iframe，scope 精确）。
+    """检测当前 document 内最高层可见反馈，不递归 iframe。
 
-    修复两个历史 bug：
-    ① tab.ele('c:.ant-modal-content') 会递归进 iframe 找到残留隐藏 modal，导致跨 frame 误判；
-    ② 找到隐藏 modal 后早退 return none，跳过 notification/message 检查（保存成功 toast 被漏抓的根因）。
-
-    现：隐藏/残留 modal 不早退，落入 notification/message 检查；可见性用 getBoundingClientRect 判定。
+    Ant Design 3 会保留隐藏 modal 节点，且同一时刻可能叠加业务弹窗与确认框；因此按
+    z-index + DOM 顺序选择最上层组件。所有根选择器来自 ``ui_contract``，前端升级时
+    不必再修改本函数的业务逻辑。
     """
+    script = r"""
+var MODAL_CONTENT = __MODAL_CONTENT__;
+var MODAL_WRAP = __MODAL_WRAP__;
+var CONFIRM_BODY = __CONFIRM_BODY__;
+var NOTIFICATION = __NOTIFICATION__;
+var MESSAGE = __MESSAGE__;
+function clean(value){ return (value || '').replace(/\s+/g, ' ').trim(); }
+function isVis(el){
+  if (!el || !el.isConnected) return false;
+  var cur = el;
+  while (cur && cur.nodeType === 1) {
+    var style = window.getComputedStyle(cur);
+    if (style.display === 'none' || style.visibility === 'hidden' ||
+        style.visibility === 'collapse' || style.opacity === '0') return false;
+    cur = cur.parentElement;
+  }
+  var rect = el.getBoundingClientRect();
+  return rect.width > 0 && rect.height > 0;
+}
+function zIndex(el){
+  var current = el;
+  var highest = 0;
+  while (current && current.nodeType === 1) {
+    var parsed = parseInt(window.getComputedStyle(current).zIndex, 10);
+    if (!isNaN(parsed)) highest = Math.max(highest, parsed);
+    current = current.parentElement;
+  }
+  return highest;
+}
+function topmost(selector, accept){
+  var nodes = [].slice.call(document.querySelectorAll(selector)).filter(function(el){
+    return isVis(el) && (!accept || accept(el));
+  });
+  nodes.sort(function(left, right){
+    var delta = zIndex(left) - zIndex(right);
+    if (delta) return delta;
+    var pos = left.compareDocumentPosition(right);
+    return (pos & Node.DOCUMENT_POSITION_FOLLOWING) ? -1 : 1;
+  });
+  return nodes.length ? nodes[nodes.length - 1] : null;
+}
+var modal = topmost(MODAL_CONTENT, function(content){
+  var wrap = content.closest(MODAL_WRAP);
+  return !wrap || isVis(wrap);
+});
+if (modal) {
+  var isConfirm = !!modal.querySelector(CONFIRM_BODY);
+  var title = modal.querySelector('.ant-modal-title');
+  var body = modal.querySelector('.ant-modal-body');
+  var buttons = [].slice.call(modal.querySelectorAll('.ant-btn'))
+    .filter(isVis).map(function(button){ return clean(button.textContent); }).filter(Boolean);
+  return JSON.stringify({
+    type: isConfirm ? 'confirm' : 'interactive',
+    title: title ? clean(title.textContent) : '',
+    content: body ? clean(body.textContent).slice(0, 200) : '',
+    buttons: buttons,
+    hasClose: !!modal.querySelector('.ant-modal-close')
+  });
+}
+var notice = topmost(NOTIFICATION);
+if (notice) {
+  var noticeTitle = notice.querySelector('.ant-notification-notice-message');
+  var noticeDescription = notice.querySelector('.ant-notification-notice-description');
+  return JSON.stringify({
+    type:'notification',
+    message: clean((noticeTitle ? noticeTitle.textContent : '') ||
+      (noticeDescription ? noticeDescription.textContent : ''))
+  });
+}
+var message = topmost(MESSAGE);
+if (message) {
+  var messageContent = message.querySelector('.ant-message-notice-content');
+  return JSON.stringify({
+    type:'message',
+    message: messageContent ? clean(messageContent.textContent).slice(0, 200) : ''
+  });
+}
+return JSON.stringify({type:'none'});
+"""
+    replacements = {
+        "__MODAL_CONTENT__": ui_contract.MODAL_CONTENT,
+        "__MODAL_WRAP__": ui_contract.MODAL_WRAP,
+        "__CONFIRM_BODY__": ui_contract.CONFIRM_BODY,
+        "__NOTIFICATION__": ui_contract.NOTIFICATION,
+        "__MESSAGE__": ui_contract.MESSAGE,
+    }
+    for token, selector in replacements.items():
+        script = script.replace(token, json.dumps(selector))
     try:
-        res = target.run_js(r"""
-        function isVis(el){
-            if (!el || !el.isConnected) return false;
-            var cur = el;
-            while (cur && cur.nodeType === 1) {
-                var s = window.getComputedStyle(cur);
-                if (s.display === 'none' || s.visibility === 'hidden' || s.visibility === 'collapse') {
-                    return false;
-                }
-                cur = cur.parentElement;
-            }
-            var r = el.getBoundingClientRect();
-            return r.width > 0 && r.height > 0;
-        }
-        var modals = document.querySelectorAll('.ant-modal-content');
-        for (var i = 0; i < modals.length; i++) {
-            var m = modals[i];
-            var w = m.closest('.ant-modal-wrap') || document.querySelector('.ant-modal-wrap');
-            var wrapHidden = w && !isVis(w);
-            if (!wrapHidden && isVis(m)) {
-                var isConfirm = !!m.querySelector('.ant-confirm-body');
-                var title = m.querySelector('.ant-modal-title');
-                var body = m.querySelector('.ant-modal-body');
-                var btns = [].slice.call(m.querySelectorAll('.ant-btn')).map(function(b){return (b.textContent||'').trim();}).filter(Boolean);
-                return JSON.stringify({type: isConfirm ? 'confirm' : 'interactive',
-                    title: title ? (title.textContent||'').trim() : '',
-                    content: body ? (body.textContent||'').trim().slice(0,200) : '',
-                    buttons: btns, hasClose: !!m.querySelector('.ant-modal-close')});
-            }
-        }
-        var n = document.querySelector('.ant-notification-notice');
-        if (n && isVis(n)) {
-            var m1 = n.querySelector('.ant-notification-notice-message');
-            var d1 = n.querySelector('.ant-notification-notice-description');
-            return JSON.stringify({type:'notification',
-                message: ((m1 ? m1.textContent : '') || (d1 ? d1.textContent : '')).trim()});
-        }
-        var g = document.querySelector('.ant-message-notice');
-        if (g && isVis(g)) {
-            var c = g.querySelector('.ant-message-notice-content');
-            return JSON.stringify({type:'message', message: c ? (c.textContent||'').trim().slice(0,200) : ''});
-        }
-        return JSON.stringify({type:'none'});
-        """)
-        d = _parse_json(res)
-        return d if isinstance(d, dict) else {"type": "none"}
+        parsed = _parse_json(target.run_js(script))
+        return parsed if isinstance(parsed, dict) else {"type": "none"}
     except Exception:
         return {"type": "none"}
 
 
 def detect_modal(timeout: float = 0):
-    """按优先级检测弹窗：①活动 iframe 内业务弹窗/消息 ②top 层弹窗/通知/消息 ③none。
-    使用 DrissionPage 原生 ele() 检测，不依赖 JS 注入。
-
-    顶层覆盖：confirm（→system_confirm，向后兼容）/ interactive / notification / message。
-    修复历史盲区：顶层 .ant-message-notice（如「保存订单成功」toast，寿命~3s）此前被丢弃。
-    """
-    deadline = time.time() + timeout if timeout > 0 else None
+    """按优先级检测活动 iframe 与顶层浮层，并用 DrissionPage 被动等待限速。"""
+    timeout = max(float(timeout or 0), 0.0)
+    started = monotonic()
+    deadline = started + timeout
     while True:
         tab = browser_session.get_tab_ro()
-        fr = browser_session.get_active_frame_ro(tab)
+        fr = browser_session.get_active_frame_ro(
+            tab, timeout=min(max(deadline - monotonic(), 0.0), 0.5)
+        )
         if fr is not None:
             info = _detect_in_target(fr)
             if info.get("type") != "none":
@@ -140,173 +148,110 @@ def detect_modal(timeout: float = 0):
                 return info
         top = _detect_in_target(tab)
         if top.get("type") != "none":
-            # 顶层系统确认弹窗保留 system_confirm 类型名（向后兼容旧契约）
             if top.get("type") == "confirm":
                 top["type"] = "system_confirm"
             top["scope"] = "top"
             return top
-        if deadline is None or time.time() >= deadline:
-            waited = round(time.time() - (deadline - timeout), 2) if deadline else timeout
-            return {"type": "none", "waited": waited}
-        time.sleep(0.15)
+
+        remaining = deadline - monotonic()
+        if remaining <= 0:
+            return {"type": "none", "waited": round(monotonic() - started, 2)}
+        # 用页面 waiter 代替 Python 固定 sleep；任一 iframe 浮层出现可提前唤醒。
+        wait_target = fr if fr is not None else tab
+        try:
+            wait_target.wait.ele_displayed(
+                "c:" + ",".join((
+                    ui_contract.MODAL_CONTENT,
+                    ui_contract.NOTIFICATION,
+                    ui_contract.MESSAGE,
+                )),
+                timeout=min(remaining, 0.15),
+                raise_err=False,
+            )
+        except Exception:
+            pass
 
 
 def mouse_trail(on: bool = True):
-    """开启/关闭鼠标轨迹可视化。使用 tabpanel → iframe 方式确保 iframe 层级生效。"""
+    """通过 4.2 set.show_trail 同步设置顶层 Tab 与活动业务 iframe。"""
     tab = browser_session.get_tab()
+    applied = []
+    errors = []
     try:
         tab.set.show_trail(on)
-    except Exception as e:
-        logger.debug("tab.show_trail 失败: %s", e)
-    # 用 tabpanel 方式获取 iframe（与 tools/main.py 一致）
-    try:
-        is_displayed = tab.wait.eles_loaded(
-            "t:div@@role=tabpanel@@aria-hidden=false", timeout=3, raise_err=False
-        )
-        if is_displayed:
-            active_tabpanel = tab.ele("t:div@@role=tabpanel@@aria-hidden=false", timeout=2)
-            if active_tabpanel:
-                iframe = active_tabpanel.get_frame("t:iframe", timeout=2)
-                if iframe is not None:
-                    iframe.set.show_trail(on)
-    except Exception as e:
-        logger.debug("iframe mouse_trail 失败: %s", e)
-    return {"ok": True, "on": on}
+        applied.append("top")
+    except Exception as exc:
+        errors.append("top: %s" % exc)
+    frame = browser_session.get_active_frame_ro(tab, timeout=0.5)
+    if frame is None:
+        frame = browser_session.get_active_frame(tab)
+    if frame is not None:
+        try:
+            frame.set.show_trail(on)
+            applied.append("iframe")
+        except Exception as exc:
+            errors.append("iframe: %s" % exc)
+    return {"ok": not errors, "on": on, "applied": applied, "errors": errors}
 
 
-_CLEAR_TRANSIENT_JS = _VISIBLE_ELEMENT_JS + r"""
-function isVis(el){
-  return isVisible(el);
-}
-var closed = [];
-document.querySelectorAll('.ant-notification-notice').forEach(function(n){
-  if (!isVis(n)) return;
-  var m = n.querySelector('.ant-notification-notice-message');
-  var d = n.querySelector('.ant-notification-notice-description');
-  var msg = ((m ? m.textContent : '') || (d ? d.textContent : '')).trim();
-  var btn = n.querySelector('.ant-notification-notice-close');
-  try { if (btn) btn.click(); } catch(e) {}
-  if (n.parentNode) n.parentNode.removeChild(n);
-  closed.push({type: 'notification', message: msg});
-});
-document.querySelectorAll('.ant-message-notice').forEach(function(m){
-  if (!isVis(m)) return;
-  var c = m.querySelector('.ant-message-notice-content');
-  var msg = c ? (c.textContent || '').trim() : '';
-  if (m.parentNode) m.parentNode.removeChild(m);
-  closed.push({type: 'message', message: msg});
-});
-return JSON.stringify(closed);
-"""
-
-
-_CLEAR_TRANSIENT_ALL_JS = r"""
-var closed = [];
-function clearDoc(doc, scope){
-  if (!doc) return;
-  var win = doc.defaultView || window;
-  function isVis(el){
-    if (!el || !el.isConnected) return false;
-    var cur = el;
-    while (cur && cur.nodeType === 1) {
-      var s = win.getComputedStyle(cur);
-      if (s.display === 'none' || s.visibility === 'hidden' || s.visibility === 'collapse') {
-        return false;
-      }
-      cur = cur.parentElement;
-    }
-    var r = el.getBoundingClientRect();
-    return r.width > 0 && r.height > 0;
-  }
-  doc.querySelectorAll('.ant-notification-notice').forEach(function(n){
-    if (!isVis(n)) return;
-    var m = n.querySelector('.ant-notification-notice-message');
-    var d = n.querySelector('.ant-notification-notice-description');
-    var msg = ((m ? m.textContent : '') || (d ? d.textContent : '')).trim();
-    var btn = n.querySelector('.ant-notification-notice-close');
-    try { if (btn) btn.click(); } catch(e) {}
-    if (n.parentNode) n.parentNode.removeChild(n);
-    closed.push({scope: scope, type: 'notification', message: msg});
-  });
-  doc.querySelectorAll('.ant-message-notice').forEach(function(m){
-    if (!isVis(m)) return;
-    var c = m.querySelector('.ant-message-notice-content');
-    var msg = c ? (c.textContent || '').trim() : '';
-    if (m.parentNode) m.parentNode.removeChild(m);
-    closed.push({scope: scope, type: 'message', message: msg});
-  });
-}
-clearDoc(document, 'top');
-try {
-  var f = document.querySelector('[role="tabpanel"][aria-hidden="false"] iframe');
-  if (f && (f.contentDocument || (f.contentWindow && f.contentWindow.document))) {
-    clearDoc(f.contentDocument || f.contentWindow.document, 'iframe');
-  }
-} catch(e) {
-  closed.push({scope: 'iframe', type: 'error', message: String(e && e.message || e)});
-}
-return JSON.stringify(closed);
-"""
 
 
 def _target_contexts(tab):
+    frame = browser_session.get_active_frame_ro(tab, timeout=0.5)
+    if frame is None:
+        try:
+            frame = browser_session.get_active_frame(tab)
+        except Exception:
+            frame = None
     contexts = []
-    try:
-        fr = browser_session.get_active_frame(tab)
-    except Exception:
-        fr = None
-    if fr is not None:
-        contexts.append(("iframe", fr))
+    if frame is not None:
+        contexts.append(("iframe", frame))
     contexts.append(("top", tab))
     return contexts
 
 
-def _normalize_js_list(res):
-    if not res:
-        return []
-    if isinstance(res, str):
-        try:
-            res = json.loads(res)
-        except Exception:
-            return []
-    return res if isinstance(res, list) else []
+
+
+def _document_root(target):
+    """顶层 Tab 从 body 限定搜索，避免 DrissionPage 递归进入 iframe。"""
+    if getattr(target, "_type", None) == "ChromiumFrame":
+        return target
+    try:
+        body = target.ele("t:body", timeout=0.2)
+        return body or target
+    except Exception:
+        return target
 
 
 def clear_transient_overlays(tab=None):
-    """Close dismissible transient overlays through DrissionPage element APIs.
-
-    This intentionally does not close business modals/confirm dialogs. A message
-    without a visible close control is left to its normal auto-dismiss behavior;
-    removing it with JavaScript would make a formal replay non-native.
-    """
+    """仅通过可见关闭控件清理 notification/message，不删除业务 DOM。"""
     tab = tab or browser_session.get_tab()
     errors = []
     closed = []
     for scope, target in _target_contexts(tab):
+        root = _document_root(target)
         try:
-            notices = target.eles('c:.ant-notification-notice', timeout=0.2)
-            for notice in notices:
+            for notice in root.eles("c:" + ui_contract.NOTIFICATION, timeout=0.2) or []:
                 if not notice.states.is_displayed:
                     continue
-                text = (notice.text or "").strip()
                 close = notice.ele('c:.ant-notification-notice-close', timeout=0.2)
                 if not close:
                     continue
-                close.wait.clickable(timeout=1, wait_stop=True, raise_err=False)
-                close.click(wait_stop=True)
+                text = (notice.text or "").strip()
+                close.click(by_js=False, timeout=1, wait_stop=False)
                 target.wait.ele_hidden(notice, timeout=1, raise_err=False)
                 closed.append({"scope": scope, "type": "notification", "message": text})
 
-            messages = target.eles('c:.ant-message-notice', timeout=0.2)
-            for message in messages:
+            for message in root.eles("c:" + ui_contract.MESSAGE, timeout=0.2) or []:
                 if not message.states.is_displayed:
                     continue
-                close = message.ele('c:.ant-message-close,.ant-message-notice-close', timeout=0.2)
+                close = message.ele(
+                    'c:.ant-message-close,.ant-message-notice-close', timeout=0.2
+                )
                 if not close:
                     continue
                 text = (message.text or "").strip()
-                close.wait.clickable(timeout=1, wait_stop=True, raise_err=False)
-                close.click(wait_stop=True)
+                close.click(by_js=False, timeout=1, wait_stop=False)
                 target.wait.ele_hidden(message, timeout=1, raise_err=False)
                 closed.append({"scope": scope, "type": "message", "message": text})
         except Exception as exc:
@@ -316,50 +261,67 @@ def clear_transient_overlays(tab=None):
 
 
 def close_modal(tab=None):
-    """关闭当前残留的弹窗/通知/消息，避免积累在 DOM 中干扰后续操作。
-    通知→点×关闭；业务弹窗→点取消或×。
-    已隐藏的残留弹窗（如 display:none 的浮层 DOM）视为已关闭，不再尝试点击。
-    使用 DrissionPage 原生方法 + wait.ele_deleted 等待关闭完成。
-    返回 {ok, closed:[...], errors:[...]}，调用方可判断清理是否真正成功。
+    """安全关闭可见 modal/drawer，并清理可关闭的 notification/message。
+
+    不点击“确定/提交/删除”等业务按钮；组件根和关闭控件来自固定 UI 契约。叠加浮层
+    从 DOM 最后一个可见节点向外关闭，最多 10 层，防止异常页面形成无限循环。
     """
     tab = tab or browser_session.get_tab()
     closed = []
     errors = []
     transient = clear_transient_overlays(tab)
-    for item in transient.get("closed", []):
-        closed.append("%s:%s" % (item.get("scope", ""), item.get("type", "")))
+    closed.extend(
+        "%s:%s" % (item.get("scope", ""), item.get("type", ""))
+        for item in transient.get("closed", [])
+    )
     errors.extend(transient.get("errors", []))
+    safe_labels = {"取消", "关闭", "返回", "否", "暂不", "知道了"}
 
-    try:
-        for scope, target in _target_contexts(tab):
-            # 关闭业务弹窗（根据 .ant-modal-wrap 的 visibility 寻找真正可见的那个）
-            wrappers = target.eles('c:.ant-modal-wrap')
-            active_wrap = None
-            for w in wrappers:
-                if w.states.is_displayed:
-                    active_wrap = w
+    def close_kind(scope, target, root, kind, root_selector, close_selector):
+        for _ in range(10):
+            wrappers = root.eles("c:" + root_selector, timeout=0.2) or []
+            visible = [
+                wrapper for wrapper in wrappers
+                if bool(getattr(getattr(wrapper, "states", None), "is_displayed", False))
+            ]
+            if not visible:
+                return
+            active = visible[-1]
+            buttons = active.eles('c:.ant-btn', timeout=0.2) or []
+            cancel = None
+            for button in buttons:
+                states = getattr(button, "states", None)
+                if not bool(getattr(states, "is_displayed", True)):
+                    continue
+                if not bool(getattr(states, "is_enabled", True)):
+                    continue
+                label = (button.text or "").replace(" ", "").strip()
+                if label in safe_labels or any(label.startswith(prefix) for prefix in safe_labels):
+                    cancel = button
                     break
-            
-            if active_wrap:
-                cancel = active_wrap.ele('c:.ant-btn:not(.ant-btn-primary)', timeout=0.3)
-                if cancel:
-                    cancel.wait.clickable(timeout=2, wait_stop=True, raise_err=False)
-                    cancel.click(wait_stop=True)
-                else:
-                    close_x = active_wrap.ele('c:.ant-modal-close', timeout=0.3)
-                    if close_x:
-                        close_x.wait.clickable(timeout=2, wait_stop=True, raise_err=False)
-                        close_x.click(wait_stop=True)
-                    else:
-                        errors.append("%s modal: 无可点击的取消/关闭按钮" % scope)
-                if not any(e.startswith("%s modal: 无可点击" % scope) for e in errors):
-                    # 使用原生方法等待最外层包裹元素 .ant-modal-wrap 隐藏
-                    hidden = target.wait.ele_hidden(active_wrap, timeout=3, raise_err=False)
-                    if hidden:
-                        closed.append("%s:modal" % scope)
-                    else:
-                        errors.append("%s modal: 等待关闭超时" % scope)
-    except Exception as e:
-        logger.debug("close_modal 失败: %s", e)
-        errors.append(str(e))
+            control = cancel or active.ele("c:" + close_selector, timeout=0.2)
+            if not control:
+                errors.append("%s %s: 无安全的取消/关闭按钮" % (scope, kind))
+                return
+            control.click(by_js=False, timeout=2, wait_stop=False)
+            hidden = target.wait.ele_hidden(active, timeout=3, raise_err=False)
+            if not hidden:
+                errors.append("%s %s: 等待关闭超时" % (scope, kind))
+                return
+            closed.append("%s:%s" % (scope, kind))
+
+    for scope, target in _target_contexts(tab):
+        root = _document_root(target)
+        try:
+            close_kind(
+                scope, target, root, "modal",
+                ui_contract.MODAL_WRAP, ui_contract.MODAL_CLOSE,
+            )
+            close_kind(
+                scope, target, root, "drawer",
+                ui_contract.DRAWER, ".ant-drawer-close",
+            )
+        except Exception as exc:
+            logger.debug("close_modal 失败(%s): %s", scope, exc)
+            errors.append("%s: %s" % (scope, exc))
     return {"ok": not errors, "closed": closed, "errors": errors}

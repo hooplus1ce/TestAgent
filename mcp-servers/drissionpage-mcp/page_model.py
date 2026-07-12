@@ -9,12 +9,14 @@ lock.
 import json
 import os
 import time
+from DrissionPage.common import Keys
 
 import browser_session
 import filter_area
 import html_table
 import resource_store
 import vtable
+import ui_contract
 
 
 def _parse_json(res, default):
@@ -28,23 +30,36 @@ def _parse_json(res, default):
     return res
 
 
+def _xpath_literal(value: str) -> str:
+    text = str(value or "")
+    if "'" not in text:
+        return "'%s'" % text
+    if '"' not in text:
+        return '"%s"' % text
+    parts = text.split("'")
+    return "concat(%s)" % ", \"'\", ".join("'%s'" % part for part in parts)
+
+
+def _active_frame(tab):
+    frame = browser_session.get_active_frame_ro(tab, timeout=0.5)
+    return frame if frame is not None else browser_session.get_active_frame(tab)
+
+
 def _target(in_frame: bool = True):
     tab = browser_session.get_tab()
-    fr = browser_session.get_active_frame(tab)
-    if in_frame and fr is not None:
-        return tab, fr, fr
-    return tab, fr, tab
+    frame = _active_frame(tab)
+    return (tab, frame, frame) if in_frame and frame is not None else (tab, frame, tab)
 
 
 def _targets(include_top: bool = True, include_frame: bool = True):
     tab = browser_session.get_tab()
-    fr = browser_session.get_active_frame(tab)
-    out = []
-    if include_frame and fr is not None:
-        out.append(("iframe", fr))
+    frame = _active_frame(tab)
+    targets = []
+    if include_frame and frame is not None:
+        targets.append(("iframe", frame))
     if include_top:
-        out.append(("top", tab))
-    return tab, fr, out
+        targets.append(("top", tab))
+    return tab, frame, targets
 
 
 def _run_json(target, js: str, default):
@@ -88,14 +103,17 @@ def get_element_coords(xpath: str, index: int = 1, timeout: float = 5):
         {"ok": True, "cx": float, "cy": float,
          "tag": str, "text": str, "xpath": str} | {"ok": False, "reason": str}
     """
-    from browser_session import get_tab, get_active_frame
-
+    xpath = str(xpath or "").strip()
+    if not xpath:
+        return {"ok": False, "reason": "xpath is required"}
+    index = max(int(index or 1), 1)
+    timeout = max(float(timeout or 0), 0.0)
     try:
-        tab = get_tab()
-        fr = get_active_frame(tab)
+        tab = browser_session.get_tab()
+        fr = _active_frame(tab)
         target = fr or tab
         el = target.ele(f"xpath:{xpath}", index=index, timeout=timeout)
-        if el is None:
+        if not el:
             return {"ok": False, "reason": f"未找到元素: xpath={xpath}, index={index}"}
         mp = el.rect.viewport_midpoint
         return {
@@ -464,14 +482,22 @@ function duScanVTableOverlay(root){
 def scan_toolbar_actions(
     scope: str = "page", in_frame: bool = True, max_items: int = 120
 ) -> dict:
-    """Scan visible page actions with disabled state and dropdown hints."""
+    """扫描可见动作，并用一次 4.2 批量定位补齐顶层视口坐标。"""
     _, _, target = _target(in_frame=in_frame)
     scope = (scope or "page").lower()
+    max_items = min(max(int(max_items or 0), 0), 500)
     allowed = {
         "toolbar": ["toolbar", "page"],
         "page": ["toolbar", "page", "table"],
+        "table": ["table"],
+        "filter": ["filter"],
+        "modal": ["modal"],
+        "drawer": ["drawer"],
+        "dropdown": ["dropdown"],
+        "pagination": ["pagination"],
+        "menu": ["menu"],
         "all": None,
-    }.get(scope, ["toolbar", "page", "table"])
+    }.get(scope, [scope])
     js = (
         _COMMON_JS
         + """
@@ -488,37 +514,54 @@ return JSON.stringify({ok:true, scope:SCOPE, total:actions.length, actions:actio
         )
     )
     data = _run_json(target, js, {"ok": False, "reason": "scan failed"})
-    if isinstance(data, dict):
-        data["target"] = (
-            "iframe" if target is not browser_session.get_tab_ro() else "top"
-        )
-        for action in data.get("actions", []) or []:
-            xpath = action.get("xpath")
-            if not xpath:
+    if not isinstance(data, dict):
+        return data
+    data["target"] = "iframe" if target is not browser_session.get_tab_ro() else "top"
+    actions = data.get("actions", []) or []
+    locators = ["xpath:" + action["xpath"] for action in actions if action.get("xpath")]
+    batch_failed = False
+    try:
+        found = target.find(
+            locators, any_one=False, first_ele=True, timeout=1.0
+        ) if locators else {}
+    except Exception:
+        found = {}
+        batch_failed = True
+
+    for action in actions:
+        xpath = action.get("xpath")
+        if not xpath:
+            continue
+        locator = "xpath:" + xpath
+        try:
+            element = found.get(locator)
+            if element is None and batch_failed:
+                element = target.ele(locator, timeout=0.2)
+            center = get_element_center(element) if element is not None else None
+            if not center:
+                action["coord_error"] = "DrissionPage element not found"
                 continue
-            try:
-                el = target.ele(f"xpath:{xpath}", timeout=0.2)
-                center = get_element_center(el) if el is not None else None
-                if not center:
-                    continue
-                rect = action.get("rect") or {}
-                width = float(rect.get("width") or 0)
-                height = float(rect.get("height") or 0)
-                cx = center["cx"]
-                cy = center["cy"]
-                action["cx"] = cx
-                action["cy"] = cy
-                action["viewportX"] = cx
-                action["viewportY"] = cy
-                action["coordinate_space"] = "top-viewport"
-                action["coord_source"] = "DrissionPage.Element.rect.viewport_midpoint"
-                rect["x"] = round(cx - width / 2, 1)
-                rect["y"] = round(cy - height / 2, 1)
-                rect["width"] = round(width, 1)
-                rect["height"] = round(height, 1)
-                action["rect"] = rect
-            except Exception as e:
-                action["coord_error"] = str(e)
+            rect = action.get("rect") or {}
+            width = float(rect.get("width") or 0)
+            height = float(rect.get("height") or 0)
+            cx, cy = center["cx"], center["cy"]
+            action.update({
+                "cx": cx,
+                "cy": cy,
+                "viewportX": cx,
+                "viewportY": cy,
+                "coordinate_space": "top-viewport",
+                "coord_source": "DrissionPage.Element.rect.viewport_midpoint",
+            })
+            rect.update({
+                "x": round(cx - width / 2, 1),
+                "y": round(cy - height / 2, 1),
+                "width": round(width, 1),
+                "height": round(height, 1),
+            })
+            action["rect"] = rect
+        except Exception as exc:
+            action["coord_error"] = str(exc)
     return data
 
 
@@ -538,31 +581,42 @@ def scan_form_fields(
         "all": "body",
     }
     selector = selector_map.get((scope or "page").lower(), scope or "body")
+    max_fields = min(max(int(max_fields or 0), 0), 1000)
     js = (
         _COMMON_JS
         + """
 var roots = [].slice.call(document.querySelectorAll(SELECTOR));
-if (!roots.length) roots = [document.body];
+roots = roots.filter(function(root, index, all){
+  return !all.some(function(other, otherIndex){
+    return index !== otherIndex && other.contains(root);
+  });
+});
+// page/all 明确表示整页扫描；modal/drawer/filter/custom selector 未命中时必须返回空，
+// 不能退回 body，否则调用方会把页面字段误报成目标浮层字段。
+if (!roots.length && ALLOW_BODY_FALLBACK) roots = [document.body];
 var fields = [];
 for (var i = 0; i < roots.length && fields.length < MAX_FIELDS; i++) {
   fields = fields.concat(duScanFields(roots[i], INCLUDE_HIDDEN, MAX_FIELDS - fields.length));
 }
-return JSON.stringify({ok:true, scope:SCOPE, total:fields.length, fields:fields.slice(0, MAX_FIELDS)});
+return JSON.stringify({ok:true, scope:SCOPE, rootCount:roots.length, total:fields.length, fields:fields.slice(0, MAX_FIELDS)});
 """
         .replace("SELECTOR", json.dumps(selector))
         .replace("SCOPE", json.dumps(scope))
         .replace("MAX_FIELDS", str(max_fields))
         .replace("INCLUDE_HIDDEN", "true" if include_hidden else "false")
+        .replace("ALLOW_BODY_FALLBACK", "true" if (scope or "page").lower() in {"page", "all"} else "false")
     )
     return _run_json(target, js, {"ok": False, "reason": "scan failed"})
 
 
 def _scan_overlay(kind: str, max_items: int = 20) -> dict:
-    overlay_selector = ".ant-modal" if kind == "modal" else ".ant-drawer"
-    title_selector = ".ant-modal-title" if kind == "modal" else ".ant-drawer-title"
-    body_selector = ".ant-modal-body" if kind == "modal" else ".ant-drawer-body"
+    max_items = min(max(int(max_items or 0), 0), 100)
+    overlay_selector = ui_contract.MODAL if kind == "modal" else ui_contract.DRAWER
+    title_selector = ui_contract.MODAL_TITLE if kind == "modal" else ui_contract.DRAWER_TITLE
+    body_selector = ui_contract.MODAL_BODY if kind == "modal" else ui_contract.DRAWER_BODY
     tab, fr, target_list = _targets(include_top=True, include_frame=True)
     overlays = []
+    successful_scopes = 0
     errors = []
     for scope, target in target_list:
         js = (
@@ -574,7 +628,7 @@ for (var i = 0; i < nodes.length && out.length < MAX_ITEMS; i++) {
   var n = nodes[i];
   var title = n.querySelector(TITLE_SELECTOR);
   var body = n.querySelector(BODY_SELECTOR) || n;
-  var close = n.querySelector('.ant-modal-close,.ant-drawer-close');
+  var close = n.querySelector(OVERLAY_CLOSE_SELECTOR);
   out.push({
     index: out.length,
     title: duCleanText(title ? title.textContent : ''),
@@ -591,19 +645,28 @@ return JSON.stringify({ok:true, overlays:out});
             .replace("OVERLAY_SELECTOR", json.dumps(overlay_selector))
             .replace("TITLE_SELECTOR", json.dumps(title_selector))
             .replace("BODY_SELECTOR", json.dumps(body_selector))
+            .replace("OVERLAY_CLOSE_SELECTOR", json.dumps(ui_contract.OVERLAY_CLOSE))
             .replace("MAX_ITEMS", str(max_items))
         )
         data = _run_json(target, js, {"ok": False, "reason": "scan failed"})
         if data.get("ok"):
+            successful_scopes += 1
             for item in data.get("overlays", []):
                 item["scope"] = scope
                 item["kind"] = kind
                 overlays.append(item)
         else:
             errors.append({"scope": scope, "reason": data.get("reason", "")})
-    result = {"ok": True, "kind": kind, "count": len(overlays), "overlays": overlays}
+    result = {
+        "ok": successful_scopes > 0,
+        "kind": kind,
+        "count": len(overlays),
+        "overlays": overlays,
+    }
     if errors:
         result["errors"] = errors
+    if successful_scopes == 0:
+        result["reason"] = "all %s scanners failed" % kind
     return result
 
 
@@ -632,28 +695,27 @@ def scan_floats(only_visible: bool = True, include_table_data: bool = True,
             tableCount, tables: [{index, kind, headers, rowCount,
                                   data: [[str]]?}]}]}
     """
+    detail = "full" if str(detail or "").lower() == "full" else "summary"
     tab, fr, target_list = _targets(include_top=True, include_frame=True)
     # 记录当前活跃 frame 信息，供调用方判断是否发生了 tabpanel 切换
     frame_url = getattr(fr, "url", "") if fr is not None else ""
     all_floats = []
+    successful_scopes = 0
     errors = []
     for scope, target in target_list:
         js = (
             _COMMON_JS
             + """
-var rawNodeList = [].slice.call(document.querySelectorAll(
-  '.ant-modal, .ant-drawer, .ant-popover, .ant-tooltip, '
-  + '.ant-dropdown, .vtable-filter-menu, .vtable__bubble-tooltip-element, '
-  + '.vtable__menu-element, .ant-calendar-picker-container, .ant-calendar'
-));
+var rawNodeList = [].slice.call(document.querySelectorAll(FLOAT_ROOT_SELECTOR));
+function duHasClass(el, name) {
+  return !!(el && el.classList && el.classList.contains(name));
+}
 function duIsCalendarNode(el) {
-  var cls = el.className || '';
-  return /\bant-calendar-picker-container\b/.test(cls) || /\bant-calendar\b/.test(cls);
+  return duHasClass(el, 'ant-calendar-picker-container') || duHasClass(el, 'ant-calendar');
 }
 function duCalendarRoot(el) {
   if (!el) return null;
-  var cls = el.className || '';
-  if (/\bant-calendar\b/.test(cls)) return el;
+  if (duHasClass(el, 'ant-calendar')) return el;
   return el.querySelector('.ant-calendar') || el;
 }
 function duCalendarActive(el) {
@@ -661,8 +723,7 @@ function duCalendarActive(el) {
   return !!(el && el.isConnected);
 }
 function duIsVTableFilterNode(el) {
-  var cls = el.className || '';
-  return /\bvtable-filter-menu\b/.test(cls);
+  return duHasClass(el, 'vtable-filter-menu');
 }
 function duVTableFilterActive(el) {
   // VTable 筛选菜单常驻 DOM，通过 display:block/none 表示打开/关闭。
@@ -681,6 +742,35 @@ function duKeepFloatNode(el) {
   if (duIsVTableOverlayNode(el)) return !ONLY_VISIBLE || duVTableOverlayVisible(el);
   return !ONLY_VISIBLE || duVisible(el);
 }
+function duOverlayOptions(el) {
+  var seen = {};
+  var options = [];
+  var items = el.querySelectorAll(
+    '.ant-dropdown-menu-item,.ant-select-dropdown-menu-item,.ant-select-item-option,' +
+    '[role="option"],[role="menuitem"],li'
+  );
+  for (var oi = 0; oi < items.length && options.length < 80; oi++) {
+    var item = items[oi];
+    if (!duVisible(item)) continue;
+    var text = duCleanText(item.innerText || item.textContent || '');
+    if (!text || seen[text]) continue;
+    seen[text] = true;
+    options.push({
+      text: text,
+      disabled: duDisabled(item),
+      selected: item.getAttribute('aria-selected') === 'true' ||
+        duHasClass(item, 'ant-dropdown-menu-item-selected') ||
+        duHasClass(item, 'ant-select-dropdown-menu-item-selected') ||
+        duHasClass(item, 'ant-select-item-option-selected'),
+      selectorHint: duCssHint(item),
+      semanticXPath: duSemanticXPath(item, text),
+      xpath: duXPath(item),
+      center: frCenter(item),
+      rect: frRect(item)
+    });
+  }
+  return options;
+}
 function duCalendarPanel(panel, side) {
   if (!panel) return null;
   var ye = panel.querySelector('.ant-calendar-year-select');
@@ -697,8 +787,7 @@ function duCalendarPanel(panel, side) {
 function duScanCalendar(el) {
   var root = duCalendarRoot(el);
   if (!root) return null;
-  var cls = root.className || '';
-  var isRange = /\bant-calendar-range\b/.test(cls) ||
+  var isRange = duHasClass(root, 'ant-calendar-range') ||
     !!root.querySelector('.ant-calendar-range-left,.ant-calendar-range-right');
   var panels = [];
   if (isRange) {
@@ -721,16 +810,19 @@ function duScanCalendar(el) {
       var td = cell.closest('td');
       if (!td || !td.isConnected) continue;
       var tdCls = td.className || '';
-      var title = td.getAttribute('title') || cell.getAttribute('title') || '';
-      var selected = /\bant-calendar-selected-date\b|\bant-calendar-selected-start-date\b|\bant-calendar-selected-end-date\b/.test(tdCls);
+      var selected = duHasClass(td, 'ant-calendar-selected-date') ||
+        duHasClass(td, 'ant-calendar-selected-start-date') ||
+        duHasClass(td, 'ant-calendar-selected-end-date');
       if (selected && title) selectedDates.push(title);
       cells.push({
         title: title,
         text: duCleanText(cell.textContent),
-        disabled: /\bant-calendar-disabled-cell\b/.test(tdCls) || duDisabled(cell),
+        disabled: duHasClass(td, 'ant-calendar-disabled-cell') || duDisabled(cell),
         selected: selected,
-        today: /\bant-calendar-today\b/.test(tdCls),
-        inView: !(/\bant-calendar-last-month-cell\b|\bant-calendar-next-month-btn-day\b|\bant-calendar-next-month-cell\b/.test(tdCls)),
+        today: duHasClass(td, 'ant-calendar-today'),
+        inView: !(duHasClass(td, 'ant-calendar-last-month-cell') ||
+          duHasClass(td, 'ant-calendar-next-month-btn-day') ||
+          duHasClass(td, 'ant-calendar-next-month-cell')),
         selectorHint: duCssHint(cell),
         xpath: duXPath(cell),
         center: frCenter(cell),
@@ -743,8 +835,9 @@ function duScanCalendar(el) {
       var cell = cellNodes[ci];
       var td = cell.closest('td');
       if (!td || !td.isConnected) continue;
-      var tdCls = td.className || '';
-      var selected = /\bant-calendar-selected-date\b|\bant-calendar-selected-start-date\b|\bant-calendar-selected-end-date\b/.test(tdCls);
+      var selected = duHasClass(td, 'ant-calendar-selected-date') ||
+        duHasClass(td, 'ant-calendar-selected-start-date') ||
+        duHasClass(td, 'ant-calendar-selected-end-date');
       if (selected) {
         var title = td.getAttribute('title') || cell.getAttribute('title') || '';
         if (title) selectedDates.push(title);
@@ -764,11 +857,12 @@ function duScanCalendar(el) {
 var nodeList = [];
 rawNodeList.forEach(function(n){
   if (!n || nodeList.indexOf(n) >= 0) return;
-  if (/\bant-calendar\b/.test(n.className || '') && n.closest('.ant-calendar-picker-container')) return;
+  // 仅内部 .ant-calendar 精确类名才去重；container 名中也含 ant-calendar 子串。
+  if (duHasClass(n, 'ant-calendar') && n.closest('.ant-calendar-picker-container')) return;
   nodeList.push(n);
 });
 var allWrappers = [].slice.call(document.querySelectorAll('.ant-table-wrapper'));
-var nodes = nodeList.filter(duKeepFloatNode);
+var nodes = nodeList.filter(duKeepFloatNode).slice(0, 100);
 // iframe 偏移：叠加到坐标使结果始终为 top-viewport 坐标
 var ifrOff = {left:0, top:0};
 var _ifrEl = window.frameElement;
@@ -778,23 +872,35 @@ function frCenter(el) { var r = duRect(el); return {cx: Math.round((r.x + r.widt
 var out = [];
 for (var i = 0; i < nodes.length; i++) {
   var n = nodes[i];
-  var cls = n.className || '';
   var kind = 'unknown';
-  if (/\\bant-modal\\b/.test(cls)) kind = 'modal';
-  else if (/\\bant-drawer\\b/.test(cls)) kind = 'drawer';
-  else if (/\\bant-popover\\b/.test(cls)) kind = 'popover';
-  else if (/\\bant-tooltip\\b/.test(cls)) kind = 'tooltip';
-  else if (/\\bant-dropdown\\b/.test(cls)) kind = 'dropdown';
-  else if (/\\bvtable-filter-menu\\b/.test(cls)) kind = 'vtable-filter-menu';
-  else if (/\\bvtable__bubble-tooltip-element\\b/.test(cls)) kind = 'vtable-tooltip';
-  else if (/\\bvtable__menu-element\\b/.test(cls)) kind = 'vtable-menu';
+  if (duHasClass(n, 'ant-modal')) kind = 'modal';
+  else if (duHasClass(n, 'ant-drawer')) kind = 'drawer';
+  else if (duHasClass(n, 'ant-popover')) kind = 'popover';
+  else if (duHasClass(n, 'ant-tooltip')) kind = 'tooltip';
+  else if (duHasClass(n, 'ant-notification-notice')) kind = 'notification';
+  else if (duHasClass(n, 'ant-message-notice')) kind = 'message';
+  else if (duHasClass(n, 'ant-select-dropdown')) kind = 'select-dropdown';
+  else if (duHasClass(n, 'ant-dropdown')) kind = 'dropdown';
+  else if (duHasClass(n, 'vtable-filter-menu')) kind = 'vtable-filter-menu';
+  else if (duHasClass(n, 'vtable__bubble-tooltip-element')) kind = 'vtable-tooltip';
+  else if (duHasClass(n, 'vtable__menu-element')) kind = 'vtable-menu';
   else if (duIsCalendarNode(n)) kind = 'calendar';
   var calendar = kind === 'calendar' ? duScanCalendar(n) : null;
+  var options = (kind === 'dropdown' || kind === 'select-dropdown') ? duOverlayOptions(n) : [];
+  var isConfirm = kind === 'modal' && !!n.querySelector('.ant-confirm-body');
   var vtableFilter = kind === 'vtable-filter-menu' ? duScanVTableFilterMenu(n) : null;
   var vtableOverlay = (kind === 'vtable-tooltip' || kind === 'vtable-menu') ? duScanVTableOverlay(n) : null;
   // 标题提取
   var titleEl = n.querySelector('.ant-modal-title, .ant-drawer-title, .ant-modal-header');
   var title = titleEl ? duCleanText(titleEl.textContent) : '';
+  if (!title && kind === 'notification') {
+    var notificationText = n.querySelector('.ant-notification-notice-message,.ant-notification-notice-description');
+    title = notificationText ? duCleanText(notificationText.textContent) : '';
+  }
+  if (!title && kind === 'message') {
+    var messageText = n.querySelector('.ant-message-notice-content');
+    title = messageText ? duCleanText(messageText.textContent) : '';
+  }
   if (!title && calendar) {
     var panelTitle = (calendar.panels || []).map(function(p){ return p.title; }).filter(Boolean).join(' - ');
     title = (calendar.mode === 'range' ? '日期范围选择器' : '日期选择器') + (panelTitle ? ' ' + panelTitle : '');
@@ -878,11 +984,17 @@ for (var i = 0; i < nodes.length; i++) {
     }
   }
 
-  // 关闭按钮
-  var closeBtn = n.querySelector('.ant-modal-close, .ant-drawer-close');
+  // 关闭按钮携带稳定语义 XPath；组件升级时只需更新 ui_contract 与此处根选择器。
+  var closeBtn = n.querySelector('.ant-modal-close, .ant-drawer-close, .ant-notification-notice-close, .ant-message-notice-close');
   var closeButton = null;
   if (closeBtn) {
+    var closeText = duCleanText(closeBtn.textContent || closeBtn.getAttribute('aria-label') || closeBtn.getAttribute('title') || '关闭');
     closeButton = {
+      text: closeText,
+      disabled: duDisabled(closeBtn),
+      selectorHint: duCssHint(closeBtn),
+      semanticXPath: duSemanticXPath(closeBtn, closeText),
+      xpath: duXPath(closeBtn),
       center: frCenter(closeBtn), rect: frRect(closeBtn)
     };
   }
@@ -909,30 +1021,37 @@ for (var i = 0; i < nodes.length; i++) {
       if (bodyTable) {
         var trs = bodyTable.querySelectorAll('tbody > tr.ant-table-row');
         if (trs.length === 0) trs = bodyTable.querySelectorAll('tbody > tr');
-        trs.forEach(function(tr){
-          var cells = tr.querySelectorAll('td');
+        for (var tri = 0; tri < trs.length && tri < 80; tri++) {
+          var cells = trs[tri].querySelectorAll('td');
           var row = [];
-          cells.forEach(function(td){ row.push((td.textContent || '').trim()); });
+          for (var tdi = 0; tdi < cells.length && tdi < 50; tdi++) {
+            row.push((cells[tdi].textContent || '').trim().slice(0, 500));
+          }
           rowData.push(row);
-        });
+        }
       }
     }
 
     tables.push({
       index: globalIdx, kind: hasVTable ? 'vtable' : 'html',
-      headers: headers, rowCount: bodyRows, data: rowData
+      headers: headers, rowCount: bodyRows, data: rowData,
+      dataTruncated: !!(INCLUDE_TABLE_DATA && bodyRows > rowData.length)
     });
   });
 
   out.push({
-    title: title, type: kind, text: text.slice(0, 800),
-    buttons: buttons, fields: fields, closeButton: closeButton,
+    index: out.length,
+    title: title, type: kind, isConfirm: isConfirm, text: text.slice(0, 800),
+    buttons: buttons, fields: fields, options: options, closeButton: closeButton,
     calendar: calendar, vtableFilter: vtableFilter, vtableOverlay: vtableOverlay,
+    tableCount: tables.length, tables: tables,
     center: frCenter(n), rect: frRect(n)
   });
 }
 return JSON.stringify({ok:true, floats:out});
-""".replace("ONLY_VISIBLE", "true" if only_visible else "false").replace(
+""".replace("FLOAT_ROOT_SELECTOR", json.dumps(",".join(ui_contract.FLOAT_ROOTS))).replace(
+    "ONLY_VISIBLE", "true" if only_visible else "false"
+).replace(
     "INCLUDE_TABLE_DATA", "true" if include_table_data else "false"
 ).replace(
     'DETAIL', "'" + detail + "'"
@@ -940,36 +1059,24 @@ return JSON.stringify({ok:true, floats:out});
 )
         data = _run_json(target, js, {"ok": False, "reason": "scan_floats JS failed"})
         if data.get("ok"):
+            successful_scopes += 1
             for item in data.get("floats", []):
                 item["scope"] = scope
+                if item.get("type") == "modal":
+                    is_confirm = bool(item.pop("isConfirm", False))
+                    item["modalType"] = (
+                        "system_confirm" if is_confirm and scope == "top"
+                        else "confirm" if is_confirm
+                        else "interactive"
+                    )
+                else:
+                    item.pop("isConfirm", None)
                 all_floats.append(item)
         else:
             errors.append({"scope": scope, "reason": data.get("reason", "")})
 
-    # --- 短寿命 toast 检测（message/notification，点击后延迟 ~100ms 才渲染）---
-    import observe
-
-    for detector, ttype in [
-        (observe.detect_message, "message"),
-        (observe.detect_notification, "notification"),
-    ]:
-        toast = detector(timeout=0.5)
-        if toast.get("type") == ttype:
-            all_floats.append({
-                "title": toast.get("message", "")[:80],
-                "type": ttype,
-                "text": toast.get("message", ""),
-                "scope": toast.get("scope", ""),
-                "buttons": [],
-                "fields": [],
-                "tables": [],
-                "closeButton": None,
-                "hasClose": False,
-                "center": {"cx": 0, "cy": 0},
-                "rect": {"x": 0, "y": 0, "width": 0, "height": 0},
-            })
     result = {
-        "ok": True,
+        "ok": successful_scopes > 0,
         "count": len(all_floats),
         "floats": all_floats,
         "has_active_frame": fr is not None,
@@ -978,6 +1085,8 @@ return JSON.stringify({ok:true, floats:out});
     }
     if errors:
         result["errors"] = errors
+    if successful_scopes == 0:
+        result["reason"] = "all float scanners failed"
     return result
 
 
@@ -1025,224 +1134,277 @@ def select_option(
     scope: str = "auto",
     timeout: float = 5.0,
 ) -> dict:
-    """Select an Ant Design option by field label and visible option text."""
-    if not option_text:
+    """按标签定位 Ant Select，在一个总超时预算内选择唯一匹配项。"""
+    expected = str(option_text or "").strip()
+    if not expected:
         return {"ok": False, "reason": "option_text is required"}
+    scope = str(scope or "auto").lower()
+    if scope not in {"auto", "frame", "iframe", "top"}:
+        return {"ok": False, "reason": "unsupported scope: %s" % scope}
+    select_index = max(int(select_index or 0), 0)
+    timeout = max(float(timeout or 0), 0.0)
+    deadline = time.monotonic() + timeout
+
+    def remaining(cap=None):
+        value = max(deadline - time.monotonic(), 0.0)
+        return min(value, cap) if cap is not None else value
 
     tab, fr, _ = _target(in_frame=True)
     candidates = []
-    if scope in ("auto", "frame", "iframe") and fr is not None:
+    if scope in {"auto", "frame", "iframe"} and fr is not None:
         candidates.append(("iframe", fr))
-    if scope in ("auto", "top"):
-        candidates.append(("top", tab))
-    if not candidates:
+    if scope in {"auto", "top"} or not candidates:
         candidates.append(("top", tab))
 
     target = None
     select_element = None
     used_scope = ""
-
+    field_name = str(field_name or "").strip()
     for scope_name, candidate in candidates:
         try:
             if field_name:
+                literal = _xpath_literal(field_name)
                 container = candidate.ele(
-                    f"xpath://div[contains(@class, 'ant-form-item') or contains(@class, 'ant-col')]"
-                    f"[descendant::label[contains(text(), '{field_name}')]]",
-                    timeout=0.5
+                    "xpath://div[contains(@class, 'ant-form-item') or contains(@class, 'ant-col')]"
+                    "[.//*[self::label or contains(@class, 'label')]"
+                    "[contains(normalize-space(.), %s)]]" % literal,
+                    timeout=remaining(0.5),
                 )
-                if not container:
-                    container = candidate.ele(f"text:{field_name}", timeout=0.5)
-                    if container:
-                        container = container.parent()
+                if container is None:
+                    label = candidate.ele("text:%s" % field_name, timeout=remaining(0.3))
+                    container = label.parent() if label is not None else None
             else:
                 container = candidate
-
-            if container:
-                selects = container.eles('css:.ant-select:not(.ant-select-disabled)')
-                if selects:
-                    select_element = selects[min(select_index, len(selects) - 1)]
-                    target = candidate
-                    used_scope = scope_name
-                    break
+            if container is None:
+                continue
+            selects = container.eles(
+                'css:.ant-select:not(.ant-select-disabled)', timeout=remaining(0.5)
+            ) or []
+            if selects:
+                select_element = selects[min(select_index, len(selects) - 1)]
+                target, used_scope = candidate, scope_name
+                break
         except Exception:
-            pass
+            continue
 
-    # 回退：快速筛选区结构（legions-pro-quick-filter）
-    if not select_element or not target:
+    # Legions 快捷筛选的标签本身也是第一个 select，公共 select_index 从值控件起算。
+    if select_element is None and field_name:
+        for scope_name, candidate in candidates:
+            column, selects = filter_area._quick_filter_field_column(candidate, field_name)
+            if column is None or len(selects) < 3:
+                continue
+            select_element = selects[min(2 + select_index, len(selects) - 1)]
+            target, used_scope = candidate, scope_name
+            break
+
+    if select_element is None or target is None:
+        return {"ok": False, "reason": "select not found for field: %s" % field_name}
+
+    def close_dropdown():
         try:
-            for scope_name, candidate in candidates:
-                text_el = candidate.ele(f"text:{field_name}", timeout=0.3)
-                if text_el:
-                    wrapper = text_el.ele(
-                        'xpath:ancestor::div[contains(@class, "ant-col-xs-24")]',
-                        timeout=0.3
-                    )
-                    if wrapper:
-                        cols = wrapper.eles('css:.ant-row > .ant-col-8')
-                        target_col_idx = min(select_index + 2, len(cols) - 1) if select_index > 0 else 2
-                        if target_col_idx < len(cols):
-                            value_col = cols[target_col_idx]
-                            selects = value_col.eles('css:.ant-select:not(.ant-select-disabled)')
-                            if selects:
-                                select_element = selects[0]
-                                target = candidate
-                                used_scope = scope_name
-                                break
+            target.actions.key_down(Keys.ESCAPE).key_up(Keys.ESCAPE)
         except Exception:
             pass
-
-    if not select_element or not target:
-        return {"ok": False, "reason": f"select not found for field: {field_name}"}
 
     try:
-        # 打开下拉菜单
-        opener = select_element.ele('css:[role="combobox"], .ant-select-selection, .ant-select-selector', timeout=0.5) or select_element
-        opener.click()
-        
-        # 等待下拉菜单显示
+        close_dropdown()
+        opener = (
+            select_element.ele(
+                'css:[role="combobox"], .ant-select-selection, .ant-select-selector',
+                timeout=remaining(0.5),
+            )
+            or select_element
+        )
+        opener.click(by_js=False, timeout=remaining(2.0), wait_stop=False)
         dropdown = target.wait.ele_displayed(
-            "c:.ant-select-dropdown:not(.ant-select-dropdown-hidden)",
-            timeout=1.0,
-            raise_err=False
+            ui_contract.FILTER_SELECT_OPEN,
+            timeout=remaining(),
+            raise_err=False,
         )
         if not dropdown:
             return {"ok": False, "reason": "dropdown not visible after click"}
 
-        # 如果有搜索输入框，使用 DrissionPage 动作链输入过滤文本。
-        # 优先在 select 组件自身找搜索框（legions-pro-select 的搜索框在触发器内部）。
-        search_input = select_element.ele("css:.ant-select-search__field, input", timeout=0.5)
-        if not search_input:
-            search_input = dropdown.ele("css:input, .ant-select-search__field", timeout=0.5)
-        if search_input:
-            try:
-                search_input.wait.clickable(timeout=min(timeout, 2.0), wait_stop=True, raise_err=False)
-                search_input.input(option_text, clear=True, by_js=False)
-            except Exception as exc:
-                return {"ok": False, "reason": f"dropdown search input failed: {exc}"}
+        search_input = select_element.ele(
+            "css:.ant-select-search__field, input", timeout=remaining(0.3)
+        ) or dropdown.ele(
+            "css:input, .ant-select-search__field", timeout=remaining(0.3)
+        )
+        if search_input is not None:
+            search_input.wait.clickable(
+                timeout=remaining(1.0), wait_stop=True, raise_err=False
+            )
+            search_input.input(expected, clear=True, by_js=False)
 
-        # 等待过滤后的选项出现（最多 1s）
-        try:
-            target.wait.ele_displayed("c:.ant-select-dropdown-menu-item:not(.ant-select-dropdown-menu-item-disabled)", timeout=1.0)
-        except Exception:
-            pass
+        target.wait.ele_displayed(
+            "c:.ant-select-dropdown-menu-item:not(.ant-select-dropdown-menu-item-disabled),"
+            ".ant-select-item-option:not(.ant-select-item-option-disabled)",
+            timeout=remaining(),
+            raise_err=False,
+        )
+        options = dropdown.eles(
+            "css:.ant-select-dropdown-menu-item,.ant-select-item-option,li",
+            timeout=remaining(0.5),
+        ) or []
+        enabled = [
+            option for option in options
+            if option.states.is_displayed
+            and option.states.is_enabled
+            and option.attr("aria-disabled") != "true"
+        ]
+        exact = next(
+            (option for option in enabled if (option.text or "").strip() == expected),
+            None,
+        )
+        partial = [
+            option for option in enabled if expected in (option.text or "").strip()
+        ] if exact is None else []
+        if exact is None and len(partial) > 1:
+            available = [(option.text or "").strip() for option in partial[:50]]
+            close_dropdown()
+            return {"ok": False, "reason": "option match is ambiguous: %s" % expected,
+                    "available": available}
+        match = exact or (partial[0] if partial else None)
+        if match is None:
+            available = [(option.text or "").strip() for option in enabled[:50]]
+            close_dropdown()
+            return {"ok": False, "reason": "option not found: %s" % expected,
+                    "available": available}
 
-        # 获取所有可见下拉框选项
-        dropdowns = target.eles("css:.ant-select-dropdown:not(.ant-select-dropdown-hidden)")
-        options = []
-        for d in dropdowns:
-            if d.states.is_displayed:
-                options.extend(d.eles("css:.ant-select-dropdown-menu-item, .ant-select-item-option"))
-
-        # 筛选有效项
-        enabled_options = []
-        for opt in options:
-            if opt.states.is_displayed and opt.states.is_enabled and opt.attrs.get("aria-disabled") != "true":
-                enabled_options.append(opt)
-
-        # 匹配文本（优先精确匹配，其次模糊匹配）
-        exact_match = None
-        partial_match = None
-        for opt in enabled_options:
-            text = (opt.text or "").strip()
-            if text == option_text:
-                exact_match = opt
-                break
-            elif option_text in text and partial_match is None:
-                partial_match = opt
-
-        match_opt = exact_match or partial_match
-        if not match_opt:
-            available = [(opt.text or "").strip() for opt in enabled_options if opt.text]
-            return {
-                "ok": False,
-                "reason": f"option not found: {option_text}",
-                "available": available[:50]
-            }
-
-        selected_text = (match_opt.text or "").strip()
-        match_opt.click()
-
+        selected_text = (match.text or "").strip()
+        match.click(by_js=False, timeout=remaining(2.0), wait_stop=False)
         return {
             "ok": True,
             "selected": selected_text,
-            "exact": exact_match is not None,
+            "exact": exact is not None,
             "scope": used_scope,
-            "field": field_name
+            "field": field_name,
+            "display_value": (select_element.text or "").strip(),
         }
-    except Exception as e:
-        return {"ok": False, "reason": f"select failed: {str(e)}"}
+    except Exception as exc:
+        close_dropdown()
+        return {"ok": False, "reason": "select failed: %s" % exc}
 
 
 def _read_vtable_rows(
     max_columns: int = 50, max_rows: int = 500, raw: bool = False
 ) -> dict:
+    max_columns = min(max(int(max_columns or 0), 0), 1000)
+    max_rows = min(max(int(max_rows or 0), 0), 100_000)
+    if max_columns == 0:
+        return {"ok": False, "kind": "vtable", "reason": "max_columns 必须大于 0"}
     scan = vtable.scan_vtable_columns(max_columns)
     if not scan.get("ok"):
         return scan
 
-    columns = []
-    seen = set()
-    for col in scan.get("columns", []):
-        title = (col.get("title") or col.get("field") or "").strip()
-        if not title or title in seen:
+    leaf_by_col = {}
+    for entry in scan.get("columns", []):
+        try:
+            col_index = int(entry.get("col"))
+            row_index = int(entry.get("row") or 0)
+        except (TypeError, ValueError):
             continue
-        seen.add(title)
-        columns.append({
-            "title": title,
-            "col": col.get("col"),
-            "bodyBehavior": col.get("bodyBehavior", ""),
-        })
-
-    values_by_title = []
-    row_count = 0
-    for col in columns:
-        values = vtable.get_column_values(col["title"], raw=raw)
-        if not values.get("ok"):
+        title = str(entry.get("title") or "").strip()
+        behavior = str(entry.get("bodyBehavior") or "")
+        if not title or title.startswith("_vtable_") or behavior.startswith("control:"):
             continue
-        vals = values.get("values") or []
-        values_by_title.append((col["title"], vals))
-        row_count = max(row_count, len(vals))
+        previous = leaf_by_col.get(col_index)
+        if previous is None or row_index >= previous[0]:
+            leaf_by_col[col_index] = (row_index, {
+                "title": title,
+                "col": col_index,
+                "bodyBehavior": entry.get("bodyBehavior", ""),
+            })
+    leaf_columns = [leaf_by_col[col][1] for col in sorted(leaf_by_col)]
+    title_counts = {}
+    for column in leaf_columns:
+        title_counts[column["title"]] = title_counts.get(column["title"], 0) + 1
+    ambiguous_titles = sorted(title for title, count in title_counts.items() if count > 1)
+    columns = [column for column in leaf_columns if title_counts[column["title"]] == 1]
+    if not columns:
+        return {"ok": False, "kind": "vtable", "reason": "VTable 未扫描到唯一可读的叶子业务列",
+                "ambiguous_titles": ambiguous_titles}
 
-    row_count = min(row_count, max_rows)
-    rows = []
-    for i in range(row_count):
-        row = {}
-        for title, vals in values_by_title:
-            row[title] = vals[i] if i < len(vals) else None
-        rows.append(row)
-
-    return {
+    titles = [column["title"] for column in columns]
+    bulk = vtable.get_columns_values(titles, raw=raw)
+    values_by_title = bulk.get("values") or {}
+    if not values_by_title:
+        return {"ok": False, "kind": "vtable", "reason": bulk.get("reason", "列值读取失败"),
+                "detail": bulk}
+    readable_titles = [title for title in titles if title in values_by_title]
+    columns = [column for column in columns if column["title"] in values_by_title]
+    lengths = {title: len(values_by_title.get(title) or []) for title in readable_titles}
+    total_rows = max(lengths.values(), default=0)
+    row_count = min(total_rows, max_rows)
+    rows = [
+        {
+            title: (values_by_title[title][index]
+                    if index < len(values_by_title.get(title) or []) else None)
+            for title in readable_titles
+        }
+        for index in range(row_count)
+    ]
+    result = {
         "ok": True,
         "kind": "vtable",
         "columns": columns,
         "rows": rows,
         "count": len(rows),
-        "raw": raw,
-        "limitation": "VTable 数据由列值重建，覆盖当前 VTable 实例可读数据；虚拟滚动或懒加载未加载行需结合分页/滚动继续采集。",
+        "total_readable_rows": total_rows,
+        "raw": bool(raw),
+        "limitation": "VTable 数据覆盖当前实例可读行；服务端未加载的虚拟滚动或懒加载行不在结果中。",
     }
+    if ambiguous_titles:
+        result.update({"partial": True, "ambiguous_titles": ambiguous_titles})
+    if not bulk.get("ok"):
+        result.update({"partial": True, "column_errors": bulk.get("missing") or []})
+    if total_rows > row_count:
+        result.update({"_truncated": True, "max_rows": max_rows})
+    if len(set(lengths.values())) > 1:
+        result.update({"partial": True, "column_lengths": lengths})
+    return result
 
 
 def _click_next_page(target, table_index: int = 0) -> dict:
+    """点击指定可见 HTML 表格下一页，并验证活动页码确实变化。"""
     try:
-        wrappers = target.eles("css:.ant-table-wrapper")
-        if table_index < len(wrappers):
-            root = wrappers[table_index]
-        else:
-            root = target
+        wrappers = html_table._visible_table_wrappers(target)
+        if not 0 <= table_index < len(wrappers):
+            return {"ok": False, "reason": "visible table not found at index %s" % table_index}
+        root = wrappers[table_index]
 
-        next_btn = root.ele("css:.ant-pagination-next", timeout=1.0)
+        def active_page():
+            item = root.ele("c:.ant-pagination-item-active", timeout=0.2)
+            return (item.text or "").strip() if item else ""
+
+        page_before = active_page()
+        next_btn = root.ele("c:.ant-pagination-next", timeout=1.0)
         if not next_btn:
-            return {"ok": False, "reason": "no pagination next"}
-
-        disabled = "ant-pagination-disabled" in (next_btn.attrs.get("class") or "") or next_btn.attrs.get("aria-disabled") == "true"
+            return {"ok": False, "done": True, "reason": "no pagination next",
+                    "page_before": page_before}
+        attrs = next_btn.attrs or {}
+        disabled = (
+            "ant-pagination-disabled" in (attrs.get("class") or "")
+            or str(attrs.get("aria-disabled") or "").lower() == "true"
+        )
         if disabled:
-            return {"ok": False, "done": True, "reason": "next disabled"}
-
-        btn = next_btn.ele("css:a, button", timeout=0.3) or next_btn
-        btn.click()
-        return {"ok": True}
-    except Exception as e:
-        return {"ok": False, "reason": f"next click failed: {str(e)}"}
+            return {"ok": False, "done": True, "reason": "next disabled",
+                    "page_before": page_before}
+        button = next_btn.ele("css:a, button", timeout=0.3) or next_btn
+        if not button.wait.clickable(timeout=1.0, raise_err=False):
+            return {"ok": False, "reason": "pagination next not clickable",
+                    "page_before": page_before}
+        button.click(by_js=False)
+        spinner = root.ele("c:.ant-spin-spinning", timeout=0.5)
+        if spinner and spinner.states.is_displayed:
+            spinner.wait.hidden(timeout=10, raise_err=False)
+        root.wait.stop_moving(timeout=3, raise_err=False)
+        page_after = active_page()
+        if page_before and page_after == page_before:
+            return {"ok": False, "reason": "pagination page did not change",
+                    "page_before": page_before, "page_after": page_after}
+        return {"ok": True, "page_before": page_before, "page_after": page_after}
+    except Exception as exc:
+        return {"ok": False, "reason": "next click failed: %s" % exc}
 
 
 def get_all_table_data(
@@ -1254,7 +1416,28 @@ def get_all_table_data(
     raw: bool = False,
     filename: str = None,
 ) -> dict:
-    """Read table rows, optionally walking HTML pagination."""
+    """读取当前可见表格；HTML 可翻页且会验证页码变化，raw=true 仅支持 VTable。"""
+    raw_values = {
+        "table_index": table_index,
+        "max_pages": max_pages,
+        "max_rows": max_rows,
+        "max_columns": max_columns,
+    }
+    parsed = {}
+    try:
+        for name, value in raw_values.items():
+            item = int(value or 0)
+            if isinstance(value, float) and not value.is_integer():
+                raise ValueError(name)
+            parsed[name] = item
+    except (TypeError, ValueError):
+        return {"ok": False, "reason": "表格索引与限制参数必须为整数"}
+    table_index = parsed["table_index"]
+    max_pages = min(max(parsed["max_pages"], 1), 1000)
+    max_rows = min(max(parsed["max_rows"], 0), 100_000)
+    max_columns = min(max(parsed["max_columns"], 0), 1000)
+    if table_index < 0:
+        return {"ok": False, "reason": "table_index 必须为非负整数"}
     kind = (kind or "auto").lower()
     if kind not in {"auto", "html", "vtable"}:
         kind = "auto"
@@ -1262,11 +1445,17 @@ def get_all_table_data(
     if kind == "vtable":
         result = _read_vtable_rows(max_columns=max_columns, max_rows=max_rows, raw=raw)
     elif kind == "html":
+        if raw:
+            return {"ok": False, "kind": "html", "reason": "HTML 表格仅支持界面文本，raw=true 只适用于 VTable"}
         result = _read_html_pages(table_index, max_pages=max_pages, max_rows=max_rows)
     else:
         vt = _read_vtable_rows(max_columns=max_columns, max_rows=max_rows, raw=raw)
         if vt.get("ok"):
             result = vt
+        elif raw:
+            return {"ok": False, "kind": "auto",
+                    "reason": "未找到可读取原始值的 VTable；HTML 表格不支持 raw=true",
+                    "vtable_reason": vt.get("reason", "")}
         else:
             html = _read_html_pages(table_index, max_pages=max_pages, max_rows=max_rows)
             if html.get("ok"):
@@ -1289,13 +1478,16 @@ def _read_html_pages(
     headers = []
     rows = []
     pages_read = 0
-    max_pages = max(1, max_pages)
+    page_moves = 0
+    max_pages = min(max(int(max_pages or 0), 1), 1000)
+    stop_reason = ""
 
     while pages_read < max_pages and len(rows) < max_rows:
         data = html_table.get_html_table_data(table_index)
         if not data.get("ok"):
             if pages_read == 0:
                 return data
+            stop_reason = data.get("reason", "table read failed")
             break
         if not headers:
             headers = data.get("headers") or []
@@ -1304,12 +1496,17 @@ def _read_html_pages(
             if len(rows) >= max_rows:
                 break
         pages_read += 1
-        if pages_read >= max_pages or len(rows) >= max_rows:
+        if pages_read >= max_pages:
+            stop_reason = "max_pages reached"
+            break
+        if len(rows) >= max_rows:
+            stop_reason = "max_rows reached"
             break
         moved = _click_next_page(target, table_index)
         if not moved.get("ok"):
+            stop_reason = moved.get("reason", "pagination stopped")
             break
-        time.sleep(0.35)
+        page_moves += 1
 
     return {
         "ok": True,
@@ -1318,36 +1515,15 @@ def _read_html_pages(
         "rows": rows,
         "count": len(rows),
         "pages_read": pages_read,
-        "mutated_page": pages_read > 1,
+        "page_moves": page_moves,
+        "mutated_page": page_moves > 0,
+        "stop_reason": stop_reason,
     }
 
 
 def click_html_row_selection(row: int = 0, table_index: int = 0) -> dict:
-    """Click a row checkbox in an Ant Design HTML table."""
-    _, _, target = _target(in_frame=True)
-    wrappers = target.eles('css:.ant-table-wrapper')
-    if not wrappers or table_index >= len(wrappers):
-        return {"ok": False, "reason": "table not found"}
-    wrapper = wrappers[table_index]
-
-    rows = wrapper.eles('css:tbody > tr.ant-table-row')
-    if not rows:
-        rows = wrapper.eles('css:tbody > tr')
-    if not rows or row >= len(rows):
-        return {"ok": False, "reason": "row not found"}
-    tr = rows[row]
-
-    cb = tr.ele('css:.ant-checkbox-wrapper', timeout=0) or tr.ele('css:input[type="checkbox"]', timeout=0) or tr.ele('css:.ant-checkbox', timeout=0)
-    if not cb:
-        return {"ok": False, "reason": "row checkbox not found"}
-
-    target_ele = cb.ele('css:input[type="checkbox"]', timeout=0) or cb
-    try:
-        target_ele.click()
-    except Exception as e:
-        return {"ok": False, "reason": f"click failed: {e}"}
-
-    return {"ok": True, "row": row, "table_index": table_index}
+    """点击 HTML 表格行复选框，复用统一的可见表格与业务行语义。"""
+    return html_table.click_html_row_selection(row=row, table_index=table_index)
 
 
 def capture_page_model(
@@ -1359,11 +1535,18 @@ def capture_page_model(
     filename: str = None,
 ) -> dict:
     """Capture a structured snapshot of the active business page."""
+    max_table_rows = min(max(int(max_table_rows or 0), 0), 10_000)
+    max_elements = min(max(int(max_elements or 0), 0), 1_000)
     tab = browser_session.get_tab()
-    fr = browser_session.get_active_frame(tab)
+    fr = _active_frame(tab)
     model = {
         "ok": True,
         "captured_at": int(time.time()),
+        "ui_contract": {
+            "name": ui_contract.CONTRACT_NAME,
+            "version": ui_contract.CONTRACT_VERSION,
+            "frameworks": dict(ui_contract.FRAMEWORKS),
+        },
         "page": {
             "url": getattr(tab, "url", "") or "",
             "title": getattr(tab, "title", "") or "",
@@ -1372,6 +1555,7 @@ def capture_page_model(
         },
         "actions": {},
         "fields": {},
+        "overlays": {},
         "modals": {},
         "drawers": {},
         "pagination": {},
@@ -1386,8 +1570,23 @@ def capture_page_model(
 
     _safe("actions", lambda: scan_toolbar_actions(scope="all", max_items=max_elements))
     _safe("fields", lambda: scan_form_fields(scope="all", max_fields=max_elements))
-    _safe("modals", scan_modal)
-    _safe("drawers", scan_drawer)
+    _safe("overlays", lambda: scan_floats(
+        only_visible=True, include_table_data=False, detail="summary",
+    ))
+    overlay_items = model.get("overlays", {}).get("floats", [])
+    overlay_ok = bool(model.get("overlays", {}).get("ok"))
+    model["modals"] = {
+        "ok": overlay_ok,
+        "kind": "modal",
+        "count": sum(item.get("type") == "modal" for item in overlay_items),
+        "overlays": [item for item in overlay_items if item.get("type") == "modal"],
+    }
+    model["drawers"] = {
+        "ok": overlay_ok,
+        "kind": "drawer",
+        "count": sum(item.get("type") == "drawer" for item in overlay_items),
+        "overlays": [item for item in overlay_items if item.get("type") == "drawer"],
+    }
     _safe("pagination", scan_pagination)
 
     if include_filters:
@@ -1412,13 +1611,20 @@ def capture_page_model(
         except Exception as e:
             model["tables"] = {"ok": False, "reason": str(e)}
 
-    if include_table_data:
+    if include_tables and include_table_data:
         try:
             model["table_data"] = get_all_table_data(
                 kind="auto", max_pages=1, max_rows=max_table_rows
             )
         except Exception as e:
             model["table_data"] = {"ok": False, "reason": str(e)}
+
+    model["section_errors"] = {
+        key: value.get("reason", "section failed")
+        for key, value in model.items()
+        if isinstance(value, dict) and value.get("ok") is False
+    }
+    model["partial"] = bool(model["section_errors"])
 
     if filename:
         saved = save_json_result(model, filename)
