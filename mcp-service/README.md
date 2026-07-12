@@ -40,7 +40,7 @@ MCP client 配置示例：
       "command": "uv",
       "args": ["run", "--project", "mcp-service", "python", "mcp-service/launcher.py"],
       "env": {
-        "DRISSIONPAGE_MCP_PROFILE": "enterprise",
+        "DRISSIONPAGE_MCP_PROFILE": "full",
         "DRISSIONPAGE_MCP_CAPS": "all"
       }
     }
@@ -132,8 +132,8 @@ role_session_activate(requester) -> 验证审批结果和可见权限
 执行结果会标记 `role_mode: true`，逐步记录也会保留实际执行的角色动作。
 角色 facade 不接受代理凭据；代理请通过服务配置提供。
 
-默认 `DRISSIONPAGE_MCP_PROFILE=enterprise` 只向模型暴露企业测试主路径；底层兼容、
-调试和专用工具仍保留在服务内部。只有明确开发诊断时才使用 `full` profile。
+默认 `DRISSIONPAGE_MCP_PROFILE=full` 向模型暴露完整工具目录；需要主动减少模型上下文时
+可显式改为 `enterprise`，此时只保留稳定的企业测试主路径。
 在配置了 capability 裁剪时，审批回归需包含 `roles`，例如
 `DRISSIONPAGE_MCP_CAPS=core,roles,vtable,workflow`。
 同一 MCP 进程中的通用浏览器工具仍按调用顺序执行；这正符合多角色审批回归的状态传递模型。

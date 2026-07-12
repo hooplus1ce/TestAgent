@@ -36,7 +36,7 @@ description: 为 WMS/MOM/ERP 等企业系统迭代生成测试用例（DrissionP
 - Claude、Codex、Trae 均通过 `mcp-service/launcher.py` 启动；Skill 不直接导入服务模块，也不拼装其他启动命令。
 - 浏览器配置只读取 `mcp-service/configs/dp_configs.ini`，其中 `../dp_profile` 指向项目根浏览器数据目录。
 - 账号密码只通过 MCP 进程环境变量注入，禁止写入 Skill、用例 JSON、`.mcp.json` 或自动化配方。
-- 正常运行必须使用 `DRISSIONPAGE_MCP_PROFILE=enterprise`；`full` 仅限明确的服务开发诊断。Capability 裁剪继续使用 `DRISSIONPAGE_MCP_CAPS`。
+- 所有 Agent 正常运行统一使用 `DRISSIONPAGE_MCP_PROFILE=full` 与 `DRISSIONPAGE_MCP_CAPS=all`，模型可调用完整工具目录；只有主动压缩上下文时才切换 `enterprise`。
 
 ### 浏览器连接入口
 当用户说“连接浏览器”、开始生成用例，或任何真实页面探索前，必须执行完整 Browser Ready Gate；不要只调用 `connect()` 后继续。
@@ -68,7 +68,7 @@ role_session_close(role_id) -> cleanup
 `role_id` 使用稳定英文逻辑名，如 `requester`、`dept_manager`、`finance_approver`。服务会读取对应的 `HL_SCM_ROLE_<ROLE_ID>_USERNAME` 与 `HL_SCM_ROLE_<ROLE_ID>_USERPWD`。每个角色的首个业务动作前必须调用 `role_session_activate`；`automation_recipe.cleanup` 必须关闭所有已创建角色会话。账号只解决身份登录，正式回归还必须固定账号所属部门、权限矩阵、审批模板/路由、测试数据夹具和每个节点的业务断言。
 
 ### 工具集
-所有浏览器操作由 `drissionpage-mcp` 的企业 facade 提供：通用动作使用 `explore_action`，表格动作使用 `table_action`，表格断言使用 `query_table` / `inspect_table_cell`，浮层读取使用 `observe_snapshot`。AI 不选择底层坐标、JavaScript、监听器或 DrissionPage 原语。
+`drissionpage-mcp` 的完整工具目录均可调用。常规业务测试优先使用稳定 facade：通用动作使用 `explore_action`，表格动作使用 `table_action`，表格断言使用 `query_table` / `inspect_table_cell`，浮层读取使用 `observe_snapshot`；只有 facade 无法表达场景或进行服务诊断时才选择对应底层工具。
 
 系统配置与环境信息见 `references/scm-access.md`。
 
@@ -150,7 +150,7 @@ role_session_close(role_id) -> cleanup
 ### Phase 5 — 执行报告与回归复验
 
 1. 完成一个可复验区域后调用 `flow_stop()` 保存业务流证据；使用 `generate_test_cases_from_flow(flow_file=...)` 生成覆盖矩阵。只有结果为 `已验证` 的场景可进入正式 JSON，其他状态保留为缺口。
-2. 每条正式 JSON 必须包含显式 `automation_recipe`，配方覆盖该用例的完整业务流并包含至少一个业务断言。只允许使用稳定 MCP 动作与结构化参数；禁止裸 JavaScript、坐标换算。删除、提交、审批等破坏性操作只有在用户明确授权后才可加入，且必须配置可重复执行的清理步骤。
+2. 每条正式 JSON 必须包含显式 `automation_recipe`，配方覆盖该用例的完整业务流并包含至少一个业务断言。优先使用稳定 MCP 动作与结构化参数；底层工具只在 facade 无法表达场景且已有真实页面证据时使用。删除、提交、审批等破坏性操作只有在用户明确授权后才可加入，且必须配置可重复执行的清理步骤。
 3. 调用 `run_test_cases(case_file=...)` 逐条试运行配方，记录逐步实际结果、当次执行证据引用和性能数据。仅 `ok=true` 不代表业务通过；必须验证真实提示、数据、状态、URL 或接口响应。跳过/失败用例修复前不得进入正式交付。
 4. 调用 `generate_test_report(execution_file=..., coverage_file=..., baseline_file=...)` 输出 Markdown 测试报告；其中包含可信执行统计、按需求/风险/页面资产计算的覆盖率、结构化缺陷、当次执行截图/证据、P50/P95 性能和完整回归差异。禁止用“已生成用例数”替代页面资产总数虚增覆盖率。
 5. 使用 `compare_regression_report(execution_file=..., baseline_file=...)` 识别状态变化和超过 20% 的性能回退。不得用当前失败结果自动覆盖历史基线。
@@ -197,7 +197,7 @@ VTable 是 canvas 渲染，无真实 DOM 节点。所有点击走坐标，工具
 
 点击后如需捕获短寿命 toast（如「操作成功」），通过 `explore_action` 或 `table_action` 的 `signal` 读取，不再直接调用底层观察器。
 
-VTable 列头筛选、工具栏提示、列设置菜单由 `observe_snapshot` 返回；单元格编辑器、虚拟下拉等特殊浮层必须通过 `drissionpage-mcp` 的 VTable facade 处理。若当前工具无法返回结构化结果，记录工具缺口并降级生成低级展示类用例，不在 skill 中内联 raw JS。
+VTable 列头筛选、工具栏提示、列设置菜单由 `observe_snapshot` 返回；单元格编辑器、虚拟下拉等特殊浮层优先通过 `drissionpage-mcp` 的 VTable facade 处理。若 facade 无法返回结构化结果，可选择完整目录中的专项工具；`run_js` 仅用于有边界的诊断取证，不写入正式回归配方。
 
 ### 弹窗交互策略
 **与弹窗交互前 MUST 先用 `observe_snapshot(detail="full")` 获取弹窗结构化信息**；需要更完整页面上下文时使用 `capture_page_model`。
@@ -214,9 +214,9 @@ observe_snapshot(detail="full") → 确认当前弹窗结构和状态
 ```
 
 ### 坐标系统
-坐标换算完全属于 MCP 内部实现。Skill 不读取 ChromiumElement、不请求坐标、不调用
-任何坐标点击或 DrissionPage actions API；DOM 目标使用语义 `target`，表格目标使用
-`table_action` 的 row/column/target 参数。
+DOM 目标优先使用语义 `target`，表格目标优先使用 `table_action` 的
+row/column/target 参数。确需坐标工具时，坐标必须来自 `get_element_coords` 或其他 MCP
+结构化结果，禁止 AI 手工计算 iframe 偏移或 canvas 坐标。
 
 ### 会话维持
 `check_session()` 检测过期 → 直接 `refresh_session()`（每次重新获取新 cookie，不再缓存）→ 重新打开待测页/进入模块 → 再次 `check_session()` → `get_active_frame()`。

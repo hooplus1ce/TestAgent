@@ -26,9 +26,9 @@ Before generating test cases, confirm the active Codex session has loaded
 it through `mcp-service/launcher.py`; do not import service modules directly or
 construct another MCP command. Browser settings come from
 `mcp-service/configs/dp_configs.ini`, and local credentials come from the MCP
-process environment. Normal runs MUST use `DRISSIONPAGE_MCP_PROFILE=enterprise`;
-`full` is reserved for explicit service diagnostics. Capability filtering remains
-available through `DRISSIONPAGE_MCP_CAPS`.
+process environment. Every Agent adapter in this project uses the complete
+`full` profile. Capability filtering remains available through
+`DRISSIONPAGE_MCP_CAPS` only when a smaller tool surface is explicitly needed.
 
 ## Reference Files
 
@@ -62,8 +62,9 @@ Read only the references needed for the requested area when the task is narrow.
    `scan_table(kind="auto")`.
    Use `table_action(...)` for table interactions, `query_table(...)` for table
    assertions, and `inspect_table_cell(...)` before clicking data-row icons or
-   asserting status text/colors;
-   do not compute canvas coordinates in the skill.
+   asserting status text/colors. Prefer these facades for normal business tests;
+   the complete tool catalog is available when a specialized interaction or
+   service diagnosis requires it.
 5. Build a coverage model before generating cases: asset inventory, testable
    functions, scenario matrix, and coverage statuses (`已验证`, `待验证`,
    `需用户确认`, `工具缺口`).

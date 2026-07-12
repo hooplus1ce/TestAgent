@@ -10,10 +10,11 @@ def test_registered_catalog_matches_the_source_service():
     resources = asyncio.run(server.mcp.list_resources())
     templates = asyncio.run(server.mcp.list_resource_templates())
 
-    assert len(tools) == 31
     tool_names = {tool.name for tool in tools}
-    assert tool_names == caps.ENTERPRISE_TOOLS
-    assert {"role_session_open", "role_session_login", "run_js", "click_xy"}.isdisjoint(tool_names)
+    grouped_tools = {tool for group in caps.CAP_GROUPS.values() for tool in group}
+    assert len(tools) == 87
+    assert tool_names == grouped_tools
+    assert {"role_session_open", "role_session_login", "run_js", "click_xy"} <= tool_names
     assert {str(resource.uri) for resource in resources} == {
         "drissionpage-mcp://caps",
         "drissionpage-mcp://context",

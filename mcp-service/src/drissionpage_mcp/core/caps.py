@@ -4,8 +4,8 @@
 避免一次性加载全部工具造成上下文浪费。
 
 使用方式：
-  export DRISSIONPAGE_MCP_PROFILE=enterprise          # 默认：模型只看到企业测试主路径
-  export DRISSIONPAGE_MCP_PROFILE=full                # 调试：暴露完整工具面
+  export DRISSIONPAGE_MCP_PROFILE=full                # 默认：暴露完整工具面
+  export DRISSIONPAGE_MCP_PROFILE=enterprise          # 可选：只暴露企业测试主路径
   export DRISSIONPAGE_MCP_CAPS=core,vtable,filter  # 启用指定分组
   export DRISSIONPAGE_MCP_CAPS=all                 # 启用所有分组
 
@@ -100,7 +100,7 @@ CAP_GROUPS = {
 }
 
 
-# 模型默认只看到无歧义的企业测试主路径。被隐藏的工具仍可供服务内部和 full profile 使用。
+# enterprise profile 只保留无歧义的企业测试主路径；full profile 暴露全部分组工具。
 ENTERPRISE_TOOLS = {
     # 浏览器、会话与模块导航
     "connect", "browser_tabs", "check_session", "refresh_session",
@@ -124,9 +124,9 @@ PROFILES = {"enterprise", "full"}
 
 
 def get_enabled_profile() -> str:
-    """返回模型工具面 profile；未知值安全回退到 enterprise。"""
-    profile = os.environ.get("DRISSIONPAGE_MCP_PROFILE", "enterprise").strip().lower()
-    return profile if profile in PROFILES else "enterprise"
+    """返回模型工具面 profile；未配置或未知值均使用完整工具面。"""
+    profile = os.environ.get("DRISSIONPAGE_MCP_PROFILE", "full").strip().lower()
+    return profile if profile in PROFILES else "full"
 
 
 def get_enabled_caps() -> set[str]:

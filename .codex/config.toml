@@ -39,5 +39,5 @@ env_vars = [
 ]
 
 [mcp_servers.drissionpage-mcp.env]
-DRISSIONPAGE_MCP_PROFILE = "enterprise"
+DRISSIONPAGE_MCP_PROFILE = "full"
 DRISSIONPAGE_MCP_CAPS = "all"

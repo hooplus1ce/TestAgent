@@ -26,7 +26,7 @@ drissionpage_mcp.server (stdio FastMCP)
 - 服务配置：`mcp-service/configs/dp_configs.ini`
 - 浏览器用户目录：配置中的 `../dp_profile`
 - 证据目录：默认 `mcp-service/resources/`
-- 模型工具面：默认 `DRISSIONPAGE_MCP_PROFILE=enterprise`
+- 模型工具面：默认 `DRISSIONPAGE_MCP_PROFILE=full`
 - 能力裁剪：仅 `DRISSIONPAGE_MCP_CAPS`
 - 凭据：仅通过 MCP 进程环境变量注入
 
@@ -42,7 +42,7 @@ launcher 先把工作目录固定到 `mcp-service/`，因此 ini 中所有相对
 | `resources` | 证据路径约束、原子写入和 MCP resource 暴露 |
 | Skills | 探索策略、覆盖政策、企业测试用例业务语言和 Excel 输出 |
 
-Skills 不导入内部 Python 模块，不执行裸 JavaScript 或自行换算 VTable 坐标，只通过稳定 MCP 工具契约编排。
+Skills 不导入内部 Python 模块或自行换算 VTable 坐标；常规回归优先通过稳定 MCP 工具契约编排，`run_js` 只用于有边界的诊断取证。
 
 ## 证据闭环
 
@@ -66,7 +66,7 @@ Skills 不导入内部 Python 模块，不执行裸 JavaScript 或自行换算 V
 ## 验收约束
 
 1. 仓库中只有 `mcp-service` 一套 MCP 实现和一个 launcher。
-2. 所有 Agent 配置的命令均指向该 launcher，并固定 31 工具的 enterprise profile。
+2. 所有 Agent 配置的命令均指向该 launcher，并通过 full profile 暴露完整工具目录。
 3. 根测试和服务测试都导入 `drissionpage_mcp` 新包。
 4. Skill 引用的工具必须存在于 MCP `tools/list`。
 5. 标准 MCP 客户端能够完成 initialize、resources/list 和 tools/list。

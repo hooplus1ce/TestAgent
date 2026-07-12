@@ -25,7 +25,7 @@
 | **P** | 编写人 | `"编写人"` | ✅ | 初始填 `DEFAULT_AUTHOR`，可被用户覆盖 |
 | **Q** | 编写时间 | `"编写时间"` | ✅ | `date.today().isoformat()`，自动填充 |
 | **R** | 备注 | `"备注"` | ❌ | 骨架用例填 `[待确认]`，其余留空 |
-| **S** | 自动化建议 | `"自动化建议"` | ✅ | 面向 drissionpage-mcp enterprise facade 的动作与断言建议，如使用 `scan_filter_fields`、`explore_action`、`query_table` 等 |
+| **S** | 自动化建议 | `"自动化建议"` | ✅ | 面向 drissionpage-mcp 工具的动作与断言建议，如使用 `scan_filter_fields`、`explore_action`、`query_table` 等 |
 
 ## 与 JSON 导出器的对应关系
 

@@ -5838,7 +5838,7 @@ def browser_list_caps() -> dict:
         "available_caps": {
             cap: tools for cap, tools in caps.CAP_GROUPS.items()
         },
-        "env_hint": "Use DRISSIONPAGE_MCP_PROFILE=enterprise normally; full is for explicit diagnostics. DRISSIONPAGE_MCP_CAPS further narrows groups.",
+        "env_hint": "The default full profile exposes every grouped tool. Use DRISSIONPAGE_MCP_PROFILE=enterprise only for explicit context reduction; DRISSIONPAGE_MCP_CAPS further narrows groups.",
     }
 
 

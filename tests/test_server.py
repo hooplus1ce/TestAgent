@@ -11,39 +11,7 @@ import time
 from unittest.mock import MagicMock, patch
 
 
-EXPECTED_PUBLIC_TOOLS = {
-    "browser_tabs",
-    "capture_page_model",
-    "connect",
-    "refresh_session",
-    "check_session",
-    "enter_module",
-    "explore_action",
-    "flow_start",
-    "flow_status",
-    "flow_capture_page_state",
-    "flow_stop",
-    "generate_test_cases_from_flow",
-    "run_test_cases",
-    "generate_test_report",
-    "compare_regression_report",
-    "scan_filter_fields",
-    "get_active_frame",
-    "observe_snapshot",
-    "find_elements",
-    "screenshot",
-    "scan_table",
-    "query_table",
-    "inspect_table_cell",
-    "table_action",
-    "close_modal",
-    "network_trace_start",
-    "network_trace_stop",
-    "role_session_start",
-    "role_session_activate",
-    "role_session_list",
-    "role_session_close",
-}
+FULL_TOOL_COUNT = 87
 
 REMOVED_DUPLICATE_TOOLS = {
     "login_ocr",
@@ -83,9 +51,14 @@ def _tool_names():
 
 
 def test_public_tool_surface():
-    """enterprise profile 只公开无歧义的企业测试主路径。"""
+    """默认 full profile 必须公开所有 capability 分组中的工具。"""
+    from drissionpage_mcp.core import caps
+
     names = _tool_names()
-    assert names == EXPECTED_PUBLIC_TOOLS
+    grouped_tools = {tool for tools in caps.CAP_GROUPS.values() for tool in tools}
+    assert len(names) == FULL_TOOL_COUNT
+    assert names == grouped_tools
+    assert {"run_js", "click_xy", "role_session_open", "role_session_login"} <= names
 
 
 def test_public_tools_are_grouped_in_caps():
@@ -96,7 +69,7 @@ def test_public_tools_are_grouped_in_caps():
         for tools in caps.CAP_GROUPS.values()
         for tool in tools
     }
-    assert EXPECTED_PUBLIC_TOOLS <= grouped_tools
+    assert _tool_names() == grouped_tools
 
 
 def test_public_tools_include_mcp_annotations():
@@ -145,8 +118,12 @@ def test_caps_resource_returns_json():
     contents = asyncio.run(server.mcp.read_resource("drissionpage-mcp://caps"))
     data = json.loads(contents[0].content)
 
-    assert data["profile"] == "enterprise"
-    assert set(data["exposed_tools"]) == EXPECTED_PUBLIC_TOOLS
+    from drissionpage_mcp.core import caps
+
+    assert data["profile"] == "full"
+    assert set(data["exposed_tools"]) == {
+        tool for tools in caps.CAP_GROUPS.values() for tool in tools
+    }
     assert data["enabled"]
     assert "core" in data["available"]
 
@@ -397,9 +374,12 @@ def test_explore_action_observe_mode_none_skips_observer():
 def test_enterprise_explore_action_rejects_low_level_or_unobserved_requests():
     from drissionpage_mcp import server
 
-    coordinate = server.explore_action(action="click_xy", x=10, y=20)
-    javascript = server.explore_action(action="click", locator="text:保存", by_js=True)
-    unobserved = server.explore_action(action="input", field_name="单号", text="PO-1", observe_mode="none")
+    with patch.object(server.caps, "ENABLED_PROFILE", "enterprise"):
+        coordinate = server.explore_action(action="click_xy", x=10, y=20)
+        javascript = server.explore_action(action="click", locator="text:保存", by_js=True)
+        unobserved = server.explore_action(
+            action="input", field_name="单号", text="PO-1", observe_mode="none",
+        )
 
     for result in (coordinate, javascript, unobserved):
         assert result["ok"] is False
@@ -532,7 +512,7 @@ async def main():
     tools = await server.mcp.list_tools()
     data = {
         "has_explore_action": "explore_action" in {tool.name for tool in tools},
-        "set_date_hidden": "set_date" not in {tool.name for tool in tools},
+        "has_set_date": "set_date" in {tool.name for tool in tools},
         "dash": server._normalize_date_value("2026-06-01"),
         "slash": server._normalize_date_value("2026/06/01"),
         "invalid": server._normalize_date_value("2026.06.01"),
@@ -551,7 +531,7 @@ asyncio.run(main())
     data = json.loads(result.stdout)
 
     assert data["has_explore_action"] is True
-    assert data["set_date_hidden"] is True
+    assert data["has_set_date"] is True
     assert data["dash"] == {
         "ok": True,
         "dash": "2026-06-01",
