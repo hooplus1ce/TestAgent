@@ -10,14 +10,15 @@ wheels/
 .venv
 node_modules/
 
+# Local runtime configuration and secrets
+.env
+!.env.example
+
 # Excel test case files
 *.xlsx
 
 # Chrome 用户数据目录（DrissionPage --user-data-dir，几百 MB）
 dp_profile/
-
-# 旧位置可能仍有本机配置；服务只读取 mcp-service/configs/。
-configs/dp_configs.ini
 
 # 截图和测试资源文件夹
 resources/

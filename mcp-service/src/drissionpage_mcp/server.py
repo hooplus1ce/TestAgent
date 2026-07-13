@@ -3,7 +3,7 @@
 供 AI 驱动的 UI 测试技能调用。浏览器原语(连接/扫描/点击/输入/截图)、
 VTable 工具(内部 frame.run_js 注入 bundled JS)、会话维持、弹窗检测、网络监听。
 
-启动：uv run --project mcp-service drissionpage-mcp-refactored  (stdio 传输)
+启动：uv run --package drissionpage-mcp drissionpage-mcp  (stdio 传输)
 """
 import functools
 import importlib.metadata
@@ -1890,14 +1890,272 @@ def _wait_calendar_ym_change(cal, previous: tuple[int, int], timeout: float) -> 
         return previous
 
 
+def _date_field_contexts(in_frame: bool, scope: str) -> tuple[object, list[tuple[str, object]], list[str]]:
+    """Resolve the same scope ordering used by the semantic field facades."""
+    tab = browser_session.get_tab()
+    contexts = []
+    if in_frame and scope != "top":
+        frame = browser_session.get_active_frame(tab)
+        if frame is not None:
+            contexts.append(("iframe", frame))
+    if scope in {"auto", "top", "modal", "drawer", "overlay", "filter", "page"} or not contexts:
+        contexts.append(("top", tab))
+
+    if scope == "modal":
+        areas = ["modal"]
+    elif scope == "drawer":
+        areas = ["drawer"]
+    elif scope == "overlay":
+        areas = ["modal", "drawer"]
+    elif scope == "filter":
+        areas = ["filter"]
+    elif scope == "page":
+        areas = ["page"]
+    else:
+        areas = ["modal", "drawer", "filter", "page"]
+    return tab, contexts, areas
+
+
+def _date_picker_inputs(picker) -> list:
+    try:
+        inputs = picker.eles(
+            "css:input.ant-calendar-range-picker-input,input.ant-calendar-picker-input,"
+            ".ant-picker-input input,input:not([type='hidden'])",
+            timeout=0.3,
+        ) or []
+    except Exception:
+        inputs = []
+    return [item for item in inputs if _element_is_visible(item)]
+
+
+def _date_picker_values(picker) -> list[str]:
+    values = []
+    for item in _date_picker_inputs(picker):
+        value = None
+        try:
+            value = item.property("value")
+        except Exception:
+            pass
+        if value is None:
+            try:
+                value = item.attr("value")
+            except Exception:
+                value = None
+        values.append(str(value or ""))
+    return values
+
+
+def _resolve_date_picker(field_name: str, in_frame: bool = True, scope: str = "auto",
+                         select_index: int = 0, timeout: float = 5.0) -> dict:
+    """Find only the date value control, never a sibling Quick Filter select."""
+    field_name = str(field_name or "").strip()
+    scope = str(scope or "auto").strip().lower()
+    supported = {"auto", "top", "frame", "iframe", "modal", "drawer", "overlay", "filter", "page"}
+    if not field_name:
+        return {"ok": False, "reason": "field_name is required"}
+    if scope not in supported:
+        return {"ok": False, "reason": "unsupported scope: %s" % scope}
+
+    timeout = max(float(timeout or 0), 0.0)
+    deadline = time.monotonic() + timeout
+    select_index = max(int(select_index or 0), 0)
+
+    def remaining(cap=None):
+        available = max(deadline - time.monotonic(), 0.0)
+        return min(available, cap) if cap is not None else available
+
+    tab, contexts, areas = _date_field_contexts(in_frame, scope)
+    if scope in {"frame", "iframe"} and not any(name == "iframe" for name, _ in contexts):
+        return {"ok": False, "reason": "未找到活动 iframe"}
+
+    picker_locator = "css:.ant-calendar-picker,.ant-picker"
+
+    def from_container(container, scope_name: str, area: str, component: str):
+        try:
+            pickers = [
+                item for item in container.eles(picker_locator, timeout=remaining(0.4))
+                if _element_is_visible(item)
+            ]
+        except Exception:
+            pickers = []
+        if not pickers:
+            return None
+        index = min(select_index, len(pickers) - 1)
+        picker = pickers[index]
+        inputs = _date_picker_inputs(picker)
+        range_inputs = []
+        try:
+            range_inputs = [
+                item for item in picker.eles("css:input.ant-calendar-range-picker-input", timeout=0.2)
+                if _element_is_visible(item)
+            ]
+        except Exception:
+            pass
+        return {
+            "ok": True,
+            "tab": tab,
+            "target": dict(contexts).get(scope_name),
+            "container": container,
+            "picker": picker,
+            "inputs": inputs,
+            "picker_mode": "range" if len(range_inputs) >= 2 else "single",
+            "scope": scope_name,
+            "area": area,
+            "component": component,
+            "select_index": index,
+        }
+
+    for scope_name, context in contexts:
+        for area in areas:
+            if remaining() <= 0:
+                break
+            if area == "filter":
+                column, _ = filter_area._quick_filter_field_column(context, field_name)
+                if column is not None:
+                    resolved = from_container(
+                        column, scope_name, area, "legions-pro-quick-filter",
+                    )
+                    if resolved is not None:
+                        return resolved
+                continue
+
+            containers = _semantic_field_candidates(context, field_name, area, remaining(2.0))
+            exact = [
+                item for item in containers
+                if _compact_text(_field_container_label(item)) == _compact_text(field_name)
+            ]
+            for container in reversed(exact or containers):
+                resolved = from_container(container, scope_name, area, "ant-design")
+                if resolved is not None:
+                    return resolved
+
+    reason = "field lookup timed out" if remaining() <= 0 else "date field not found"
+    return {"ok": False, "reason": "%s: %s" % (reason, field_name),
+            "scope": scope, "in_frame": in_frame}
+
+
+def _open_date_calendar(resolved: dict, timeout: float) -> tuple[object, object] | tuple[None, None]:
+    picker = resolved["picker"]
+    inputs = resolved.get("inputs") or _date_picker_inputs(picker)
+    opener = inputs[0] if inputs else None
+    if opener is None:
+        try:
+            opener = picker.ele(
+                "css:.ant-calendar-picker-input,.ant-picker-input", timeout=min(timeout, 0.5)
+            )
+        except Exception:
+            opener = None
+    opener = opener or picker
+    try:
+        waiter = getattr(opener, "wait", None)
+        if waiter is not None:
+            waiter.clickable(timeout=timeout, wait_stop=True, raise_err=False)
+        try:
+            opener.click(by_js=False, timeout=timeout, wait_stop=True)
+        except TypeError:
+            opener.click()
+    except Exception:
+        return None, None
+
+    targets = [resolved.get("target"), resolved.get("tab")]
+    seen = set()
+    deadline = time.monotonic() + max(float(timeout or 0), 0.0)
+    for target in targets:
+        if target is None or id(target) in seen:
+            continue
+        seen.add(id(target))
+        remaining = max(deadline - time.monotonic(), 0.0)
+        if remaining <= 0:
+            break
+        cal = _find_calendar_root(target, timeout=min(remaining, 3.0))
+        if cal is not None and _element_is_visible(cal):
+            return target, cal
+    return None, None
+
+
+def _calendar_date_cell(cal, normalized: dict):
+    selectors = (
+        'c:td[title="%s"]:not(.ant-calendar-last-month-cell)'
+        ':not(.ant-calendar-next-month-btn-day)'
+        ':not(.ant-calendar-next-month-cell) .ant-calendar-date' % normalized["slash"],
+        'c:td[title="%s"] .ant-calendar-date' % normalized["slash"],
+    )
+    for selector in selectors:
+        try:
+            cell = cal.ele(selector, timeout=0.2)
+        except Exception:
+            cell = None
+        if cell is not None and _element_is_visible(cell):
+            return cell
+    return None
+
+
+def _select_calendar_date(cal, normalized: dict, deadline: float) -> dict:
+    navigations = []
+    target_index = normalized["year"] * 12 + normalized["month"]
+    for _ in range(600):
+        if time.monotonic() >= deadline:
+            return {"ok": False, "reason": "日期选择超时", "navigations": navigations}
+        cell = _calendar_date_cell(cal, normalized)
+        if cell is not None:
+            try:
+                cell.click(by_js=False, timeout=max(deadline - time.monotonic(), 0), wait_stop=True)
+            except TypeError:
+                cell.click()
+            return {"ok": True, "navigations": navigations}
+
+        current = _calendar_shown_ym(cal)
+        current_index = current[0] * 12 + current[1]
+        try:
+            has_right_panel = cal.ele("c:.ant-calendar-range-right", timeout=0.1) is not None
+        except Exception:
+            has_right_panel = False
+        visible_span = 1 if has_right_panel else 0
+        delta = target_index - current_index
+        if 0 <= delta <= visible_span:
+            return {
+                "ok": False,
+                "reason": "未找到日期单元格: %s" % normalized["slash"],
+                "navigations": navigations,
+            }
+        forward = delta > visible_span
+        selector = "c:.ant-calendar-next-month-btn" if forward else "c:.ant-calendar-prev-month-btn"
+        try:
+            button = cal.ele(selector, timeout=min(max(deadline - time.monotonic(), 0), 1.0))
+        except Exception:
+            button = None
+        if button is None:
+            return {"ok": False, "reason": "未找到日历翻月按钮", "navigations": navigations}
+        try:
+            button.click(by_js=False, timeout=min(max(deadline - time.monotonic(), 0), 1.5), wait_stop=True)
+        except TypeError:
+            button.click()
+        after = _wait_calendar_ym_change(cal, current, min(max(deadline - time.monotonic(), 0), 1.5))
+        navigations.append({
+            "direction": "next" if forward else "prev",
+            "from": "%04d-%02d" % current,
+            "to": "%04d-%02d" % after,
+        })
+        if after == current:
+            return {"ok": False, "reason": "日历翻月后月份未变化", "navigations": navigations}
+    return {"ok": False, "reason": "日历翻月超过上限", "navigations": navigations}
+
+
+def _date_part(value: str) -> str:
+    matched = re.search(r"\d{4}[-/]\d{2}[-/]\d{2}", str(value or ""))
+    return matched.group(0).replace("/", "-") if matched else ""
+
+
 @mcp.tool()
 @write_synchronized
-def set_date(field_name: str, date: str, in_frame: bool = True,
-             timeout: float = 8, select_index: int = 0) -> dict:
-    """设置单日期字段，一次完成打开日历、翻月、选日和字段值校验。
+def set_date(field_name: str, date: str = None, start_date: str = None,
+             end_date: str = None, in_frame: bool = True, timeout: float = 8,
+             select_index: int = 0, scope: str = "auto") -> dict:
+    """统一设置日期字段，自动适配 Ant DatePicker/RangePicker 与 Legions Quick Filter。
 
-    返回只包含日期控件相关的紧凑信息，不返回父弹窗完整字段/按钮快照。
-    date 支持 YYYY-MM-DD 或 YYYY/MM/DD。
+    单日期传 ``date``；日期范围传 ``start_date`` 和 ``end_date``。工具按真实控件形态
+    自动选择单日或范围交互。Quick Filter 的单边界日期字段只能接收一个日期。
+    日期格式支持 YYYY-MM-DD 或 YYYY/MM/DD。
     """
     timeout = max(float(timeout or 0), 0.0)
     started = time.monotonic()
@@ -1906,120 +2164,111 @@ def set_date(field_name: str, date: str, in_frame: bool = True,
     def remaining(cap=None):
         value = max(deadline - time.monotonic(), 0.0)
         return min(value, cap) if cap is not None else value
-    normalized = _normalize_date_value(date)
-    if not normalized.get("ok"):
-        return normalized
+    has_single = date not in (None, "")
+    has_range = start_date not in (None, "") or end_date not in (None, "")
+    if has_single and has_range:
+        return {"ok": False, "reason": "date 不能与 start_date/end_date 同时使用"}
+    if not has_single and not (start_date not in (None, "") and end_date not in (None, "")):
+        return {"ok": False, "reason": "请传 date，或同时传 start_date 和 end_date"}
 
-    tab = browser_session.get_tab()
-    before_target = browser_session.get_active_frame(tab) if in_frame else tab
-    before = _field_snapshot(before_target or tab, field_name, select_index=select_index)
+    requested_mode = "single" if has_single else "range"
+    start_raw = date if has_single else start_date
+    end_raw = date if has_single else end_date
+    normalized_start = _normalize_date_value(start_raw)
+    if not normalized_start.get("ok"):
+        return normalized_start
+    normalized_end = _normalize_date_value(end_raw)
+    if not normalized_end.get("ok"):
+        return normalized_end
+    if normalized_start["dash"] > normalized_end["dash"]:
+        return {"ok": False, "reason": "开始日期不能晚于结束日期"}
 
-    click_result = _click_field_raw(
-        field_name,
-        in_frame=in_frame,
+    resolved = _resolve_date_picker(
+        field_name, in_frame=in_frame, scope=scope, select_index=select_index,
         timeout=remaining(5),
-        scope="auto" if in_frame else "top",
-        select_index=select_index,
     )
-    if not click_result.get("ok"):
-        click_result["elapsedMs"] = int((time.monotonic() - started) * 1000)
-        return click_result
+    if not resolved.get("ok"):
+        resolved["action"] = "set_date"
+        resolved["field_name"] = field_name
+        resolved["elapsedMs"] = int((time.monotonic() - started) * 1000)
+        return resolved
 
-    scope = click_result.get("scope") or ("iframe" if in_frame else "top")
-    target = browser_session.get_active_frame(tab) if scope == "iframe" else tab
-    if target is None:
-        return {"ok": False, "reason": "未找到活动 iframe", "action": "set_date",
-                "field_name": field_name, "elapsedMs": int((time.monotonic() - started) * 1000)}
+    picker_mode = resolved["picker_mode"]
+    if picker_mode == "single" and normalized_start["dash"] != normalized_end["dash"]:
+        return {
+            "ok": False,
+            "reason": "目标是单边界日期控件，不能写入不同的开始和结束日期；请结合筛选操作符并传 date",
+            "action": "set_date",
+            "field_name": field_name,
+            "component": resolved["component"],
+            "picker_mode": picker_mode,
+            "elapsedMs": int((time.monotonic() - started) * 1000),
+        }
 
-    cal = _find_calendar_root(target, timeout=remaining(5))
+    before_values = _date_picker_values(resolved["picker"])
+    calendar_target, cal = _open_date_calendar(resolved, remaining(4))
     if cal is None:
-        return {"ok": False, "reason": "日历面板未弹出", "action": "set_date",
-                "field_name": field_name, "click": click_result,
-                "elapsedMs": int((time.monotonic() - started) * 1000)}
+        return {
+            "ok": False, "reason": "日历面板未弹出", "action": "set_date",
+            "field_name": field_name, "component": resolved["component"],
+            "picker_mode": picker_mode,
+            "elapsedMs": int((time.monotonic() - started) * 1000),
+        }
 
-    opened = _calendar_snapshot(target, normalized["slash"])
-    target_year = normalized["year"]
-    target_month = normalized["month"]
-    navigations = []
+    opened = _calendar_snapshot(calendar_target, normalized_start["slash"])
+    selected_start = _select_calendar_date(cal, normalized_start, deadline)
+    if not selected_start.get("ok"):
+        return {
+            **selected_start, "action": "set_date", "field_name": field_name,
+            "component": resolved["component"], "picker_mode": picker_mode,
+            "opened": opened, "elapsedMs": int((time.monotonic() - started) * 1000),
+        }
 
-    for _ in range(600):
-        if remaining() <= 0:
-            return {"ok": False, "reason": "日期选择超时", "action": "set_date",
-                    "field_name": field_name, "opened": opened,
-                    "navigations": navigations,
-                    "elapsedMs": int((time.monotonic() - started) * 1000)}
-        cur_year, cur_month = _calendar_shown_ym(cal)
-        if cur_year == target_year and cur_month == target_month:
-            break
-        delta = (target_year * 12 + target_month) - (cur_year * 12 + cur_month)
-        direction = "next" if delta > 0 else "prev"
-        btn_sel = "c:.ant-calendar-next-month-btn" if delta > 0 else "c:.ant-calendar-prev-month-btn"
-        btn = cal.ele(btn_sel, timeout=remaining(1))
-        if not btn:
-            return {"ok": False, "reason": "未找到%s按钮" % ("下一月" if delta > 0 else "上一月"),
-                    "action": "set_date", "field_name": field_name,
-                    "opened": opened, "navigations": navigations,
-                    "elapsedMs": int((time.monotonic() - started) * 1000)}
-        before_ym = (cur_year, cur_month)
-        btn.click(by_js=False, timeout=remaining(1.5), wait_stop=True)
-        after_ym = _wait_calendar_ym_change(cal, before_ym, remaining(1.5))
-        navigations.append({
-            "direction": direction,
-            "from": "%04d-%02d" % before_ym,
-            "to": "%04d-%02d" % after_ym,
-        })
-        if after_ym == before_ym:
-            return {"ok": False, "reason": "日历翻月后月份未变化", "action": "set_date",
-                    "field_name": field_name, "opened": opened,
-                    "navigations": navigations,
-                    "elapsedMs": int((time.monotonic() - started) * 1000)}
-    else:
-        return {"ok": False, "reason": "日历翻月超过上限", "action": "set_date",
-                "field_name": field_name, "opened": opened, "navigations": navigations,
-                "elapsedMs": int((time.monotonic() - started) * 1000)}
-
-    ready = _calendar_snapshot(target, normalized["slash"])
-    if not ready.get("ok"):
-        return {"ok": False, "reason": ready.get("reason", "日历扫描失败"),
-                "action": "set_date", "field_name": field_name,
+    navigations = list(selected_start.get("navigations") or [])
+    if picker_mode == "range":
+        cal = _find_calendar_root(calendar_target, timeout=remaining(2)) or cal
+        selected_end = _select_calendar_date(cal, normalized_end, deadline)
+        navigations.extend(selected_end.get("navigations") or [])
+        if not selected_end.get("ok"):
+            return {
+                **selected_end, "action": "set_date", "field_name": field_name,
+                "component": resolved["component"], "picker_mode": picker_mode,
                 "opened": opened, "navigations": navigations,
-                "elapsedMs": int((time.monotonic() - started) * 1000)}
-    if not ready.get("targetCell"):
-        return {"ok": False, "reason": "未找到日期单元格: %s" % normalized["slash"],
-                "action": "set_date", "field_name": field_name,
-                "opened": opened, "calendar": ready, "navigations": navigations,
-                "elapsedMs": int((time.monotonic() - started) * 1000)}
+                "elapsedMs": int((time.monotonic() - started) * 1000),
+            }
 
-    cell = cal.ele(
-        'c:td[title="%s"]:not(.ant-calendar-last-month-cell)'
-        ':not(.ant-calendar-next-month-btn-day)'
-        ':not(.ant-calendar-next-month-cell) .ant-calendar-date' % normalized["slash"],
+    try:
+        calendar_target.wait.ele_hidden(
+            "c:.ant-calendar-picker-container .ant-calendar",
+            timeout=remaining(2), raise_err=False,
+        )
+    except Exception:
+        pass
+
+    refreshed = _resolve_date_picker(
+        field_name, in_frame=in_frame, scope=scope, select_index=select_index,
         timeout=remaining(1),
     )
-    if cell is None:
-        return {"ok": False, "reason": "未找到日期单元格: %s" % normalized["slash"],
-                "action": "set_date", "field_name": field_name,
-                "opened": opened, "calendar": ready, "navigations": navigations,
-                "elapsedMs": int((time.monotonic() - started) * 1000)}
-    cell.click(by_js=False, timeout=remaining(2), wait_stop=True)
-    target.wait.ele_hidden(
-        "c:.ant-calendar-picker-container .ant-calendar",
-        timeout=remaining(2),
-        raise_err=False,
-    )
-    after = _field_snapshot(target, field_name, select_index=select_index)
-    actual_value = str(after.get("value") or "").replace("/", "-")
-    ok = bool(after.get("ok") and actual_value == normalized["dash"])
+    after_picker = refreshed.get("picker") if refreshed.get("ok") else resolved["picker"]
+    after_values = _date_picker_values(after_picker)
+    actual_start = _date_part(after_values[0] if after_values else "")
+    actual_end = _date_part(after_values[1] if len(after_values) > 1 else "")
+    if picker_mode == "range":
+        ok = actual_start == normalized_start["dash"] and actual_end == normalized_end["dash"]
+    else:
+        ok = actual_start == normalized_start["dash"]
     result = {
         "ok": ok,
         "action": "set_date",
         "field_name": field_name,
-        "date": normalized["dash"],
-        "scope": scope,
+        "requested_mode": requested_mode,
+        "picker_mode": picker_mode,
+        "component": resolved["component"],
+        "scope": resolved["scope"],
+        "area": resolved["area"],
         "field": {
-            "before": before.get("value") if before.get("ok") else "",
-            "after": after.get("value") if after.get("ok") else "",
-            "rect": after.get("rect") if after.get("ok") else before.get("rect"),
+            "before": before_values,
+            "after": after_values,
         },
         "calendar": {
             "opened": {
@@ -2027,15 +2276,15 @@ def set_date(field_name: str, date: str, in_frame: bool = True,
                 "cellCount": opened.get("cellCount"),
                 "rect": opened.get("rect"),
             },
-            "ready": {
-                "title": ready.get("title"),
-                "targetCell": ready.get("targetCell"),
-                "nav": ready.get("nav"),
-            },
             "navigations": navigations,
         },
         "elapsedMs": int((time.monotonic() - started) * 1000),
     }
+    if requested_mode == "single":
+        result["date"] = normalized_start["dash"]
+    else:
+        result["startDate"] = normalized_start["dash"]
+        result["endDate"] = normalized_end["dash"]
     if not ok:
         result["reason"] = "日期字段值校验失败"
     return result
@@ -2246,7 +2495,7 @@ def _resolve_observe_policy(signals, listen_targets, expect: str, observe_mode: 
 
 @mcp.tool()
 @write_synchronized
-def explore_action(action: Literal["click", "input", "set_date", "date_range",
+def explore_action(action: Literal["click", "input", "set_date",
                                    "table_cell", "select_option", "press_key"] = "click",
                    target: dict = None,
                    locator: str = None, x: float = None, y: float = None,
@@ -2263,7 +2512,8 @@ def explore_action(action: Literal["click", "input", "set_date", "date_range",
                    clean_overlays: bool = True) -> dict:
     """动作探索封装：observe_start → 执行动作 → observe_wait → 可选页面模型快照。
 
-    enterprise profile 的 action 可选 click/input/set_date/date_range/table_cell/select_option/press_key。target 可选语义目标：
+    enterprise profile 的 action 可选 click/input/set_date/table_cell/select_option/press_key。
+    set_date 通过 date 设置单日，通过 start_date/end_date 设置范围。target 可选语义目标：
     {"type":"field","name":"工作日期"}、{"type":"button","text":"添加"}、
     {"type":"css","value":"button.ant-btn"}、{"type":"xpath","value":"//button"}、
     也可使用旧参数 locator/field_name。enterprise profile 禁止显式坐标、JS 点击和跳过观察；
@@ -2382,16 +2632,29 @@ def explore_action(action: Literal["click", "input", "set_date", "date_range",
                 action_result = input(locator, text, in_frame=in_frame, timeout=timeout)
                 action_result["action"] = "input"
         elif action_name == "set_date":
-            if not field_name or not date:
-                action_result = {"ok": False, "reason": "field_name and date are required for set_date"}
+            if not field_name or not (date or (start_date and end_date)):
+                action_result = {
+                    "ok": False,
+                    "reason": "set_date requires field_name and either date or start_date/end_date",
+                }
             else:
-                action_result = set_date(field_name, date, in_frame=in_frame, timeout=timeout)
+                action_result = set_date(
+                    field_name, date=date, start_date=start_date, end_date=end_date,
+                    in_frame=in_frame, timeout=timeout,
+                    scope=target_meta.get("scope", "auto"),
+                    select_index=int(target_meta.get("select_index", 0) or 0),
+                )
                 action_result["action"] = "set_date"
         elif action_name == "date_range":
             if not field_name or not start_date or not end_date:
                 action_result = {"ok": False, "reason": "field_name, start_date and end_date are required for date_range"}
             else:
-                action_result = select_date_range(field_name, start_date, end_date)
+                action_result = set_date(
+                    field_name, start_date=start_date, end_date=end_date,
+                    in_frame=in_frame, timeout=timeout,
+                    scope=target_meta.get("scope", "auto"),
+                    select_index=int(target_meta.get("select_index", 0) or 0),
+                )
                 action_result["action"] = "date_range"
         elif action_name == "field_click":
             scope = "auto" if in_frame else "top"
@@ -4342,23 +4605,14 @@ def click_xy(x: float, y: float, hover_first: bool = True, duration: float = 0.3
         )
     return _attach_cleanup({"ok": True, "x": x, "y": y, "times": times}, cleanup)
 
-@mcp.tool()
-@write_synchronized
-def select_date_range(field_name: str, start_date: str, end_date: str) -> dict:
-    """选择筛选区中 Ant Design RangePicker 日期范围。
-
-    支持字段名匹配（如「领料时间」「发料时间」「创建时间」），自动导航
-    到目标年/月，通过 title 属性精确点击开始/结束日期。
-
-    Args:
-        field_name: 筛选字段名称，如「领料时间」「发料时间」「创建时间」
-        start_date: 开始日期，格式 "yyyy/MM/dd"，如 "2026/05/01"
-        end_date: 结束日期，格式 "yyyy/MM/dd"，如 "2026/05/31"
-
-    Returns:
-        {ok, startValue, endValue, reason}
-    """
-    return filter_area.select_date_range(field_name, start_date, end_date)
+def select_date_range(field_name: str, start_date: str, end_date: str,
+                      in_frame: bool = True, timeout: float = 8,
+                      select_index: int = 0, scope: str = "auto") -> dict:
+    """Backward-compatible recipe shim; the public MCP entry is ``set_date``."""
+    return set_date(
+        field_name, start_date=start_date, end_date=end_date,
+        in_frame=in_frame, timeout=timeout, select_index=select_index, scope=scope,
+    )
 
 
 @mcp.tool()
@@ -5447,25 +5701,19 @@ def listen_wait(count: int = 1, timeout: float = 10, fit_count: bool = False) ->
     count>1 返回 packets 列表。fit_count=False 时超时前抓到多少返回多少，适合探索式断言。"""
     tab = browser_session.get_tab()
     try:
-        try:
-            packet = tab.listen.wait(
-                count=count,
-                timeout=timeout,
-                fit_count=fit_count,
-                raise_err=False,
-            )
-        except TypeError:
-            packet = tab.listen.wait(count=count, timeout=timeout, fit_count=fit_count)
+        packets = network_record.wait_for_business_packets(
+            tab.listen, count=count, timeout=timeout, fit_count=fit_count,
+        )
     except Exception as exc:
         return {"ok": False, "reason": "监听等待失败: %s" % exc}
-    if not packet:
+    if not packets:
         return {"ok": False, "reason": "timeout", "hint": "确认 listen_start 的 targets 是否正确，或增大 timeout"}
-    if isinstance(packet, list):
+    if count > 1 or len(packets) > 1:
         return {
             "ok": True,
-            "packets": [network_record.packet_to_dict(item) for item in packet],
+            "packets": [network_record.packet_to_dict(item) for item in packets],
         }
-    return {"ok": True, **network_record.packet_to_dict(packet)}
+    return {"ok": True, **network_record.packet_to_dict(packets[0])}
 
 
 @mcp.tool()
@@ -5541,6 +5789,95 @@ def mouse_trail(on: bool = True) -> dict:
 
 @mcp.tool()
 @write_synchronized
+def click_to_download(locator: str, save_path: str = None, rename: str = None,
+                      suffix: str = None, new_tab: bool = False,
+                      by_js: bool = False, in_frame: bool = True,
+                      timeout: float = 30) -> dict:
+    """点击元素触发浏览器下载（无需预知 URL），等待完成并返回文件路径。
+
+    内部调用 DrissionPage 的 click.to_download()，自动拦截浏览器下载任务。
+    适合下载模板、导出文件等场景——只需提供触发下载的按钮/链接定位符。
+    """
+    if not isinstance(locator, str) or not locator.strip():
+        return {"ok": False, "reason": "locator 必须是非空字符串"}
+    if (
+        isinstance(timeout, bool) or not isinstance(timeout, (int, float))
+        or not math.isfinite(float(timeout)) or timeout < 0 or timeout > 3600
+    ):
+        return {"ok": False, "reason": "timeout 必须是 0 到 3600 的有限数值"}
+
+    element = browser_session.find(
+        locator, in_frame=in_frame, timeout=max(min(timeout, 10), 1.0)
+    )
+    if not element:
+        return {"ok": False, "reason": "元素未找到: %s（超时 %.1fs）" % (locator, timeout)}
+    try:
+        kwargs = {"timeout": float(timeout)}
+        if save_path:
+            kwargs["save_path"] = os.fspath(save_path)
+        if rename:
+            kwargs["rename"] = str(rename)
+        if suffix:
+            kwargs["suffix"] = str(suffix)
+        if new_tab:
+            kwargs["new_tab"] = True
+        if by_js:
+            kwargs["by_js"] = True
+        mission = element.click.to_download(**kwargs)
+        completed_path = mission.wait(show=False, timeout=float(timeout))
+        raw_path = completed_path or getattr(mission, "final_path", "") or ""
+        path_value = os.path.abspath(os.fspath(raw_path)) if raw_path else ""
+        ok = bool(completed_path) and os.path.isfile(path_value)
+        result = {
+            "ok": ok,
+            "path": path_value,
+            "file_size": getattr(mission, "total_bytes", None),
+            "state": str(getattr(mission, "state", "") or ""),
+            "name": str(getattr(mission, "name", "") or ""),
+        }
+        if not ok:
+            result["reason"] = "下载未完成或目标文件不存在"
+        return result
+    except Exception as exc:
+        return {"ok": False, "reason": "单击下载失败: %s" % exc}
+
+
+@mcp.tool()
+@write_synchronized
+def click_to_upload(locator: str, file_paths: str, by_js: bool = False,
+                    in_frame: bool = True, timeout: float = 10) -> dict:
+    """点击元素触发文件上传，自动拦截文件选择框并填入路径。
+
+    内部调用 DrissionPage 的 click.to_upload()，模拟真实用户操作：
+    点击按钮 → 拦截系统文件对话框 → 自动填入文件路径。
+    适合 Ant Design Upload 等复杂上传组件的自动化。
+    多文件路径用 \\n 分隔。
+    """
+    if not isinstance(locator, str) or not locator.strip():
+        return {"ok": False, "reason": "locator 必须是非空字符串"}
+    if not file_paths or not isinstance(file_paths, str):
+        return {"ok": False, "reason": "file_paths 必须是非空字符串（多文件用 \\n 分隔）"}
+
+    element = browser_session.find(
+        locator, in_frame=in_frame, timeout=max(min(timeout, 8), 1.0)
+    )
+    if not element:
+        return {"ok": False, "reason": "元素未找到: %s（超时 %.1fs）" % (locator, timeout)}
+    try:
+        element.click.to_upload(file_paths, by_js=by_js)
+        file_list = [p.strip() for p in file_paths.split("\n") if p.strip()]
+        return {
+            "ok": True,
+            "locator": locator,
+            "file_count": len(file_list),
+            "file_paths": file_list,
+        }
+    except Exception as exc:
+        return {"ok": False, "reason": "文件上传失败: %s" % exc}
+
+
+@mcp.tool()
+@write_synchronized
 def download_by_browser(url: str, save_path: str = None, rename: str = None,
                         suffix: str = None, timeout: float = 30,
                         file_exists: str = "rename") -> dict:
@@ -5563,7 +5900,7 @@ def download_by_browser(url: str, save_path: str = None, rename: str = None,
     if not callable(by_browser):
         return {
             "ok": False,
-            "reason": "当前 DrissionPage 版本未提供 tab.download.by_browser；可改用点击触发下载后 wait.download_begin/downloads_done",
+            "reason": "当前 DrissionPage 版本未提供 tab.download.by_browser；可改用 click_to_download 工具",
         }
     kwargs = {"url": url, "timeout": float(timeout), "file_exists": file_exists}
     if save_path:

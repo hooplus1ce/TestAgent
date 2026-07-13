@@ -619,14 +619,11 @@ def _build_session(signals, listen_targets, timeout_for_net=None,
 
             def _net_waiter():
                 try:
-                    try:
-                        packet = tab.listen.wait(
-                            count=1, timeout=net_timeout, raise_err=False
-                        )
-                    except TypeError:
-                        packet = tab.listen.wait(count=1, timeout=net_timeout)
-                    if packet:
-                        net_queue.put(packet)
+                    packets = network_record.wait_for_business_packets(
+                        tab.listen, count=1, timeout=net_timeout,
+                    )
+                    if packets:
+                        net_queue.put(packets[0])
                 except Exception as exc:
                     logger.debug("net waiter 失败: %s", exc)
 
@@ -713,12 +710,14 @@ def _poll_once(sess, now):
                     "elapsedMs": int((now - sess["start"]) * 1000)}
     # ④ 网络响应（后台线程投递，非阻塞取）
     if sess["watch_network"]:
-        try:
-            pkt = sess["net_queue"].get_nowait()
-        except queue.Empty:
-            pkt = None
-        if pkt:
+        while True:
+            try:
+                pkt = sess["net_queue"].get_nowait()
+            except queue.Empty:
+                break
             p = pkt[0] if isinstance(pkt, list) else pkt
+            if network_record.is_noise_packet(p):
+                continue
             packet = network_record.packet_to_dict(p)
             return {
                 "type": "network",
@@ -820,16 +819,11 @@ def _observe_wait_native(sess: dict, timeout: float, include_snapshot: bool,
         signal = _poll_once(sess, time.monotonic())
         if not signal:
             if sess.get("watch_network"):
-                try:
-                    packet = sess["tab"].listen.wait(
-                        count=1, timeout=timeout, fit_count=False, raise_err=False,
-                    )
-                except TypeError:
-                    packet = sess["tab"].listen.wait(
-                        count=1, timeout=timeout, fit_count=False,
-                    )
-                if packet:
-                    sess["net_queue"].put(packet)
+                packets = network_record.wait_for_business_packets(
+                    sess["tab"].listen, count=1, timeout=timeout,
+                )
+                if packets:
+                    sess["net_queue"].put(packets[0])
             elif sess.get("dom_types"):
                 selector = "c:" + ",".join(_ALL_SELS)
                 targets = [target for target in (sess.get("fr"), sess.get("tab")) if target is not None]

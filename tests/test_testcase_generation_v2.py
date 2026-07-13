@@ -2,6 +2,7 @@
 
 from drissionpage_mcp.workflows import testcase_generation
 
+
 def _step(sequence, action, args, observation=None, element=None):
     return {
         "sequence": sequence,
@@ -13,6 +14,31 @@ def _step(sequence, action, args, observation=None, element=None):
         "outcome": "passed",
         "error": "",
     }
+
+
+def test_unified_set_date_preserves_range_data_and_business_wording():
+    action_input = {
+        "action": "set_date",
+        "field_name": "创建时间",
+        "start_date": "2026-07-01",
+        "end_date": "2026-07-13",
+    }
+    step = _step(1, "set_date", {
+        "field_name": "创建时间",
+        "start_date": "2026-07-01",
+        "end_date": "2026-07-13",
+    })
+
+    assert testcase_generation._observed_test_data(action_input) == {
+        "创建时间": "2026-07-01 至 2026-07-13",
+    }
+    assert testcase_generation._chinese_step(step) == (
+        "在“创建时间”选择日期范围“2026-07-01”至“2026-07-13”"
+    )
+    assert testcase_generation._is_replayable({
+        "action": "explore_action",
+        "args": action_input,
+    }) is True
 
 
 def test_one_flow_generates_one_ordered_business_case_with_real_assertions():

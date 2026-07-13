@@ -59,7 +59,7 @@ CAP_GROUPS = {
     ],
     "filter": [
         # 筛选区
-        "scan_filter_fields", "select_date_range", "select_option",
+        "scan_filter_fields", "select_option",
     ],
     "observe": [
         # 观察器
@@ -92,7 +92,8 @@ CAP_GROUPS = {
     ],
     "devtools": [
         # 调试/高级功能
-        "run_js", "mouse_trail", "download_by_browser",
+        "run_js", "mouse_trail",
+        "download_by_browser", "click_to_download", "click_to_upload",
         "browser_console_messages",
         # PDF 导出
         "browser_save_pdf",

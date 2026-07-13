@@ -7,6 +7,7 @@
 JS 参数化：用 json.dumps 把 Python 参数列表序列化为 JS 数组字面量，
 通过 fn.apply(null, [...]) 调用，避免 %d / %s 字符串拼接的类型与转义陷阱。
 """
+
 import json
 import math
 import time
@@ -14,8 +15,9 @@ import time
 from ..core import ui_contract
 from . import browser_session
 
-
-_VTABLE_RETRY_REASON = "VTable 实例失效且自动重挂载失败，请重新进入模块或刷新 active iframe 后重试"
+_VTABLE_RETRY_REASON = (
+    "VTable 实例失效且自动重挂载失败，请重新进入模块或刷新 active iframe 后重试"
+)
 _VTABLE_LOADING_LOCATOR = ui_contract.VTABLE_LOADING
 
 
@@ -104,7 +106,7 @@ return JSON.stringify(index);
     try:
         raw = frame.run_js(script)
         index = json.loads(raw) if isinstance(raw, str) else raw
-        canvases = frame.eles('c:canvas', timeout=timeout) or []
+        canvases = frame.eles("c:canvas", timeout=timeout) or []
         if isinstance(index, int) and 0 <= index < len(canvases):
             return canvases[index]
     except Exception:
@@ -129,12 +131,20 @@ def _wait_stable(reader, timeout=3):
 
 def _wait_cell_center_stable(col, row, timeout=3):
     """scrollToCell 后轮询单元格中心顶层视口坐标至稳定（场景图停止动画），返回稳定的坐标 dict 或 None。"""
+
     def reader():
-        ctr = _run("vtable-column-values.js",
-                   "return JSON.stringify(getCellCenterViewport.apply(null, %s));" % _js_args(col, row))
+        ctr = _run(
+            "vtable-column-values.js",
+            "return JSON.stringify(getCellCenterViewport.apply(null, %s));"
+            % _js_args(col, row),
+        )
         if not ctr:
             return None
-        return (round(ctr.get("viewportX", 0), 1), round(ctr.get("viewportY", 0), 1)), ctr
+        return (
+            round(ctr.get("viewportX", 0), 1),
+            round(ctr.get("viewportY", 0), 1),
+        ), ctr
+
     stable = _wait_stable(reader, timeout)
     return stable[1] if stable else None
 
@@ -165,7 +175,9 @@ def is_loading_complete(iframe=None, timeout: float = 20) -> bool:
         return max(0.05, min(cap, deadline - time.perf_counter()))
 
     try:
-        loading_nodes = frame.eles(_VTABLE_LOADING_LOCATOR, timeout=remaining(0.2)) or []
+        loading_nodes = (
+            frame.eles(_VTABLE_LOADING_LOCATOR, timeout=remaining(0.2)) or []
+        )
         for loading in loading_nodes:
             if loading.states.is_displayed:
                 if not loading.wait.hidden(timeout=remaining(limit), raise_err=False):
@@ -212,7 +224,10 @@ def scan_vtable_columns(max_col: int = 50):
     except Exception as exc:
         return {"ok": False, "reason": "scanColumns failed: %s" % exc}
     if not isinstance(cols, list) or not cols:
-        return {"ok": False, "reason": "scanColumns 返回空，可能未挂载可见 VTable 或无列"}
+        return {
+            "ok": False,
+            "reason": "scanColumns 返回空，可能未挂载可见 VTable 或无列",
+        }
     return {"ok": True, "columns": cols}
 
 
@@ -224,13 +239,20 @@ def get_column_values(title: str, raw: bool = False):
     bulk = get_columns_values([title], raw=raw)
     if not bulk.get("ok"):
         return bulk
-    return {"ok": True, "values": bulk["values"][title], "title": title,
-            "raw": bool(raw), "header_rows": bulk.get("header_rows", 1)}
+    return {
+        "ok": True,
+        "values": bulk["values"][title],
+        "title": title,
+        "raw": bool(raw),
+        "header_rows": bulk.get("header_rows", 1),
+    }
 
 
 def get_columns_values(titles, raw: bool = False):
     """单次浏览器脚本调用批量读取多列，避免逐列重复注入。"""
-    normalized = list(dict.fromkeys(str(title or "").strip() for title in (titles or [])))
+    normalized = list(
+        dict.fromkeys(str(title or "").strip() for title in (titles or []))
+    )
     if not normalized or any(not title for title in normalized):
         return {"ok": False, "reason": "列标题列表不能为空"}
     if not _ensure_vtable():
@@ -251,11 +273,19 @@ def get_columns_values(titles, raw: bool = False):
     except (TypeError, ValueError):
         header_rows = 1
     if missing:
-        return {"ok": False, "reason": "列标题不存在或匹配不唯一: %s" % ", ".join(missing),
-                "missing": missing, "values": result.get("values") or {},
-                "header_rows": header_rows}
-    return {"ok": True, "values": result.get("values") or {}, "raw": bool(raw),
-            "header_rows": header_rows}
+        return {
+            "ok": False,
+            "reason": "列标题不存在或匹配不唯一: %s" % ", ".join(missing),
+            "missing": missing,
+            "values": result.get("values") or {},
+            "header_rows": header_rows,
+        }
+    return {
+        "ok": True,
+        "values": result.get("values") or {},
+        "raw": bool(raw),
+        "header_rows": header_rows,
+    }
 
 
 def get_cell_rect(col: int, row: int, scroll: bool = True):
@@ -277,12 +307,16 @@ def get_cell_rect(col: int, row: int, scroll: bool = True):
         else:
             res = _run(
                 "vtable-column-values.js",
-                "return JSON.stringify(getCellCenterViewport.apply(null, %s));" % _js_args(col, row),
+                "return JSON.stringify(getCellCenterViewport.apply(null, %s));"
+                % _js_args(col, row),
             )
     except Exception as exc:
         return {"ok": False, "reason": "读取单元格坐标失败: %s" % exc}
     if not isinstance(res, dict):
-        return {"ok": False, "reason": "无法获取单元格坐标，可能 col/row 越界或未挂载 VTable"}
+        return {
+            "ok": False,
+            "reason": "无法获取单元格坐标，可能 col/row 越界或未挂载 VTable",
+        }
     try:
         viewport_x = float(res["viewportX"])
         viewport_y = float(res["viewportY"])
@@ -290,9 +324,14 @@ def get_cell_rect(col: int, row: int, scroll: bool = True):
         return {"ok": False, "reason": "VTable 返回了无效单元格坐标"}
     if not math.isfinite(viewport_x) or not math.isfinite(viewport_y):
         return {"ok": False, "reason": "VTable 返回了非有限单元格坐标"}
-    return {"ok": True, "viewportX": round(viewport_x, 1),
-            "viewportY": round(viewport_y, 1), "col": col, "row": row,
-            "scrolled": bool(scroll)}
+    return {
+        "ok": True,
+        "viewportX": round(viewport_x, 1),
+        "viewportY": round(viewport_y, 1),
+        "col": col,
+        "row": row,
+        "scrolled": bool(scroll),
+    }
 
 
 def scroll_to_cell(col: int, row: int):
@@ -312,7 +351,10 @@ def scroll_to_cell(col: int, row: int):
     except Exception as exc:
         return {"ok": False, "reason": "scrollToCell failed: %s" % exc}
     if res is None:
-        return {"ok": False, "reason": "scrollToCell 返回空，可能未挂载 VTable 或 col/row 越界"}
+        return {
+            "ok": False,
+            "reason": "scrollToCell 返回空，可能未挂载 VTable 或 col/row 越界",
+        }
     if isinstance(res, dict) and "ok" in res:
         return res
     return {"ok": True, "result": res}
@@ -322,7 +364,9 @@ def _normalize_detail(detail: str):
     return "full" if (detail or "").strip().lower() == "full" else "summary"
 
 
-def get_cell_render_info(col: int, row: int, detail: str = "summary", scroll: bool = True):
+def get_cell_render_info(
+    col: int, row: int, detail: str = "summary", scroll: bool = True
+):
     """读取 VTable 单元格渲染摘要：文本、字体色、标签底色、单元格背景/边框色。"""
     col, reason = _index(col, "col")
     if reason:
@@ -337,10 +381,16 @@ def get_cell_render_info(col: int, row: int, detail: str = "summary", scroll: bo
         if not scrolled.get("ok"):
             return scrolled
         if not _wait_cell_center_stable(col, row):
-            return {"ok": False, "reason": "VTable 单元格滚动后未稳定", "col": col, "row": row}
+            return {
+                "ok": False,
+                "reason": "VTable 单元格滚动后未稳定",
+                "col": col,
+                "row": row,
+            }
     res = _run(
         "vtable-column-values.js",
-        "return JSON.stringify(getCellRenderInfo.apply(null, %s));" % _js_args(col, row, _normalize_detail(detail)),
+        "return JSON.stringify(getCellRenderInfo.apply(null, %s));"
+        % _js_args(col, row, _normalize_detail(detail)),
     )
     if not isinstance(res, dict):
         return {"ok": False, "reason": "getCellRenderInfo 返回空或非 dict"}
@@ -351,8 +401,13 @@ def get_cell_render_info(col: int, row: int, detail: str = "summary", scroll: bo
     return res
 
 
-def get_cell_icons(col: int, row: int, icon_name: str = None,
-                   detail: str = "summary", scroll: bool = True):
+def get_cell_icons(
+    col: int,
+    row: int,
+    icon_name: str = None,
+    detail: str = "summary",
+    scroll: bool = True,
+):
     """读取任意 VTable 单元格内的可能图标，返回顶层视口坐标。"""
     col, reason = _index(col, "col")
     if reason:
@@ -367,7 +422,12 @@ def get_cell_icons(col: int, row: int, icon_name: str = None,
         if not scrolled.get("ok"):
             return scrolled
         if not _wait_cell_center_stable(col, row):
-            return {"ok": False, "reason": "VTable 单元格滚动后未稳定", "col": col, "row": row}
+            return {
+                "ok": False,
+                "reason": "VTable 单元格滚动后未稳定",
+                "col": col,
+                "row": row,
+            }
     res = _run(
         "vtable-column-values.js",
         "return JSON.stringify(getCellIconsViewport.apply(null, %s));"
@@ -432,13 +492,18 @@ def _match_icon(icons, icon_name: str = None, icon_index: int = None):
         if (isinstance(icon_index, float) and not icon_index.is_integer()) or idx < 0:
             return None, "icon_index 必须是非负整数"
         if idx >= len(icons):
-            return None, "icon_index 越界: %s（可用 0-%s）" % (icon_index, len(icons) - 1)
+            return None, "icon_index 越界: %s（可用 0-%s）" % (
+                icon_index,
+                len(icons) - 1,
+            )
         return icons[idx], None
     if icon_name:
         needle = str(icon_name).strip().lower()
         exact = [
-            icon for icon in icons
-            if needle in {
+            icon
+            for icon in icons
+            if needle
+            in {
                 str(icon.get("name") or "").lower(),
                 str(icon.get("type") or "").lower(),
                 str(icon.get("symbolType") or "").lower(),
@@ -448,23 +513,34 @@ def _match_icon(icons, icon_name: str = None, icon_index: int = None):
         if len(exact) == 1:
             return exact[0], None
         partial = [
-            icon for icon in icons
-            if needle and needle in " ".join([
-                str(icon.get("name") or ""), str(icon.get("type") or ""),
-                str(icon.get("symbolType") or ""), str(icon.get("func") or ""),
-            ]).lower()
+            icon
+            for icon in icons
+            if needle
+            and needle
+            in " ".join(
+                [
+                    str(icon.get("name") or ""),
+                    str(icon.get("type") or ""),
+                    str(icon.get("symbolType") or ""),
+                    str(icon.get("func") or ""),
+                ]
+            ).lower()
         ]
         matches = exact if exact else partial
         if len(matches) == 1:
             return matches[0], None
-        available = [icon.get("name") or icon.get("type") or icon.get("symbolType") for icon in icons]
+        available = [
+            icon.get("name") or icon.get("type") or icon.get("symbolType")
+            for icon in icons
+        ]
         if not matches:
             return None, "图标未找到: %s（可用: %s）" % (icon_name, available)
         return None, "图标匹配不唯一: %s（匹配: %s）" % (icon_name, available)
     if len(icons) == 1:
         return icons[0], None
     return None, "单元格内有多个图标，请提供 icon_name 或 icon_index（可用: %s）" % (
-        [i.get("name") or i.get("type") or i.get("symbolType") for i in icons])
+        [i.get("name") or i.get("type") or i.get("symbolType") for i in icons]
+    )
 
 
 def _find_header_icon_point(col: int, row: int, icon_name: str, scroll: bool = True):
@@ -475,11 +551,18 @@ def _find_header_icon_point(col: int, row: int, icon_name: str, scroll: bool = T
         if not scrolled.get("ok"):
             return scrolled
         if not _wait_cell_center_stable(col, row):
-            return {"ok": False, "reason": "VTable 表头滚动后未稳定", "col": col, "row": row}
+            return {
+                "ok": False,
+                "reason": "VTable 表头滚动后未稳定",
+                "col": col,
+                "row": row,
+            }
     scan = _run(
         "vtable-scanner.js",
-        ("var a=%s;var r=scanColumns(a[0]);"
-         "return r?JSON.stringify(r.filter(function(c){return c.col===a[1]&&c.isHeader;})):null;")
+        (
+            "var a=%s;var r=scanColumns(a[0]);"
+            "return r?JSON.stringify(r.filter(function(c){return c.col===a[1]&&c.isHeader;})):null;"
+        )
         % _js_args(col + 1, col),
     )
     header_entry = scan[0] if isinstance(scan, list) and scan else None
@@ -498,8 +581,13 @@ def _find_header_icon_point(col: int, row: int, icon_name: str, scroll: bool = T
     }
 
 
-def _find_cell_icon_point(col: int, row: int, icon_name: str = None,
-                          icon_index: int = None, scroll: bool = True):
+def _find_cell_icon_point(
+    col: int,
+    row: int,
+    icon_name: str = None,
+    icon_index: int = None,
+    scroll: bool = True,
+):
     scan = get_cell_icons(col, row, icon_name=icon_name, scroll=scroll)
     if not scan.get("ok"):
         return scan
@@ -512,7 +600,10 @@ def _find_cell_icon_point(col: int, row: int, icon_name: str = None,
         "ok": True,
         "viewportX": match["viewportX"],
         "viewportY": match["viewportY"],
-        "icon": match.get("name") or match.get("type") or match.get("symbolType") or icon_name,
+        "icon": match.get("name")
+        or match.get("type")
+        or match.get("symbolType")
+        or icon_name,
         "icon_index": match.get("index"),
         "icon_info": match,
         "col": col,
@@ -521,12 +612,20 @@ def _find_cell_icon_point(col: int, row: int, icon_name: str = None,
     }
 
 
-def _resolve_action_point(target: str, col: int, row: int, icon_name: str = None,
-                          icon_index: int = None, scroll: bool = True):
+def _resolve_action_point(
+    target: str,
+    col: int,
+    row: int,
+    icon_name: str = None,
+    icon_index: int = None,
+    scroll: bool = True,
+):
     if target == "header-icon":
         return _find_header_icon_point(col, 0, icon_name, scroll=scroll)
     if target == "cell-icon":
-        return _find_cell_icon_point(col, row, icon_name=icon_name, icon_index=icon_index, scroll=scroll)
+        return _find_cell_icon_point(
+            col, row, icon_name=icon_name, icon_index=icon_index, scroll=scroll
+        )
     target_row = 0 if target == "header" else row
     return get_cell_rect(col, target_row, scroll=scroll)
 
@@ -545,8 +644,14 @@ def _resolve_drag_destination(vx, vy, drag_to):
     return None, None, "drag_to 需要包含 x/y 或 dx/dy"
 
 
-def _perform_pointer_action(action: str, vx, vy, hover_first: bool = True,
-                            duration: float = 0.3, drag_to: dict = None):
+def _perform_pointer_action(
+    action: str,
+    vx,
+    vy,
+    hover_first: bool = True,
+    duration: float = 0.3,
+    drag_to: dict = None,
+):
     try:
         vx = float(vx)
         vy = float(vy)
@@ -558,17 +663,23 @@ def _perform_pointer_action(action: str, vx, vy, hover_first: bool = True,
     tab = browser_session.get_tab()
     move_duration = duration if hover_first or action == "hover" else 0
     try:
+        ac = tab.actions
         if action == "hover":
-            tab.actions.move_to((vx, vy), duration=duration)
+            ac.move_to((vx, vy), duration=duration)
             return {"ok": True}
         if action == "click":
-            tab.actions.move_to((vx, vy), duration=move_duration).click()
+            ac.move_to((vx, vy), duration=move_duration)
+            ac.click()
             return {"ok": True}
         if action == "double_click":
-            tab.actions.move_to((vx, vy), duration=move_duration).click(times=2)
+            ac.move_to((vx, vy), duration=move_duration).click(times=1).wait(
+                0.15
+            ).click(times=1)
             return {"ok": True}
         if action == "drag":
-            destination_x, destination_y, reason = _resolve_drag_destination(vx, vy, drag_to)
+            destination_x, destination_y, reason = _resolve_drag_destination(
+                vx, vy, drag_to
+            )
             if reason:
                 return {"ok": False, "reason": reason}
             destination_x = float(destination_x)
@@ -580,22 +691,34 @@ def _perform_pointer_action(action: str, vx, vy, hover_first: bool = True,
                 tab.actions.move_to((vx, vy), duration=move_duration)
                 tab.actions.hold()
                 held = True
-                tab.actions.move_to((destination_x, destination_y), duration=max(duration, 0.1))
+                tab.actions.move_to(
+                    (destination_x, destination_y), duration=max(duration, 0.1)
+                )
             finally:
                 if held:
                     tab.actions.release()
-            return {"ok": True, "destinationX": round(destination_x, 1),
-                    "destinationY": round(destination_y, 1)}
+            return {
+                "ok": True,
+                "destinationX": round(destination_x, 1),
+                "destinationY": round(destination_y, 1),
+            }
     except Exception as exc:
         return {"ok": False, "reason": "VTable %s failed: %s" % (action, exc)}
     return {"ok": False, "reason": "不支持的 VTable 动作: %s" % action}
 
 
-def vtable_action(action: str = "click", col: int = None, row: int = 0,
-                  target: str = "cell", icon_name: str = None,
-                  icon_index: int = None,
-                  hover_first: bool = True, duration: float = 0.3,
-                  drag_to: dict = None, scroll: bool = True):
+def vtable_action(
+    action: str = "click",
+    col: int = None,
+    row: int = 0,
+    target: str = "cell",
+    icon_name: str = None,
+    icon_index: int = None,
+    hover_first: bool = True,
+    duration: float = 0.3,
+    drag_to: dict = None,
+    scroll: bool = True,
+):
     """统一执行 VTable 指针动作。
 
     流程：确保实例有效 → 必要时 scrollToCell → 重新读取顶层视口坐标 → click/double_click/hover/drag。
@@ -618,14 +741,16 @@ def vtable_action(action: str = "click", col: int = None, row: int = 0,
     if reason:
         return {"ok": False, "reason": reason}
 
-    point = _resolve_action_point(target_name, col, row, icon_name=icon_name,
-                                  icon_index=icon_index, scroll=scroll)
+    point = _resolve_action_point(
+        target_name, col, row, icon_name=icon_name, icon_index=icon_index, scroll=scroll
+    )
     if not point.get("ok"):
         return point
     vx = point["viewportX"]
     vy = point["viewportY"]
-    performed = _perform_pointer_action(action_name, vx, vy, hover_first=hover_first,
-                                        duration=duration, drag_to=drag_to)
+    performed = _perform_pointer_action(
+        action_name, vx, vy, hover_first=hover_first, duration=duration, drag_to=drag_to
+    )
     if not performed.get("ok"):
         return performed
 
@@ -647,7 +772,14 @@ def vtable_action(action: str = "click", col: int = None, row: int = 0,
     return result
 
 
-def click_cell(col: int, row: int, icon_name: str = None, hover_first: bool = True, duration: float = 0.3, double_click: bool = False):
+def click_cell(
+    col: int,
+    row: int,
+    icon_name: str = None,
+    hover_first: bool = True,
+    duration: float = 0.3,
+    double_click: bool = False,
+):
     """点击单元格或其图标。icon_name 给定时匹配该名称图标（如 'sort'），否则点单元格中心。
 
     流程：scrollToCell → 取坐标 → actions.move_to(hover) → click。
@@ -718,8 +850,15 @@ def resize_column(col: int, width: int):
         info = _get_bounds()
         if not isinstance(info, dict) or "rightEdge" not in info:
             return {"ok": False, "reason": "无法获取列宽信息"}
-        if info["rightEdge"] > info["viewportRight"] or info["rightEdge"] < info["viewportLeft"]:
-            _run("vtable-column-values.js", "scrollToCell.apply(null, %s);" % _js_args(col, 0))
+        if (
+            info["rightEdge"] > info["viewportRight"]
+            or info["rightEdge"] < info["viewportLeft"]
+        ):
+            _run(
+                "vtable-column-values.js",
+                "scrollToCell.apply(null, %s);" % _js_args(col, 0),
+            )
+
             def read_edge():
                 value = _get_bounds()
                 if not isinstance(value, dict) or "rightEdge" not in value:
@@ -733,8 +872,14 @@ def resize_column(col: int, width: int):
         old_width = round(float(info["oldWidth"]))
         delta = width - old_width
         if delta == 0:
-            return {"ok": True, "col": col, "old_width": old_width,
-                    "new_width": old_width, "target_width": width, "delta": 0}
+            return {
+                "ok": True,
+                "col": col,
+                "old_width": old_width,
+                "new_width": old_width,
+                "target_width": width,
+                "delta": 0,
+            }
         start_x = round(float(info["rightEdge"]))
         center_y = round(float(info["centerY"]))
         tab = browser_session.get_tab()
@@ -752,9 +897,14 @@ def resize_column(col: int, width: int):
         if not isinstance(verified, dict) or "oldWidth" not in verified:
             return {"ok": False, "reason": "列宽拖拽后无法回读实际宽度"}
         actual_width = round(float(verified["oldWidth"]))
-        result = {"ok": abs(actual_width - width) <= 2, "col": col,
-                  "old_width": old_width, "new_width": actual_width,
-                  "target_width": width, "delta": actual_width - old_width}
+        result = {
+            "ok": abs(actual_width - width) <= 2,
+            "col": col,
+            "old_width": old_width,
+            "new_width": actual_width,
+            "target_width": width,
+            "delta": actual_width - old_width,
+        }
         if not result["ok"]:
             result["reason"] = "列宽未达到目标值（允许误差 2px）"
         return result

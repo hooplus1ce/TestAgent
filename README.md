@@ -10,16 +10,16 @@
 - `tests/`：面向 `mcp-service/src/drissionpage_mcp` 的完整回归测试。
 - `test_cases/`：项目级测试用例 JSON 和导出结果。
 
-不存在第二套 MCP 实现。Codex 从项目级 `.codex/config.toml` 直接执行
-`uv run --project mcp-service python -m drissionpage_mcp`；Claude 和 Trae 继续使用
-`mcp-service/launcher.py`。三者对外服务名均为 `drissionpage-mcp`。
+不存在第二套 MCP 实现。Codex、Claude 和 Trae 均从根 uv workspace 执行
+`uv run --package drissionpage-mcp drissionpage-mcp`，对外服务名均为
+`drissionpage-mcp`。
 
 ## 快速开始
 
-同步独立 MCP 环境：
+同步根 workspace 的唯一环境：
 
 ```bash
-uv sync --project mcp-service --all-groups
+uv sync --all-packages --all-groups
 ```
 
 检查可迁移的浏览器基线配置：
@@ -46,13 +46,12 @@ sed -n '1,120p' mcp-service/configs/dp_configs.ini
 
 ```bash
 uv run pytest -q
-uv run --project mcp-service pytest -q mcp-service/tests
 ```
 
 手动启动 stdio 服务：
 
 ```bash
-uv run --project mcp-service python mcp-service/launcher.py
+uv run --package drissionpage-mcp drissionpage-mcp
 ```
 
 完整使用说明见 [docs/项目使用说明.md](docs/项目使用说明.md)，服务架构与工具说明见

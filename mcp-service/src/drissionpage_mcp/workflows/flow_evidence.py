@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from ..resources import resource_store
+from ..services import network_record
 
 
 SCHEMA_VERSION = "1.0"
@@ -215,6 +216,8 @@ def _network_events(signal: dict) -> list[dict]:
         ):
             if key not in packet and event.get(key) not in (None, ""):
                 packet[key] = event.get(key)
+        if network_record.is_noise_packet(packet):
+            continue
         sanitized = sanitize(packet)
         if isinstance(sanitized, dict):
             events.append(sanitized)

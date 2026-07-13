@@ -11,7 +11,7 @@ import time
 from unittest.mock import MagicMock, patch
 
 
-FULL_TOOL_COUNT = 87
+FULL_TOOL_COUNT = 88
 
 REMOVED_DUPLICATE_TOOLS = {
     "login_ocr",
@@ -223,6 +223,7 @@ def test_enterprise_facade_schemas_constrain_choice_parameters():
     tools = {tool.name: tool for tool in asyncio.run(server.mcp.list_tools())}
     query_properties = tools["query_table"].inputSchema["properties"]
     action_properties = tools["table_action"].inputSchema["properties"]
+    explore_properties = tools["explore_action"].inputSchema["properties"]
 
     assert set(query_properties["operation"]["enum"]) == {"values", "data", "find", "count", "row"}
     assert set(query_properties["kind"]["enum"]) == {"auto", "html", "vtable"}
@@ -232,6 +233,9 @@ def test_enterprise_facade_schemas_constrain_choice_parameters():
     }
     assert set(action_properties["target"]["enum"]) == {
         "cell", "header", "header-icon", "cell-icon",
+    }
+    assert set(explore_properties["action"]["enum"]) == {
+        "click", "input", "set_date", "table_cell", "select_option", "press_key",
     }
 
 
@@ -502,7 +506,7 @@ print(json.dumps(result, ensure_ascii=False, sort_keys=True))
 
 
 def test_drissionpage_set_date_tool_and_date_normalization():
-    """drissionpage-mcp 应提供单日期字段紧凑设置工具。"""
+    """drissionpage-mcp 应只提供统一日期字段设置工具。"""
     script = r"""
 import asyncio
 import json
@@ -513,6 +517,8 @@ async def main():
     data = {
         "has_explore_action": "explore_action" in {tool.name for tool in tools},
         "has_set_date": "set_date" in {tool.name for tool in tools},
+        "has_select_date_range": "select_date_range" in {tool.name for tool in tools},
+        "set_date_schema": next(tool.inputSchema for tool in tools if tool.name == "set_date"),
         "dash": server._normalize_date_value("2026-06-01"),
         "slash": server._normalize_date_value("2026/06/01"),
         "invalid": server._normalize_date_value("2026.06.01"),
@@ -532,6 +538,8 @@ asyncio.run(main())
 
     assert data["has_explore_action"] is True
     assert data["has_set_date"] is True
+    assert data["has_select_date_range"] is False
+    assert {"date", "start_date", "end_date"} <= set(data["set_date_schema"]["properties"])
     assert data["dash"] == {
         "ok": True,
         "dash": "2026-06-01",
@@ -542,6 +550,110 @@ asyncio.run(main())
     }
     assert data["slash"]["dash"] == "2026-06-01"
     assert data["invalid"]["ok"] is False
+
+
+def test_resolve_date_picker_targets_quick_filter_value_control():
+    """Quick Filter 日期字段必须跳过字段名/操作符下拉，定位第三段日期值控件。"""
+    from drissionpage_mcp import server
+
+    visible = SimpleNamespace(is_displayed=True)
+    input_element = SimpleNamespace(states=visible)
+
+    class Picker:
+        states = visible
+
+        def eles(self, locator, timeout=None):
+            if locator == "css:input.ant-calendar-range-picker-input":
+                return []
+            return [input_element]
+
+    picker = Picker()
+
+    class Column:
+        def eles(self, locator, timeout=None):
+            assert locator == "css:.ant-calendar-picker,.ant-picker"
+            return [picker]
+
+    frame = object()
+    tab = object()
+    with patch.object(server, "_date_field_contexts", return_value=(tab, [("iframe", frame)], ["filter"])), \
+         patch.object(server.filter_area, "_quick_filter_field_column", return_value=(Column(), [object(), object()])):
+        result = server._resolve_date_picker("创建时间", scope="filter")
+
+    assert result["ok"] is True
+    assert result["picker"] is picker
+    assert result["target"] is frame
+    assert result["picker_mode"] == "single"
+    assert result["component"] == "legions-pro-quick-filter"
+
+
+def test_set_date_handles_single_and_range_through_one_entry():
+    from drissionpage_mcp import server
+
+    target = SimpleNamespace(wait=MagicMock())
+    calendar = object()
+    picker = object()
+
+    def resolved(mode):
+        return {
+            "ok": True,
+            "picker": picker,
+            "picker_mode": mode,
+            "component": "ant-design",
+            "scope": "iframe",
+            "area": "page",
+        }
+
+    with patch.object(server, "_resolve_date_picker", side_effect=[resolved("single"), resolved("single")]), \
+         patch.object(server, "_date_picker_values", side_effect=[[""], ["2026-07-13"]]), \
+         patch.object(server, "_open_date_calendar", return_value=(target, calendar)), \
+         patch.object(server, "_calendar_snapshot", return_value={"ok": True, "title": "2026年7月"}), \
+         patch.object(server, "_select_calendar_date", return_value={"ok": True, "navigations": []}) as select:
+        single = server.set_date("工作日期", date="2026-07-13")
+
+    assert single["ok"] is True
+    assert single["picker_mode"] == "single"
+    assert single["date"] == "2026-07-13"
+    assert select.call_count == 1
+
+    with patch.object(server, "_resolve_date_picker", side_effect=[resolved("range"), resolved("range")]), \
+         patch.object(server, "_date_picker_values", side_effect=[["", ""], ["2026-07-01", "2026-07-13"]]), \
+         patch.object(server, "_open_date_calendar", return_value=(target, calendar)), \
+         patch.object(server, "_find_calendar_root", return_value=calendar), \
+         patch.object(server, "_calendar_snapshot", return_value={"ok": True, "title": "2026年7月"}), \
+         patch.object(server, "_select_calendar_date", return_value={"ok": True, "navigations": []}) as select:
+        date_range = server.set_date(
+            "创建时间", start_date="2026/07/01", end_date="2026/07/13",
+        )
+
+    assert date_range["ok"] is True
+    assert date_range["picker_mode"] == "range"
+    assert date_range["startDate"] == "2026-07-01"
+    assert date_range["endDate"] == "2026-07-13"
+    assert select.call_count == 2
+
+
+def test_set_date_rejects_distinct_range_for_quick_filter_single_boundary():
+    from drissionpage_mcp import server
+
+    resolved = {
+        "ok": True,
+        "picker": object(),
+        "picker_mode": "single",
+        "component": "legions-pro-quick-filter",
+        "scope": "iframe",
+        "area": "filter",
+    }
+    with patch.object(server, "_resolve_date_picker", return_value=resolved), \
+         patch.object(server, "_open_date_calendar") as open_calendar:
+        result = server.set_date(
+            "创建时间", start_date="2026-07-01", end_date="2026-07-13",
+            scope="filter",
+        )
+
+    assert result["ok"] is False
+    assert "单边界日期控件" in result["reason"]
+    open_calendar.assert_not_called()
 
 
 def test_drissionpage_explore_action_click_reuses_click_fallbacks():
@@ -1631,6 +1743,97 @@ def test_network_record_stop_returns_packet_timeline():
     assert result["packets"][0]["status"] == 200
     assert fake_listen.wait_kwargs == {"count": 5, "timeout": 1.0, "fit_count": False, "raise_err": False}
     assert fake_listen.stopped is True
+
+
+def test_network_capture_ignores_account_json_before_business_packet():
+    from drissionpage_mcp import server
+
+    noise = SimpleNamespace(
+        url="https://demo19-scm.hoolinks.com//main/api/v1/account.json",
+        method="GET",
+        request=SimpleNamespace(headers={
+            "api-target": "https://demo19-scm.hoolinks.com//main/api/v1/account.json",
+        }),
+        response=SimpleNamespace(status=200, body={"ok": True}),
+    )
+    business = SimpleNamespace(
+        url="https://example.test/gateway",
+        method="POST",
+        request=SimpleNamespace(headers={"api-target": "scm.order.list"}, postData='{"page":1}'),
+        response=SimpleNamespace(status=200, body={"success": True}),
+    )
+    fake_listen = _FakeListen(wait_return=[noise, business])
+    fake_tab = SimpleNamespace(listen=fake_listen)
+
+    with patch.object(server.browser_session, "get_tab", return_value=fake_tab):
+        server.network_record_start("gateway", method="POST")
+        timeline = server.network_record_stop(timeout=1, max_packets=5)
+
+    assert timeline["count"] == 1
+    assert timeline["packets"][0]["api_target"] == "scm.order.list"
+
+
+def test_listen_wait_skips_account_json_and_returns_next_business_packet():
+    from drissionpage_mcp import server
+
+    noise = SimpleNamespace(
+        url="https://demo19-scm.hoolinks.com//main/api/v1/account.json",
+        request=SimpleNamespace(headers={"api-target": "https://demo19-scm.hoolinks.com//main/api/v1/account.json"}),
+    )
+    business = SimpleNamespace(
+        url="https://example.test/gateway",
+        method="POST",
+        request=SimpleNamespace(headers={"api-target": "scm.order.save"}, postData="{}"),
+        response=SimpleNamespace(status=200, body={"success": True}),
+    )
+
+    class SequenceListen(_FakeListen):
+        def __init__(self):
+            super().__init__()
+            self.responses = [noise, business]
+
+        def wait(self, **kwargs):
+            self.wait_kwargs = kwargs
+            return self.responses.pop(0) if self.responses else None
+
+    fake_tab = SimpleNamespace(listen=SequenceListen())
+    with patch.object(server.browser_session, "get_tab", return_value=fake_tab):
+        result = server.listen_wait(count=1, timeout=1)
+
+    assert result["ok"] is True
+    assert result["api_target"] == "scm.order.save"
+
+
+def test_observe_queue_skips_account_json_before_business_signal():
+    from queue import Queue
+
+    from drissionpage_mcp.services import observe
+
+    noise = SimpleNamespace(
+        url="https://demo19-scm.hoolinks.com//main/api/v1/account.json",
+        request=SimpleNamespace(headers={"api-target": "https://demo19-scm.hoolinks.com//main/api/v1/account.json"}),
+    )
+    business = SimpleNamespace(
+        url="https://example.test/gateway",
+        method="POST",
+        request=SimpleNamespace(headers={"api-target": "scm.order.save"}, postData="{}"),
+        response=SimpleNamespace(status=200, body={"success": True}),
+    )
+    packets = Queue()
+    packets.put(noise)
+    packets.put(business)
+
+    signal = observe._poll_once({
+        "dom_types": set(),
+        "watch_tab": False,
+        "watch_url": False,
+        "watch_network": True,
+        "net_queue": packets,
+        "start": time.monotonic(),
+    }, time.monotonic())
+
+    assert signal["type"] == "network"
+    assert signal["api_target"] == "scm.order.save"
 
 
 def test_browser_console_messages_collects_and_filters():

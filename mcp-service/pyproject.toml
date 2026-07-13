@@ -1,5 +1,5 @@
 [project]
-name = "drissionpage-mcp-refactored"
+name = "drissionpage-mcp"
 version = "0.2.0"
 description = "Structured DrissionPage MCP server for UI testing"
 readme = "README.md"
@@ -16,7 +16,7 @@ dependencies = [
 ]
 
 [project.scripts]
-drissionpage-mcp-refactored = "drissionpage_mcp.__main__:main"
+drissionpage-mcp = "drissionpage_mcp.__main__:main"
 
 [build-system]
 requires = ["setuptools>=68"]

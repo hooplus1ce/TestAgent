@@ -13,6 +13,7 @@ from . import browser_session
 _SENSITIVE_HEADERS = frozenset({
     "authorization", "cookie", "proxy-authorization", "set-cookie", "x-api-key"
 })
+_NOISE_NETWORK_SUFFIXES = ("account.json",)
 
 _session = {
     "active": False,
@@ -140,6 +141,69 @@ def _safe_headers(raw_headers) -> dict:
     }
 
 
+def is_noise_packet(packet) -> bool:
+    """Return whether a raw listener packet or serialized packet is not business evidence."""
+    if isinstance(packet, dict):
+        values = (packet.get("url"), packet.get("api_target"))
+    else:
+        request = getattr(packet, "request", None)
+        try:
+            headers = dict(getattr(request, "headers", {}) or {})
+        except Exception:
+            headers = {}
+        values = (
+            getattr(packet, "url", ""),
+            headers.get("api-target", "") or headers.get("Api-Target", ""),
+        )
+    return any(
+        str(value or "").split("?", 1)[0].lower().rstrip("/").endswith(suffix)
+        for value in values
+        for suffix in _NOISE_NETWORK_SUFFIXES
+    )
+
+
+def wait_for_business_packets(listener, count: int = 1, timeout: float = 10.0,
+                              fit_count: bool = False) -> list:
+    """Consume listener packets until a business packet arrives or the deadline expires."""
+    wanted = max(int(count or 0), 1)
+    deadline = time.monotonic() + max(float(timeout or 0), 0.0)
+    accepted = []
+    discarded = 0
+    first_wait = True
+    while len(accepted) < wanted and discarded < 100:
+        remaining = max(float(timeout or 0), 0.0) if first_wait else max(deadline - time.monotonic(), 0.0)
+        first_wait = False
+        if remaining <= 0:
+            break
+        try:
+            try:
+                caught = listener.wait(
+                    count=max(wanted - len(accepted), 1), timeout=remaining,
+                    fit_count=fit_count, raise_err=False,
+                )
+            except TypeError:
+                caught = listener.wait(
+                    count=max(wanted - len(accepted), 1), timeout=remaining,
+                    fit_count=fit_count,
+                )
+        except Exception:
+            break
+        if not caught:
+            break
+        raw_packets = caught if isinstance(caught, list) else [caught]
+        for item in raw_packets:
+            if is_noise_packet(item):
+                discarded += 1
+                continue
+            accepted.append(item)
+            if len(accepted) >= wanted:
+                break
+        # Preserve the historical fit_count=False behavior once a business packet arrives.
+        if accepted and not fit_count:
+            break
+    return accepted
+
+
 def packet_to_dict(packet, max_body_chars: int = 12000) -> dict:
     request = getattr(packet, "request", None)
     response = getattr(packet, "response", None)
@@ -213,24 +277,13 @@ def stop(timeout: float = 3.0, max_packets: int = 50,
     packets = []
     wait_error = None
     try:
-        try:
-            caught = tab.listen.wait(
-                count=max_packets,
-                timeout=timeout,
-                fit_count=fit_count,
-                raise_err=False,
-            )
-        except TypeError:
-            caught = tab.listen.wait(
-                count=max_packets, timeout=timeout, fit_count=fit_count
-            )
-        if caught:
-            if not isinstance(caught, list):
-                caught = [caught]
-            packets = [
-                packet_to_dict(packet, max_body_chars=max_body_chars)
-                for packet in caught[:max_packets]
-            ]
+        caught = wait_for_business_packets(
+            tab.listen, count=max_packets, timeout=timeout, fit_count=fit_count,
+        )
+        packets = [
+            packet_to_dict(packet, max_body_chars=max_body_chars)
+            for packet in caught[:max_packets]
+        ]
     except Exception as exc:
         wait_error = str(exc)
     finally:

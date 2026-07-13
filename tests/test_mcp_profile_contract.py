@@ -31,29 +31,51 @@ def test_enterprise_profile_is_small_and_every_tool_is_grouped():
     assert caps.ENTERPRISE_TOOLS <= _all_profile_tools()
 
 
-def test_all_agent_configs_pin_full_profile():
+def test_all_agent_configs_share_workspace_entry_and_full_profile():
+    expected_args = [
+        "run",
+        "--package",
+        "drissionpage-mcp",
+        "drissionpage-mcp",
+    ]
     for relative in (".mcp.json", ".mcp.drissionpage-mcp.json", ".trae/mcp.json"):
         payload = json.loads((ROOT / relative).read_text(encoding="utf-8"))
         server = payload["mcpServers"]["drissionpage-mcp"]
         assert server["env"]["DRISSIONPAGE_MCP_PROFILE"] == "full"
+        assert server["args"] == expected_args
+        assert "HL_SCM_USERNAME" not in server["env"]
+        assert "HL_SCM_USERPWD" not in server["env"]
 
     with (ROOT / ".codex/config.toml").open("rb") as config_file:
-        config = tomllib.load(config_file)
-    assert config["mcp_servers"]["drissionpage-mcp"]["env"]["DRISSIONPAGE_MCP_PROFILE"] == "full"
+        server = tomllib.load(config_file)["mcp_servers"]["drissionpage-mcp"]
+    assert server["env"]["DRISSIONPAGE_MCP_PROFILE"] == "full"
+    assert server["args"] == expected_args
 
 
-def test_codex_mcp_entry_runs_package_directly_from_service_project():
+def test_codex_mcp_entry_runs_workspace_console_script():
     config_path = ROOT / ".codex/config.toml"
     with config_path.open("rb") as config_file:
         server = tomllib.load(config_file)["mcp_servers"]["drissionpage-mcp"]
 
     assert "cwd" not in server
     assert server["args"] == [
-        "run", "--project", "mcp-service", "python", "-m", "drissionpage_mcp",
+        "run", "--package", "drissionpage-mcp", "drissionpage-mcp",
     ]
-    assert "launcher.py" not in server["args"]
     assert (ROOT / "mcp-service/pyproject.toml").is_file()
     assert (ROOT / "mcp-service/src/drissionpage_mcp/__main__.py").is_file()
+    assert not (ROOT / "mcp-service/launcher.py").exists()
+
+
+def test_uv_workspace_owns_the_only_lockfile():
+    with (ROOT / "pyproject.toml").open("rb") as project_file:
+        project = tomllib.load(project_file)
+
+    assert project["tool"]["uv"]["workspace"]["members"] == ["mcp-service"]
+    assert project["tool"]["uv"]["sources"]["drissionpage-mcp"] == {
+        "workspace": True,
+    }
+    assert (ROOT / "uv.lock").is_file()
+    assert not (ROOT / "mcp-service/uv.lock").exists()
 
 
 def test_legacy_cases_cannot_recommend_unverified_automation():

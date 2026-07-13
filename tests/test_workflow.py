@@ -309,6 +309,43 @@ def test_flow_preserves_distinct_raw_network_packets(monkeypatch, tmp_path):
     assert [item["response"]["body"]["page"] for item in networks] == [1, 2]
 
 
+def test_flow_omits_account_json_network_noise(monkeypatch, tmp_path):
+    from drissionpage_mcp.core import config
+    from drissionpage_mcp.resources import resource_store
+    from drissionpage_mcp.workflows import flow_evidence
+
+    monkeypatch.setattr(config, "SHOT_DIR", str(tmp_path))
+    monkeypatch.setattr(flow_evidence, "_active_flow", None)
+    monkeypatch.setattr(flow_evidence, "_last_flow", None)
+    resource_store.clear_module()
+    assert flow_evidence.start("网络过滤", capture_screenshots=False)["ok"] is True
+
+    flow_evidence.record_exploration(
+        {"action": "click", "locator": "text:查询"},
+        {
+            "ok": True,
+            "observe_start": {"ok": True},
+            "action": {"ok": True, "action": "click"},
+            "signal": {
+                "type": "network",
+                "url": "https://demo19-scm.hoolinks.com//main/api/v1/account.json",
+                "api_target": "https://demo19-scm.hoolinks.com//main/api/v1/account.json",
+                "events": [{
+                    "type": "network",
+                    "url": "https://example.test/gateway",
+                    "api_target": "scm.order.list",
+                    "status": 200,
+                }],
+            },
+        },
+        elapsed_ms=1,
+    )
+    stopped = flow_evidence.stop()
+    networks = flow_evidence.load(stopped["saved_to"])["flow"]["steps"][0]["network"]
+
+    assert networks == [{"url": "https://example.test/gateway", "api_target": "scm.order.list", "status": 200}]
+
+
 def test_flow_marks_observer_start_failure_and_rejects_fractional_cleanup(monkeypatch, tmp_path):
     from drissionpage_mcp.core import config
     from drissionpage_mcp.workflows import flow_evidence

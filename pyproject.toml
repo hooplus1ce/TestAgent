@@ -1,22 +1,26 @@
 [project]
 name = "testagent"
 version = "0.1.0"
-description = "Enterprise test automation project using the refactored DrissionPage MCP service"
+description = "Enterprise test automation project using the DrissionPage MCP service"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "drissionpage-mcp-refactored",
+    "drissionpage-mcp",
+    "pandas>=3.0.3",
 ]
 
 [tool.uv]
 package = false
 
 [tool.uv.sources]
-drissionpage-mcp-refactored = { path = "mcp-service", editable = true }
+drissionpage-mcp = { workspace = true }
 
 [[tool.uv.index]]
 url = "https://mirrors.aliyun.com/pypi/simple/"
 default = true
+
+[tool.uv.workspace]
+members = ["mcp-service"]
 
 [dependency-groups]
 dev = [
@@ -24,5 +28,4 @@ dev = [
 ]
 
 [tool.pytest.ini_options]
-pythonpath = ["mcp-service/src"]
-testpaths = ["tests"]
+testpaths = ["tests", "mcp-service/tests"]

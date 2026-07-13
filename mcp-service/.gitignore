@@ -1,5 +1,4 @@
 .venv/
-.env
 /resources/
 !/src/drissionpage_mcp/resources/
 !/src/drissionpage_mcp/resources/**

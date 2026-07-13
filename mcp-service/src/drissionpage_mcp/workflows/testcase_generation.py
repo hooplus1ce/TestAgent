@@ -655,8 +655,15 @@ def _observed_test_data(action_input: dict) -> dict:
         return {field or "输入内容": action_input["text"]}
     if action == "select_option" and action_input.get("option_text") is not None:
         return {field or "下拉选项": action_input["option_text"]}
-    if action == "set_date" and action_input.get("date") is not None:
-        return {field or "日期": action_input["date"]}
+    if action == "set_date":
+        if action_input.get("date") is not None:
+            return {field or "日期": action_input["date"]}
+        if action_input.get("start_date") is not None and action_input.get("end_date") is not None:
+            return {
+                field or "日期范围": "%s 至 %s" % (
+                    action_input["start_date"], action_input["end_date"],
+                )
+            }
     if action == "date_range" and action_input.get("start_date") is not None and action_input.get("end_date") is not None:
         return {field or "日期范围": "%s 至 %s" % (action_input["start_date"], action_input["end_date"])}
     if action == "table_cell":
@@ -694,7 +701,11 @@ def _chinese_step(step: dict) -> str:
     if action == "select_option":
         return "在“%s”选择“%s”" % (name, _clean_text(data.get("option_text"), 120))
     if action == "set_date":
-        return "在“%s”选择日期“%s”" % (name, _clean_text(data.get("date"), 80))
+        if data.get("date") is not None:
+            return "在“%s”选择日期“%s”" % (name, _clean_text(data.get("date"), 80))
+        return "在“%s”选择日期范围“%s”至“%s”" % (
+            name, _clean_text(data.get("start_date"), 80), _clean_text(data.get("end_date"), 80),
+        )
     if action == "date_range":
         return "在“%s”选择日期范围“%s”至“%s”" % (
             name, _clean_text(data.get("start_date"), 80), _clean_text(data.get("end_date"), 80),
@@ -775,7 +786,9 @@ def _is_replayable(command: dict) -> bool:
     if action == "select_option":
         return bool(args.get("field_name") and args.get("option_text"))
     if action == "set_date":
-        return bool(args.get("field_name") and args.get("date"))
+        return bool(args.get("field_name") and (
+            args.get("date") or (args.get("start_date") and args.get("end_date"))
+        ))
     if action == "date_range":
         return bool(args.get("field_name") and args.get("start_date") and args.get("end_date"))
     if action == "table_cell":

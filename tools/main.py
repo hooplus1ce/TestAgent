@@ -6,10 +6,9 @@ import ddddocr
 import httpx
 from DrissionPage import Chromium, ChromiumOptions
 from DrissionPage.items import ChromiumElement, ChromiumFrame, ChromiumTab
+from fast_vtable_helper import FastVTableHelper
 from loguru import logger
 from rich import print
-
-from fast_vtable_helper import FastVTableHelper
 
 
 def get_login_auth():
@@ -298,10 +297,17 @@ def main():
     vtable = FastVTableHelper()
 
     # tab = set_tab_cookies(tab)
-    go_to_tab(tab, "销货统计表")
+    # go_to_tab(tab, "销货统计表")
     # tab.set.window.full()
 
     iframe = get_active_iframe(tab)
+    iframe.set.show_trail(True)
+
+    iframe.actions.move_to((182.0, 173.0), duration=0.3).click(times=1).wait(0.15).click(times=1)
+
+
+    iframe.set.show_trail(False)
+    exit()
     expand_operation(iframe)
     querry_filter_date(iframe, "销货时间", "2026-03-01~2026-06-15")
     click_search_button(iframe)

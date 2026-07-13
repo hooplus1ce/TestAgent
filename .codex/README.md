@@ -9,11 +9,10 @@ Codex reads `.codex/config.toml` in trusted projects. This project configures:
 
 - `drissionpage-mcp`: the project-specific DrissionPage MCP server.
 
-Codex uses a project-specific direct package entry instead of the shared
-`launcher.py`. The MCP config intentionally omits `cwd`, so Codex uses the
-session workspace root and runs
-`uv run --project mcp-service python -m drissionpage_mcp`. The package module
-then fixes its runtime directory to `mcp-service/`, preserving
+Codex uses the root uv workspace package entry. The MCP config intentionally
+omits `cwd`, so Codex uses the session workspace root and runs
+`uv run --package drissionpage-mcp drissionpage-mcp`. The
+package module then fixes its runtime directory to `mcp-service/`, preserving
 `configs/dp_configs.ini` relative-path behavior.
 All Agent sessions use the complete `full` tool catalog. `enterprise` remains
 available only as an explicit context-reduction option.

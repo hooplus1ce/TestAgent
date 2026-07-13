@@ -4,16 +4,13 @@
             "command": "uv",
             "args": [
                 "run",
-                "--project",
-                "mcp-service",
-                "python",
-                "mcp-service/launcher.py"
+                "--package",
+                "drissionpage-mcp",
+                "drissionpage-mcp"
             ],
             "env": {
                 "DRISSIONPAGE_MCP_PROFILE": "full",
-                "DRISSIONPAGE_MCP_CAPS": "all",
-                "HL_SCM_USERNAME": "Hooplus1ce",
-                "HL_SCM_USERPWD": "Ac123456"
+                "DRISSIONPAGE_MCP_CAPS": "all"
             }
         }
     }

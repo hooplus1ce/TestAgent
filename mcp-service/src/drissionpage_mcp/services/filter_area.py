@@ -3,6 +3,7 @@
 与 browser_session.py 解耦，专注于筛选区相关的 UI 自动化操作。
 """
 import json
+import time
 from datetime import datetime
 import logging
 from DrissionPage.common import Keys
@@ -203,7 +204,12 @@ def expand_filter_area(tab=None):
             return {"ok": False, "reason": str(e)}
 
 def select_date_range(field_name: str, start_date: str, end_date: str, tab=None):
-    """选择 Ant Design RangePicker 日期范围，支持跨任意月份并校验最终值。"""
+    """选择筛选区三段式的日期范围，兼容 Ant Design DatePicker（单日历）和 RangePicker。
+
+    - 单 DatePicker：分两次点击（开始日期→关闭→重新打开→结束日期）
+    - RangePicker：一次性选择范围
+    日历面板可能在顶层窗口或 iframe 内，自动适应。
+    """
     try:
         start = datetime.strptime(str(start_date).replace("-", "/"), "%Y/%m/%d").date()
         end = datetime.strptime(str(end_date).replace("-", "/"), "%Y/%m/%d").date()
@@ -222,6 +228,7 @@ def select_date_range(field_name: str, start_date: str, end_date: str, tab=None)
         if frame is None:
             return {"ok": False, "reason": "未找到活动 iframe"}
         try:
+            # 找到目标筛选行：字段名在行文本内且行内有日期选择器
             rows = frame.eles(ui_contract.FILTER_ROW, timeout=1) or []
             if not rows:
                 rows = frame.eles(ui_contract.FILTER_ROW_FALLBACK, timeout=1) or []
@@ -238,93 +245,139 @@ def select_date_range(field_name: str, start_date: str, end_date: str, tab=None)
             picker_input = target_row.ele(ui_contract.FILTER_DATE_INPUT, timeout=1)
             if picker_input is None:
                 return {"ok": False, "reason": "日期输入框不存在: %s" % field_name}
-            _native_click(picker_input, timeout=3)
-            calendar = frame.ele(ui_contract.FILTER_DATE_CALENDAR, timeout=5)
-            if calendar is None:
-                return {"ok": False, "reason": "日历面板未弹出"}
 
-            def shown_left_month():
-                panel = calendar.ele('c:.ant-calendar-range-left', timeout=0.5) or calendar
-                year_element = panel.ele('c:.ant-calendar-year-select', timeout=0.5)
-                month_element = panel.ele('c:.ant-calendar-month-select', timeout=0.5)
-                year = int("".join(char for char in str(year_element.text or "") if char.isdigit()))
-                month = int("".join(char for char in str(month_element.text or "") if char.isdigit()))
-                return year, month
+            # 检测是否为 RangePicker（有 2 个 input.ant-calendar-range-picker-input）
+            range_inputs = target_row.eles('c:input.ant-calendar-range-picker-input') or []
+            is_range_picker = len(range_inputs) >= 2
 
-            def active_date_cell(value, target_date):
-                titles = list(dict.fromkeys((value, target_date.strftime("%Y/%m/%d"))))
-                selectors = []
-                for title in titles:
-                    selectors.extend((
-                        ('c:td[title="%s"]:not(.ant-calendar-last-month-cell)'
-                         ':not(.ant-calendar-next-month-btn-day)'
-                         ':not(.ant-calendar-next-month-cell) .ant-calendar-date' % title),
-                        'c:td[title="%s"] .ant-calendar-date' % title,
-                    ))
+            def _pick_calendar_root(timeout=5):
+                """依赖 DrissionPage 元素等待搜索 iframe 内的日历面板。"""
+                cal = frame.ele(ui_contract.FILTER_DATE_CALENDAR, timeout=timeout)
+                if cal is None:
+                    return None
+                return cal if bool(getattr(getattr(cal, "states", None), "is_displayed", True)) else None
+
+            def _navigate_to_target(cal, target_date, timeout=5):
+                """翻月导航到目标年月，返回目标日期的 td[title] 单元格。"""
+                deadline = time.monotonic() + timeout
+                # 单 DatePicker 只有一个面板，RangePicker 有左右两个面板
+                left_panel = cal.ele('c:.ant-calendar-range-left', timeout=0)
+                is_dual = left_panel is not None
                 for _ in range(600):
-                    cell = None
-                    for selector in selectors:
-                        try:
-                            cell = calendar.ele(selector, timeout=0.15)
-                        except Exception:
-                            cell = None
-                        if cell:
-                            return cell
-                    current_year, current_month = shown_left_month()
-                    current_index = current_year * 12 + current_month
-                    target_index = target_date.year * 12 + target_date.month
+                    if time.monotonic() >= deadline:
+                        return None
+                    panel = (left_panel or cal)
+                    ye = panel.ele('c:.ant-calendar-year-select', timeout=0.5)
+                    me = panel.ele('c:.ant-calendar-month-select', timeout=0.5)
+                    if ye is None or me is None:
+                        return None
+                    cur_year = int("".join(ch for ch in str(ye.text or "") if ch.isdigit()))
+                    cur_month = int("".join(ch for ch in str(me.text or "") if ch.isdigit()))
+                    if cur_year == target_date.year and cur_month == target_date.month:
+                        break
+                    delta = (target_date.year * 12 + target_date.month) - (cur_year * 12 + cur_month)
+                    if is_dual and 0 <= delta <= 1:
+                        return None
+                    forward = delta > (1 if is_dual else 0)
+                    btn_sel = 'c:.ant-calendar-next-month-btn' if forward else 'c:.ant-calendar-prev-month-btn'
+                    btn = cal.ele(btn_sel, timeout=0.5)
+                    if not btn:
+                        return None
+                    prev = (cur_year, cur_month)
+                    _native_click(btn, timeout=1.5)
                     try:
-                        right_panel = calendar.ele('c:.ant-calendar-range-right', timeout=0)
+                        cal.wait.stop_moving(timeout=1.5, raise_err=False)
                     except Exception:
-                        right_panel = None
-                    visible_span = 1 if right_panel else 0
-                    delta = target_index - current_index
-                    if 0 <= delta <= visible_span:
-                        return None
-                    forward = delta > visible_span
-                    button_selector = (
-                        'c:.ant-calendar-next-month-btn'
-                        if forward else 'c:.ant-calendar-prev-month-btn'
-                    )
+                        pass
+                    after_panel = (cal.ele('c:.ant-calendar-range-left', timeout=0) or cal)
+                    ay = after_panel.ele('c:.ant-calendar-year-select', timeout=0.5)
+                    am = after_panel.ele('c:.ant-calendar-month-select', timeout=0.5)
+                    if ay and am:
+                        ny = int("".join(ch for ch in str(ay.text or "") if ch.isdigit()))
+                        nm = int("".join(ch for ch in str(am.text or "") if ch.isdigit()))
+                        if (ny, nm) == prev:
+                            return None
+
+                # 找目标日期单元格
+                title_val = target_date.strftime("%Y/%m/%d")
+                for sel in (
+                    'c:td[title="%s"]:not(.ant-calendar-last-month-cell):not(.ant-calendar-next-month-btn-day):not(.ant-calendar-next-month-cell) .ant-calendar-date' % title_val,
+                    'c:td[title="%s"] .ant-calendar-date' % title_val,
+                ):
                     try:
-                        button = calendar.ele(button_selector, timeout=0.5)
+                        cell = cal.ele(sel, timeout=0.3)
                     except Exception:
-                        button = None
-                    if button is None:
-                        return None
-                    previous_month = (current_year, current_month)
-                    _native_click(button, timeout=1.5)
-                    calendar.wait.stop_moving(timeout=1.5, raise_err=False)
-                    if shown_left_month() == previous_month:
-                        return None
+                        cell = None
+                    if cell:
+                        return cell
                 return None
 
-            start_cell = active_date_cell(start_iso, start)
-            if start_cell is None:
-                return {"ok": False, "reason": "未找到开始日期单元格: %s" % start_iso}
-            _native_click(start_cell, timeout=3)
-            try:
-                calendar.ele('c:.ant-calendar-selected-start-date', timeout=3)
-            except Exception:
-                pass
+            def _pick_date(target_date):
+                """打开日期选择器 → 导航 → 选日 → 等待日历关闭。"""
+                _native_click(picker_input, timeout=3)
+                cal = _pick_calendar_root(timeout=5)
+                if cal is None:
+                    return {"ok": False, "reason": "日历面板未弹出"}
+                cell = _navigate_to_target(cal, target_date, timeout=5)
+                if cell is None:
+                    return {"ok": False, "reason": "未找到日期单元格: %s" % target_date.isoformat()}
+                _native_click(cell, timeout=3)
+                try:
+                    frame.wait.ele_hidden(
+                        ui_contract.FILTER_DATE_CALENDAR, timeout=3, raise_err=False,
+                    )
+                except Exception:
+                    pass
+                return {"ok": True}
 
-            end_cell = active_date_cell(end_iso, end)
-            if end_cell is None:
-                return {"ok": False, "reason": "未找到结束日期单元格: %s" % end_iso}
-            _native_click(end_cell, timeout=3)
-            frame.wait.ele_hidden(
-                ui_contract.FILTER_DATE_CALENDAR, timeout=3, raise_err=False
-            )
+            if is_range_picker:
+                # RangePicker：一次性选择开始和结束
+                _native_click(picker_input, timeout=3)
+                cal = _pick_calendar_root(timeout=5)
+                if cal is None:
+                    return {"ok": False, "reason": "日历面板未弹出"}
 
-            inputs = target_row.eles('c:input.ant-calendar-range-picker-input') or []
-            actual_start = inputs[0].attr('value') if inputs else ''
-            actual_end = inputs[1].attr('value') if len(inputs) > 1 else ''
+                start_cell = _navigate_to_target(cal, start, timeout=5)
+                if start_cell is None:
+                    return {"ok": False, "reason": "未找到开始日期单元格: %s" % start_iso}
+                _native_click(start_cell, timeout=3)
+
+                end_cell = _navigate_to_target(cal, end, timeout=5)
+                if end_cell is None:
+                    return {"ok": False, "reason": "未找到结束日期单元格: %s" % end_iso}
+                _native_click(end_cell, timeout=3)
+                try:
+                    frame.wait.ele_hidden(ui_contract.FILTER_DATE_CALENDAR, timeout=3, raise_err=False)
+                except Exception:
+                    pass
+            else:
+                # 单 DatePicker：分两次设置
+                result = _pick_date(start)
+                if not result.get("ok"):
+                    return result
+                result = _pick_date(end)
+                if not result.get("ok"):
+                    return result
+
+            # 校验最终值
+            final_range = target_row.eles('c:input.ant-calendar-range-picker-input') or []
+            if len(final_range) >= 2:
+                actual_start = final_range[0].attr('value') or ''
+                actual_end = final_range[1].attr('value') or ''
+            else:
+                final_single = target_row.eles(ui_contract.FILTER_DATE_INPUT) or []
+                actual_start = final_single[0].attr('value') if final_single else ''
+                actual_end = ''
+
             normalized_start = str(actual_start or "").replace("/", "-")
             normalized_end = str(actual_end or "").replace("/", "-")
-            if normalized_start != start.isoformat() or normalized_end != end.isoformat():
+            expected_start = start.isoformat()
+            expected_end = end.isoformat()
+
+            if normalized_start != expected_start:
                 return {
                     "ok": False,
-                    "reason": "日期范围写入后校验失败",
+                    "reason": "日期写入后校验失败",
                     "startValue": actual_start,
                     "endValue": actual_end,
                 }

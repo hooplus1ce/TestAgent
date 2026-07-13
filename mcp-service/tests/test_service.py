@@ -12,7 +12,7 @@ def test_registered_catalog_matches_the_source_service():
 
     tool_names = {tool.name for tool in tools}
     grouped_tools = {tool for group in caps.CAP_GROUPS.values() for tool in group}
-    assert len(tools) == 87
+    assert len(tools) == 88
     assert tool_names == grouped_tools
     assert {"role_session_open", "role_session_login", "run_js", "click_xy"} <= tool_names
     assert {str(resource.uri) for resource in resources} == {
@@ -29,13 +29,15 @@ def test_bundled_browser_assets_are_available():
     assert "scanInteractiveControls" in browser_session.load_js("element-scan.js")
 
 
-def test_default_browser_config_and_launcher_are_service_local():
+def test_default_runtime_paths_use_workspace_env_and_service_config():
     from drissionpage_mcp.core import config
 
     if "DRISSIONPAGE_MCP_CONFIG_DIR" not in os.environ:
         assert config.CONFIG_DIR == config.SERVICE_ROOT / "configs"
+    if "DRISSIONPAGE_MCP_ENV_FILE" not in os.environ:
+        assert config.ENV_FILE == config.DEFAULT_WORKSPACE_ROOT / ".env"
+    assert config.DEFAULT_WORKSPACE_ROOT == config.SERVICE_ROOT.parent
     assert config.DP_CONFIG_PATH.is_file()
-    assert (config.SERVICE_ROOT / "launcher.py").is_file()
 
 
 def test_module_entry_sets_service_working_directory(monkeypatch, tmp_path):

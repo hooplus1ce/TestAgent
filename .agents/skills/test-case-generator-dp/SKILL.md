@@ -24,11 +24,11 @@ Before generating test cases, confirm the active Codex session has loaded
 
 `mcp-service/` is the only MCP implementation in this repository. Codex starts
 the package directly from `.codex/config.toml` with
-`uv run --project mcp-service python -m drissionpage_mcp`; the config does not
-use `launcher.py` or an explicit MCP `cwd`. Do not construct another MCP command.
+`uv run --package drissionpage-mcp drissionpage-mcp`; the config does not use an
+explicit MCP `cwd`. Do not construct another MCP command.
 Browser settings come from
 `mcp-service/configs/dp_configs.ini`. The service fills missing process variables
-from the gitignored `mcp-service/.env`; variables explicitly inherited from the
+from the gitignored root `.env`; variables explicitly inherited from the
 Agent process take precedence. Every Agent adapter in this project uses the complete
 `full` profile. Capability filtering remains available through
 `DRISSIONPAGE_MCP_CAPS` only when a smaller tool surface is explicitly needed.

@@ -1,13 +1,12 @@
-# drissionpage-mcp-refactored
+# drissionpage-mcp
 
-项目唯一的 DrissionPage MCP stdio 服务，使用 Python `src/` 布局。Codex 直接运行包的
-`__main__` 入口，Claude 和 Trae 使用本目录的 launcher；两种入口加载的是同一实现。
+项目唯一的 DrissionPage MCP stdio 服务，使用 Python `src/` 布局。所有 Agent 从项目根
+uv workspace 直接运行包的 `__main__` 入口。
 
 ## Layout
 
 ```text
 mcp-service/
-├── launcher.py                      # Claude、Trae 和手动运行的可迁移入口
 ├── pyproject.toml
 ├── configs/                         # 服务配置模板
 ├── docs/                            # 实现参考文档
@@ -27,8 +26,8 @@ mcp-service/
 从项目根目录执行：
 
 ```bash
-uv sync --project mcp-service --all-groups
-uv run --project mcp-service python mcp-service/launcher.py
+uv sync --all-packages --all-groups
+uv run --package drissionpage-mcp drissionpage-mcp
 ```
 
 MCP client 配置示例：
@@ -38,7 +37,7 @@ MCP client 配置示例：
   "mcpServers": {
     "drissionpage-mcp": {
       "command": "uv",
-      "args": ["run", "--project", "mcp-service", "python", "mcp-service/launcher.py"],
+      "args": ["run", "--package", "drissionpage-mcp", "drissionpage-mcp"],
       "env": {
         "DRISSIONPAGE_MCP_PROFILE": "full",
         "DRISSIONPAGE_MCP_CAPS": "all"
@@ -48,9 +47,7 @@ MCP client 配置示例：
 }
 ```
 
-`launcher.py` 是 Claude、Trae 和本地手动运行的入口，会把工作目录固定为
-`mcp-service/`。Codex 的 `.codex/config.toml` 不设置 MCP `cwd`，直接从工作区执行
-`uv run --project mcp-service python -m drissionpage_mcp`，包模块随后把运行目录固定到
+Codex、Claude 和 Trae 使用同一个 workspace package 命令。包模块会把运行目录固定到
 `mcp-service/`。服务默认读取
 `mcp-service/configs/dp_configs.ini`；所有启动配置均使用仓库相对路径，迁移项目时不需要
 修改机器绝对路径。设置相对的
@@ -58,10 +55,10 @@ MCP client 配置示例：
 
 各平台只负责自己的配置格式适配：Claude 使用根目录 `.mcp.json`，Codex 使用
 `.codex/config.toml`，Trae 使用 `.trae/mcp.json`。它们必须继续指向同一个
-`drissionpage_mcp` 包和独立 uv 项目。
+`drissionpage_mcp` workspace package。
 
 新服务的证据默认保存到 `mcp-service/resources/`。服务启动时会可选加载被 gitignore 的
-`mcp-service/.env`，仅补充进程中尚未设置的变量；Agent 或系统显式注入的变量优先。
+根目录 `.env`，仅补充进程中尚未设置的变量；Agent 或系统显式注入的变量优先。
 `refresh_session` 与 `login_ocr` 从加载后的进程环境读取 `HL_SCM_USERNAME` 和
 `HL_SCM_USERPWD`，参见 `.env.example`。
 
@@ -82,7 +79,8 @@ role_id=requester       -> HL_SCM_ROLE_REQUESTER_USERNAME / HL_SCM_ROLE_REQUESTE
 role_id=dept_manager    -> HL_SCM_ROLE_DEPT_MANAGER_USERNAME / HL_SCM_ROLE_DEPT_MANAGER_USERPWD
 ```
 
-将这些变量放到 MCP 客户端的 secret/environment 配置中，而不是提交到 `.env` 或代码仓库。
+将这些变量放到被 Git 忽略的根 `.env` 或 MCP 客户端的 secret/environment 配置中，
+不得提交到代码仓库。
 工具返回变量名、Context 状态和 Cookie 名称，但不会返回密码、Cookie 值或令牌。
 
 账号密码只负责把测试执行者登录为正确的业务身份。每次回归还应固定并维护：测试账号所属
@@ -147,9 +145,8 @@ role_session_activate(requester) -> 验证审批结果和可见权限
 ## Verify
 
 ```bash
-cd mcp-service
 uv run pytest -q
-uv run python scripts/verify_live.py
+uv run --package drissionpage-mcp python mcp-service/scripts/verify_live.py
 ```
 
 第二条命令连接本机 Chrome 调试端口，运行浏览器只读验证。

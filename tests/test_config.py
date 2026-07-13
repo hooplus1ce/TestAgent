@@ -54,7 +54,7 @@ def test_env_override(monkeypatch):
     importlib.reload(config)
 
 
-def test_service_env_file_fills_missing_values_without_overriding_process_env(
+def test_workspace_env_file_fills_missing_values_without_overriding_process_env(
     monkeypatch, tmp_path,
 ):
     from drissionpage_mcp.core import config
@@ -74,3 +74,22 @@ def test_service_env_file_fills_missing_values_without_overriding_process_env(
     assert config._load_env_file(env_file) is True
     assert os.environ[missing_name] == "from-file"
     assert os.environ[existing_name] == "from-process"
+
+
+def test_workspace_env_file_path_can_be_overridden(monkeypatch, tmp_path):
+    from drissionpage_mcp.core import config
+
+    env_file = tmp_path / "custom.env"
+    variable = "DRISSIONPAGE_MCP_DOTENV_PATH_TEST"
+    env_file.write_text(f"{variable}=loaded\n", encoding="utf-8")
+    monkeypatch.setenv("DRISSIONPAGE_MCP_ENV_FILE", str(env_file))
+    monkeypatch.delenv(variable, raising=False)
+
+    importlib.reload(config)
+
+    assert config.ENV_FILE == env_file.resolve()
+    assert os.environ[variable] == "loaded"
+
+    monkeypatch.delenv("DRISSIONPAGE_MCP_ENV_FILE", raising=False)
+    monkeypatch.delenv(variable, raising=False)
+    importlib.reload(config)

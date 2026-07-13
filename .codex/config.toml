@@ -3,13 +3,16 @@ sandbox_mode = "danger-full-access"
 
 [mcp_servers.drissionpage-mcp]
 command = "uv"
-args = ["run", "--project", "mcp-service", "python", "-m", "drissionpage_mcp"]
+args = ["run", "--package", "drissionpage-mcp", "drissionpage-mcp"]
 enabled = true
 required = false
 startup_timeout_sec = 30
 tool_timeout_sec = 120
 default_tools_approval_mode = "auto"
 env_vars = [
+  "DRISSIONPAGE_MCP_ENV_FILE",
+  "DRISSIONPAGE_MCP_WORKSPACE_ROOT",
+  "DRISSIONPAGE_MCP_CONFIG_DIR",
   "HL_SCM_URL",
   "HL_SCM_BASE_URL",
   "HL_SCM_LOGIN_PAGE",

@@ -33,7 +33,7 @@ description: 为 WMS/MOM/ERP 等企业系统迭代生成测试用例（DrissionP
 ### 唯一服务与配置契约
 
 - 本项目只允许使用 `mcp-service/` 中的实现，对外服务名固定为 `drissionpage-mcp`。
-- Claude、Trae 通过 `mcp-service/launcher.py` 启动；Codex 由 `.codex/config.toml` 直接执行 `uv run --project mcp-service python -m drissionpage_mcp`。Skill 不自行拼装启动命令。
+- Claude、Codex、Trae 均从根 workspace 执行 `uv run --package drissionpage-mcp drissionpage-mcp`。Skill 不自行拼装启动命令。
 - 浏览器配置只读取 `mcp-service/configs/dp_configs.ini`，其中 `../dp_profile` 指向项目根浏览器数据目录。
 - 账号密码只通过 MCP 进程环境变量注入，禁止写入 Skill、用例 JSON、`.mcp.json` 或自动化配方。
 - 所有 Agent 正常运行统一使用 `DRISSIONPAGE_MCP_PROFILE=full` 与 `DRISSIONPAGE_MCP_CAPS=all`，模型可调用完整工具目录；只有主动压缩上下文时才切换 `enterprise`。
@@ -179,7 +179,7 @@ VTable 是 canvas 渲染，无真实 DOM 节点。所有点击走坐标，工具
 - 每个筛选字段由“字段名下拉 / 操作符下拉 / 值控件”组成；
 - 扫描字段时必须获取第二段操作符下拉的全部 `operatorOptions`，并与对应 `field` 绑定；
 - 若第三段值控件是文本框，标记为 `valueMode=free-text`，可自由输入；
-- 若第三段值控件是日期范围，标记为 `valueMode=date-range`，使用日期范围选择工具；
+- 若第三段值控件是日期，标记为 `valueMode=date-range`；统一使用 `set_date`，单日传 `date`，真实 RangePicker 传 `start_date/end_date`；Legions Quick Filter 单边界控件结合操作符传 `date`；
 - 若第三段值控件是下拉框，标记为 `valueMode=must-select-option`，必须先获取 `options`，后续输入/筛选只能选择 `options` 中已有内容，不能任意填写，否则前端不会成功录入。
 
 遍历下拉框强约束：
@@ -239,7 +239,7 @@ row/column/target 参数。确需坐标工具时，坐标必须来自 `get_eleme
 ## 5. 自检清单
 
 - [ ] `drissionpage-mcp` MCP 可用
-- [ ] 当前 MCP 使用平台配置约定的入口：Codex 直接运行包模块，Claude/Trae 使用 `mcp-service/launcher.py`
+- [ ] 当前 MCP 使用统一 workspace package 入口运行包模块
 - [ ] 浏览器可连接（port 9222）
 - [ ] Browser Ready Gate 完成：`connect` 成功、待测页已打开、最终 `check_session` 通过、`get_active_frame` 返回 `ok=true`
 - [ ] 用户已确认变量配置
