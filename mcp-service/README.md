@@ -1,13 +1,13 @@
 # drissionpage-mcp-refactored
 
-项目唯一的 DrissionPage MCP stdio 服务，使用 Python `src/` 布局。项目内各 Agent
-配置统一通过本目录的 launcher 启动，不存在其他兼容入口或第二套 MCP 实现。
+项目唯一的 DrissionPage MCP stdio 服务，使用 Python `src/` 布局。Codex 直接运行包的
+`__main__` 入口，Claude 和 Trae 使用本目录的 launcher；两种入口加载的是同一实现。
 
 ## Layout
 
 ```text
 mcp-service/
-├── launcher.py                      # 所有 Agent 共用的可迁移启动入口
+├── launcher.py                      # Claude、Trae 和手动运行的可迁移入口
 ├── pyproject.toml
 ├── configs/                         # 服务配置模板
 ├── docs/                            # 实现参考文档
@@ -48,16 +48,22 @@ MCP client 配置示例：
 }
 ```
 
-`launcher.py` 是 Claude、Codex、Trae 和本地运行共享的唯一入口。它会把工作目录固定为
-`mcp-service/`，服务默认只读取 `mcp-service/configs/dp_configs.ini`；所有启动配置均使用
-仓库相对路径，迁移项目时不需要修改机器绝对路径。设置相对的
+`launcher.py` 是 Claude、Trae 和本地手动运行的入口，会把工作目录固定为
+`mcp-service/`。Codex 的 `.codex/config.toml` 不设置 MCP `cwd`，直接从工作区执行
+`uv run --project mcp-service python -m drissionpage_mcp`，包模块随后把运行目录固定到
+`mcp-service/`。服务默认读取
+`mcp-service/configs/dp_configs.ini`；所有启动配置均使用仓库相对路径，迁移项目时不需要
+修改机器绝对路径。设置相对的
 `DRISSIONPAGE_MCP_CONFIG_DIR` 可覆盖配置目录，模板位于 `configs/dp_configs.example.ini`。
 
 各平台只负责自己的配置格式适配：Claude 使用根目录 `.mcp.json`，Codex 使用
-`.codex/config.toml`，Trae 使用 `.trae/mcp.json`。三处都调用同一个 `launcher.py`；以后
-修改服务内部入口、配置解析或包结构时，只需保持 launcher 契约稳定。
+`.codex/config.toml`，Trae 使用 `.trae/mcp.json`。它们必须继续指向同一个
+`drissionpage_mcp` 包和独立 uv 项目。
 
-新服务的证据默认保存到 `mcp-service/resources/`。`refresh_session` 与 `login_ocr` 仅从环境变量读取 `HL_SCM_USERNAME` 和 `HL_SCM_USERPWD`，参见 `.env.example`。
+新服务的证据默认保存到 `mcp-service/resources/`。服务启动时会可选加载被 gitignore 的
+`mcp-service/.env`，仅补充进程中尚未设置的变量；Agent 或系统显式注入的变量优先。
+`refresh_session` 与 `login_ocr` 从加载后的进程环境读取 `HL_SCM_USERNAME` 和
+`HL_SCM_USERPWD`，参见 `.env.example`。
 
 ## Role-Based Approval Regression
 

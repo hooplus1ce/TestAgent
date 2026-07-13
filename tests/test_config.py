@@ -52,3 +52,25 @@ def test_env_override(monkeypatch):
     ]:
         monkeypatch.delenv(k, raising=False)
     importlib.reload(config)
+
+
+def test_service_env_file_fills_missing_values_without_overriding_process_env(
+    monkeypatch, tmp_path,
+):
+    from drissionpage_mcp.core import config
+
+    assert config._load_env_file(tmp_path / "missing.env") is False
+
+    missing_name = "DRISSIONPAGE_MCP_DOTENV_MISSING_TEST"
+    existing_name = "DRISSIONPAGE_MCP_DOTENV_EXISTING_TEST"
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        f"{missing_name}=from-file\n{existing_name}=from-file\n",
+        encoding="utf-8",
+    )
+    monkeypatch.delenv(missing_name, raising=False)
+    monkeypatch.setenv(existing_name, "from-process")
+
+    assert config._load_env_file(env_file) is True
+    assert os.environ[missing_name] == "from-file"
+    assert os.environ[existing_name] == "from-process"

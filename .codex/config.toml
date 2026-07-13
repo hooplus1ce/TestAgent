@@ -3,8 +3,7 @@ sandbox_mode = "danger-full-access"
 
 [mcp_servers.drissionpage-mcp]
 command = "uv"
-args = ["run", "--project", "mcp-service", "python", "mcp-service/launcher.py"]
-cwd = "."
+args = ["run", "--project", "mcp-service", "python", "-m", "drissionpage_mcp"]
 enabled = true
 required = false
 startup_timeout_sec = 30

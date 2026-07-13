@@ -3,14 +3,14 @@
 ## 唯一实现
 
 `mcp-service/` 是项目唯一 MCP 服务。它使用独立 `pyproject.toml`、`uv.lock` 和 Python
-`src/` 布局，不依赖项目根虚拟环境。Claude、Codex、Trae 仅做平台配置适配，最终都调用
-`mcp-service/launcher.py`。
+`src/` 布局，不依赖项目根虚拟环境。Codex 直接调用包模块入口，Claude 和 Trae 通过
+`mcp-service/launcher.py` 调用同一个包。
 
 ```text
 Agent platform config
         |
-        v
-mcp-service/launcher.py
+        +-- Codex: uv run --project mcp-service python -m drissionpage_mcp
+        +-- Claude / Trae: mcp-service/launcher.py
         |
         v
 drissionpage_mcp.server (stdio FastMCP)
@@ -30,7 +30,8 @@ drissionpage_mcp.server (stdio FastMCP)
 - 能力裁剪：仅 `DRISSIONPAGE_MCP_CAPS`
 - 凭据：仅通过 MCP 进程环境变量注入
 
-launcher 先把工作目录固定到 `mcp-service/`，因此 ini 中所有相对路径在不同机器上保持一致。
+各平台最终都把 MCP 运行目录固定到 `mcp-service/`：Codex 由包的 `__main__` 处理，
+Claude/Trae 由 launcher 处理。因此 ini 中所有相对路径在不同机器上保持一致。
 
 ## 分层职责
 
@@ -65,8 +66,8 @@ Skills 不导入内部 Python 模块或自行换算 VTable 坐标；常规回归
 
 ## 验收约束
 
-1. 仓库中只有 `mcp-service` 一套 MCP 实现和一个 launcher。
-2. 所有 Agent 配置的命令均指向该 launcher，并通过 full profile 暴露完整工具目录。
+1. 仓库中只有 `mcp-service` 一套 MCP 实现。
+2. Codex 直接运行包模块，Claude/Trae 通过 launcher，并统一以 full profile 暴露完整工具目录。
 3. 根测试和服务测试都导入 `drissionpage_mcp` 新包。
 4. Skill 引用的工具必须存在于 MCP `tools/list`。
 5. 标准 MCP 客户端能够完成 initialize、resources/list 和 tools/list。

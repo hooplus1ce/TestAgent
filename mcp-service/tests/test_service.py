@@ -36,3 +36,16 @@ def test_default_browser_config_and_launcher_are_service_local():
         assert config.CONFIG_DIR == config.SERVICE_ROOT / "configs"
     assert config.DP_CONFIG_PATH.is_file()
     assert (config.SERVICE_ROOT / "launcher.py").is_file()
+
+
+def test_module_entry_sets_service_working_directory(monkeypatch, tmp_path):
+    from drissionpage_mcp import __main__, server
+    from drissionpage_mcp.core import config
+
+    started_from = []
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(server, "main", lambda: started_from.append(os.getcwd()))
+
+    __main__.main()
+
+    assert started_from == [str(config.SERVICE_ROOT)]

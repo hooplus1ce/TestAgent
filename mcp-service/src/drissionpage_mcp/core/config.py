@@ -22,8 +22,18 @@
 import os
 from pathlib import Path
 
+from dotenv import load_dotenv
+
+
+def _load_env_file(path: Path) -> bool:
+    """Fill missing process variables from the optional service-local .env."""
+    return load_dotenv(dotenv_path=path, override=False)
+
+
 PACKAGE_ROOT = Path(__file__).resolve().parent.parent
 SERVICE_ROOT = PACKAGE_ROOT.parents[1]
+ENV_FILE = SERVICE_ROOT / ".env"
+_load_env_file(ENV_FILE)
 WORKSPACE_ROOT = Path(
     os.environ.get("DRISSIONPAGE_MCP_WORKSPACE_ROOT", PACKAGE_ROOT.parents[2])
 ).resolve()

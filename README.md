@@ -10,8 +10,9 @@
 - `tests/`：面向 `mcp-service/src/drissionpage_mcp` 的完整回归测试。
 - `test_cases/`：项目级测试用例 JSON 和导出结果。
 
-不存在其他 MCP 实现或兼容启动入口。Claude、Codex 和 Trae 都以
-`mcp-service/launcher.py` 作为统一入口，对外服务名为 `drissionpage-mcp`。
+不存在第二套 MCP 实现。Codex 从项目级 `.codex/config.toml` 直接执行
+`uv run --project mcp-service python -m drissionpage_mcp`；Claude 和 Trae 继续使用
+`mcp-service/launcher.py`。三者对外服务名均为 `drissionpage-mcp`。
 
 ## 快速开始
 

@@ -42,6 +42,20 @@ def test_all_agent_configs_pin_full_profile():
     assert config["mcp_servers"]["drissionpage-mcp"]["env"]["DRISSIONPAGE_MCP_PROFILE"] == "full"
 
 
+def test_codex_mcp_entry_runs_package_directly_from_service_project():
+    config_path = ROOT / ".codex/config.toml"
+    with config_path.open("rb") as config_file:
+        server = tomllib.load(config_file)["mcp_servers"]["drissionpage-mcp"]
+
+    assert "cwd" not in server
+    assert server["args"] == [
+        "run", "--project", "mcp-service", "python", "-m", "drissionpage_mcp",
+    ]
+    assert "launcher.py" not in server["args"]
+    assert (ROOT / "mcp-service/pyproject.toml").is_file()
+    assert (ROOT / "mcp-service/src/drissionpage_mcp/__main__.py").is_file()
+
+
 def test_legacy_cases_cannot_recommend_unverified_automation():
     violations = []
     for path in (ROOT / "test_cases").rglob("*.json"):

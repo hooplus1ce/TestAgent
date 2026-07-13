@@ -33,7 +33,7 @@ description: 为 WMS/MOM/ERP 等企业系统迭代生成测试用例（DrissionP
 ### 唯一服务与配置契约
 
 - 本项目只允许使用 `mcp-service/` 中的实现，对外服务名固定为 `drissionpage-mcp`。
-- Claude、Codex、Trae 均通过 `mcp-service/launcher.py` 启动；Skill 不直接导入服务模块，也不拼装其他启动命令。
+- Claude、Trae 通过 `mcp-service/launcher.py` 启动；Codex 由 `.codex/config.toml` 直接执行 `uv run --project mcp-service python -m drissionpage_mcp`。Skill 不自行拼装启动命令。
 - 浏览器配置只读取 `mcp-service/configs/dp_configs.ini`，其中 `../dp_profile` 指向项目根浏览器数据目录。
 - 账号密码只通过 MCP 进程环境变量注入，禁止写入 Skill、用例 JSON、`.mcp.json` 或自动化配方。
 - 所有 Agent 正常运行统一使用 `DRISSIONPAGE_MCP_PROFILE=full` 与 `DRISSIONPAGE_MCP_CAPS=all`，模型可调用完整工具目录；只有主动压缩上下文时才切换 `enterprise`。
@@ -239,7 +239,7 @@ row/column/target 参数。确需坐标工具时，坐标必须来自 `get_eleme
 ## 5. 自检清单
 
 - [ ] `drissionpage-mcp` MCP 可用
-- [ ] 当前 MCP 由 `mcp-service/launcher.py` 启动，未使用其他入口
+- [ ] 当前 MCP 使用平台配置约定的入口：Codex 直接运行包模块，Claude/Trae 使用 `mcp-service/launcher.py`
 - [ ] 浏览器可连接（port 9222）
 - [ ] Browser Ready Gate 完成：`connect` 成功、待测页已打开、最终 `check_session` 通过、`get_active_frame` 返回 `ok=true`
 - [ ] 用户已确认变量配置
