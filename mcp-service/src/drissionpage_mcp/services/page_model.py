@@ -1156,6 +1156,7 @@ def select_option(
     target = None
     select_element = None
     used_scope = ""
+    container_anchor = None
     field_name = str(field_name or "").strip()
     for scope_name, candidate in candidates:
         try:
@@ -1167,6 +1168,17 @@ def select_option(
                     "[contains(normalize-space(.), %s)]]" % literal,
                     timeout=remaining(0.5),
                 )
+                # Legions Quick Filter 没有 <label> 或 class="label" 元素，
+                # 用字段文本在 .ant-col-md-8 容器内精确匹配字段选择器文本
+                # (不能用 contains 避免 "状态" 误匹配 "审批状态")。
+                if container is None:
+                    container = candidate.ele(
+                        "xpath://div[contains(@class, 'legions-pro-quick-filter')]"
+                        "//div[contains(@class, 'ant-col-md-8')]"
+                        "[.//div[contains(@class, 'ant-select-selection-selected-value')]"
+                        "[normalize-space(.) = %s]]" % literal,
+                        timeout=remaining(0.5),
+                    )
                 if container is None:
                     label = candidate.ele("text:%s" % field_name, timeout=remaining(0.3))
                     container = label.parent() if label is not None else None
@@ -1175,11 +1187,34 @@ def select_option(
             if container is None:
                 continue
             selects = container.eles(
-                'css:.ant-select:not(.ant-select-disabled)', timeout=remaining(0.5)
+                "xpath:.//div[contains(@class, 'ant-select')"
+                " and not(contains(@class, 'ant-select-disabled'))]",
+                timeout=remaining(0.5),
             ) or []
             if selects:
-                select_element = selects[min(select_index, len(selects) - 1)]
+                # Legions Quick Filter 每行有 3 个 .ant-select:
+                #   [0] 字段选择器  [1] 操作符选择器  [2] 值选择器
+                # 当调用 select_option 设值时，目标始终是值选择器 (index 2)。
+                # 用 XPath ancestor 向上遍历检测是否为 Legions 快捷筛选。
+                if len(selects) >= 3:
+                    is_legions = False
+                    try:
+                        legions_root = container.ele(
+                            'xpath:ancestor::div[contains(@class, "legions-pro-quick-filter")]',
+                            timeout=0.2,
+                        )
+                        is_legions = legions_root is not None
+                    except Exception:
+                        pass
+                    if is_legions:
+                        pick = min(2 + select_index, len(selects) - 1)
+                    else:
+                        pick = min(select_index, len(selects) - 1)
+                else:
+                    pick = min(select_index, len(selects) - 1)
+                select_element = selects[pick]
                 target, used_scope = candidate, scope_name
+                container_anchor = container
                 break
         except Exception:
             continue
@@ -1192,7 +1227,7 @@ def select_option(
                 continue
             select_element = selects[min(2 + select_index, len(selects) - 1)]
             target, used_scope = candidate, scope_name
-            break
+            container_anchor = column
 
     if select_element is None or target is None:
         return {"ok": False, "reason": "select not found for field: %s" % field_name}
@@ -1205,14 +1240,9 @@ def select_option(
 
     try:
         close_dropdown()
-        opener = (
-            select_element.ele(
-                'css:[role="combobox"], .ant-select-selection, .ant-select-selector',
-                timeout=remaining(0.5),
-            )
-            or select_element
-        )
-        opener.click(by_js=False, timeout=remaining(2.0), wait_stop=False)
+        # .ant-select（含 legions-pro-select）通过 xpath 定位后在 iframe 内
+        # 有有效视口坐标，直接 by_js=False 原生点击。
+        select_element.click(by_js=False, timeout=remaining(2.0), wait_stop=False)
         dropdown = target.wait.ele_displayed(
             ui_contract.FILTER_SELECT_OPEN,
             timeout=remaining(),

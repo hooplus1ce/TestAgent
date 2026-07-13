@@ -1641,6 +1641,7 @@ version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
     { name = "drissionpage-mcp" },
+    { name = "openpyxl" },
     { name = "pandas" },
 ]
 
@@ -1652,6 +1653,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "drissionpage-mcp", editable = "mcp-service" },
+    { name = "openpyxl", specifier = ">=3.1.5" },
     { name = "pandas", specifier = ">=3.0.3" },
 ]
 

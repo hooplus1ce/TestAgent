@@ -139,6 +139,9 @@ def load_testcases_from_json(json_files):
     all_cases = []
     assets_by_key = {}
     module_info = None
+    filter_field_matrix = None
+    coverage_matrix = None
+    coverage_meta = None
 
     for fpath in sorted(json_files):
         with open(fpath, 'r', encoding='utf-8') as f:
@@ -147,6 +150,14 @@ def load_testcases_from_json(json_files):
         # 取第一个文件的module_info作为基准
         if module_info is None and "module_info" in data:
             module_info = data["module_info"]
+
+        # 取filter_field_matrix（优先第一个文件）
+        if filter_field_matrix is None and "filter_field_matrix" in data:
+            filter_field_matrix = data["filter_field_matrix"]
+
+        # 取coverage_matrix（优先第一个文件）
+        if coverage_matrix is None and "coverage_matrix" in data:
+            coverage_matrix = data["coverage_matrix"]
 
         cases = data.get("test_cases", [])
         for case in cases:
@@ -164,12 +175,33 @@ def load_testcases_from_json(json_files):
         if cases:
             print(f"✅ 加载: {os.path.basename(fpath)} → {len(cases)} 条用例")
 
-    return module_info, all_cases, list(assets_by_key.values())
+    return module_info, all_cases, list(assets_by_key.values()), filter_field_matrix, coverage_matrix
 
 
 def build_excel(module_info, test_cases, output_dir=None, custom_filename=None,
-                asset_inventory=None):
+                asset_inventory=None, filter_field_matrix=None, coverage_matrix=None,
+                source_dir=None):
     """构建Excel文件"""
+
+    # 尝试从多个位置加载 coverage-model.json（如果未传入coverage_matrix）
+    if coverage_matrix is None:
+        candidates = []
+        if source_dir and os.path.isdir(source_dir):
+            candidates.append(os.path.join(source_dir, "coverage-model.json"))
+        if output_dir and output_dir != ".":
+            candidates.append(os.path.join(output_dir, "coverage-model.json"))
+        candidates.append("coverage-model.json")
+        for _cp in candidates:
+            if os.path.exists(_cp):
+                try:
+                    with open(_cp, 'r', encoding='utf-8') as _f:
+                        _cov = json.load(_f)
+                    coverage_matrix = _cov.get("coverage_matrix", [])
+                    if coverage_matrix:
+                        print(f"📄 加载覆盖矩阵: {_cp} ({len(coverage_matrix)} 项)")
+                        break
+                except Exception:
+                    pass
     test_cases = sort_test_cases(test_cases)
 
     # 从module_info提取配置
@@ -189,10 +221,11 @@ def build_excel(module_info, test_cases, output_dir=None, custom_filename=None,
         output_dir = os.path.join("test_cases", folder_name)
 
     wb = Workbook()
-    
+
     # ===================== Sheet 1: 测试用例 =====================
     ws1 = wb.active
     ws1.title = "测试用例"
+    ws1.sheet_properties.tabColor = "2C5282"
     
     # 写入表头
     ws1.append(HEADERS_19)
@@ -265,6 +298,7 @@ def build_excel(module_info, test_cases, output_dir=None, custom_filename=None,
     
     # ===================== Sheet 2: 测试数据 =====================
     ws2 = wb.create_sheet(title="测试数据")
+    ws2.sheet_properties.tabColor = "548235"
     row = 1
     
     # 统计汇总
@@ -352,6 +386,138 @@ def build_excel(module_info, test_cases, output_dir=None, custom_filename=None,
         ])
     row = write_section(ws2, row, "5. VTable列定义一览表",
         ["列标题", "列类型", "可交互", "说明"], column_rows or [["未采集", "", "", ""]])
+
+    # ===================== Sheet 3: 筛选字段矩阵 =====================
+    if filter_field_matrix:
+        ws3 = wb.create_sheet(title="筛选字段矩阵")
+        ws3.sheet_properties.tabColor = "4472C4"
+        f_headers = ["字段名", "输入类型", "默认操作符", "支持操作符", "下拉待选值", "值模式"]
+        ws3.append(f_headers)
+        for cell in ws3[1]:
+            cell.fill = header_fill
+            cell.font = header_font
+            cell.alignment = Alignment(horizontal="center", vertical="center")
+            cell.border = thin_border
+
+        for ff in filter_field_matrix:
+            ops = ff.get("operators", [])
+            opts = ff.get("options", [])
+            ws3.append([
+                ff.get("field", ""),
+                ff.get("inputType", ""),
+                ops[0] if ops else "",
+                ", ".join(map(str, ops)),
+                ", ".join(map(str, opts)),
+                ff.get("valueMode", ""),
+            ])
+
+        for row_idx in range(2, ws3.max_row + 1):
+            for col_idx in range(1, ws3.max_column + 1):
+                cell = ws3.cell(row=row_idx, column=col_idx)
+                cell.border = thin_border
+                cell.font = Font(name="微软雅黑", size=10)
+                cell.alignment = Alignment(horizontal="left", vertical="center", wrap_text=True)
+
+        f_widths = [22, 22, 16, 30, 44, 20]
+        for i, w in enumerate(f_widths, 1):
+            ws3.column_dimensions[chr(64 + i)].width = w
+        ws3.freeze_panes = "A2"
+
+    # ===================== Sheet 4: 覆盖矩阵 =====================
+    if coverage_matrix:
+        ws4 = wb.create_sheet(title="覆盖矩阵")
+        ws4.sheet_properties.tabColor = "ED7D31"
+        c_headers = ["区域", "功能特性", "场景描述", "测试类型", "验证状态"]
+        ws4.append(c_headers)
+        for cell in ws4[1]:
+            cell.fill = header_fill
+            cell.font = header_font
+            cell.alignment = Alignment(horizontal="center", vertical="center")
+            cell.border = thin_border
+
+        green_fill = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
+        green_font = Font(name="微软雅黑", size=10, color="006100")
+        yellow_fill = PatternFill(start_color="FFEB9C", end_color="FFEB9C", fill_type="solid")
+        yellow_font = Font(name="微软雅黑", size=10, color="9C5700")
+        gray_fill = PatternFill(start_color="F2F2F2", end_color="F2F2F2", fill_type="solid")
+
+        for item in coverage_matrix:
+            ws4.append([
+                item.get("area", ""),
+                item.get("feature", ""),
+                item.get("scenario", ""),
+                item.get("type", ""),
+                item.get("status", ""),
+            ])
+            row_idx = ws4.max_row
+            status_cell = ws4.cell(row=row_idx, column=5)
+            st = item.get("status", "")
+            if st == "已验证":
+                status_cell.fill = green_fill
+                status_cell.font = green_font
+            elif "待验证" in st or "待" in st:
+                status_cell.fill = yellow_fill
+                status_cell.font = yellow_font
+            for col_idx in range(1, ws4.max_column + 1):
+                ws4.cell(row=row_idx, column=col_idx).border = thin_border
+                ws4.cell(row=row_idx, column=col_idx).font = Font(name="微软雅黑", size=10)
+                ws4.cell(row=row_idx, column=col_idx).alignment = Alignment(
+                    horizontal="left", vertical="center", wrap_text=True)
+
+        c_widths = [14, 22, 40, 18, 14]
+        for i, w in enumerate(c_widths, 1):
+            ws4.column_dimensions[chr(64 + i)].width = w
+        ws4.freeze_panes = "A2"
+
+    # ===================== Sheet 5: 模块信息 =====================
+    ws5 = wb.create_sheet(title="模块信息")
+    ws5.sheet_properties.tabColor = "7030A0"
+    sub_fill = PatternFill(start_color="D9E2F3", end_color="D9E2F3", fill_type="solid")
+    sub_font = Font(name="微软雅黑", bold=True, size=11)
+    body_font = Font(name="微软雅黑", size=11)
+
+    info_data = [
+        ("企业前缀", prefix),
+        ("模块名称", module_info.get("module_name", "")),
+        ("一级菜单", level1),
+        ("二级菜单", level2),
+        ("拼音码", pinyin),
+        ("作者", author),
+        ("生成日期", write_date),
+        ("用例总数", str(len(test_cases))),
+    ]
+
+    # 汇总统计
+    priority_count = {"高级": 0, "中级": 0, "低级": 0}
+    type_count = {}
+    for case in test_cases:
+        priority_count[case["priority"]] = priority_count.get(case["priority"], 0) + 1
+        type_count[case["test_type"]] = type_count.get(case["test_type"], 0) + 1
+
+    info_data.append(("", ""))
+    info_data.append(("【覆盖率统计】", ""))
+    info_data.append((f"  高级用例", str(priority_count["高级"])))
+    info_data.append((f"  中级用例", str(priority_count["中级"])))
+    info_data.append((f"  低级用例", str(priority_count["低级"])))
+    for k, v in sorted(type_count.items()):
+        info_data.append((f"  {k}", str(v)))
+
+    for i, (k, v) in enumerate(info_data, 1):
+        cell_k = ws5.cell(row=i, column=1, value=k)
+        cell_v = ws5.cell(row=i, column=2, value=v)
+        cell_k.border = thin_border
+        cell_v.border = thin_border
+        cell_v.font = body_font
+        if k.startswith("  "):
+            cell_k.font = Font(name="微软雅黑", size=10, italic=True)
+        elif k.startswith("【"):
+            cell_k.font = Font(name="微软雅黑", bold=True, size=11, color="2C5282")
+        else:
+            cell_k.font = sub_font
+            cell_k.fill = sub_fill if k else PatternFill()
+
+    ws5.column_dimensions["A"].width = 22
+    ws5.column_dimensions["B"].width = 36
     
     # ===================== 保存 =====================
     module_name = module_info.get("module_name", "测试用例")
@@ -414,13 +580,18 @@ def main():
         print("❌ 未找到任何JSON文件")
         return
     
-    module_info, test_cases, asset_inventory = load_testcases_from_json(json_files)
-    
+    module_info, test_cases, asset_inventory, filter_field_matrix, coverage_matrix = load_testcases_from_json(json_files)
+
     if not test_cases:
         print("❌ 未加载到任何测试用例")
         return
-    
-    build_excel(module_info, test_cases, asset_inventory=asset_inventory)
+
+    # 提取源文件所在目录（用于查找同级 coverage-model.json）
+    source_dir = os.path.dirname(os.path.abspath(json_files[0])) if json_files else None
+
+    build_excel(module_info, test_cases, asset_inventory=asset_inventory,
+                filter_field_matrix=filter_field_matrix, coverage_matrix=coverage_matrix,
+                source_dir=source_dir)
 
 
 if __name__ == "__main__":

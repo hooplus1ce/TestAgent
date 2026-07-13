@@ -95,7 +95,36 @@ role_session_close(role_id) -> cleanup
 
 完成页面结构采集后，先按 `references/coverage-model.md` 建立覆盖模型，禁止直接进入用例生成。
 
-必须输出：
+必须输出到磁盘文件的资产：
+- **`test_cases/<LEVEL1_PINYIN>_<MODULE_PINYIN>/coverage-model.json`** — 覆盖模型文件，**不可跳过**。格式参考已有的 `coverage-model.json` 范例，至少包含：
+
+```json
+{
+  "module": "<二级模块>",
+  "module_level1": "<一级模块>",
+  "module_pinyin": "<拼音码>",
+  "domain": "SCM/MOM/ERP",
+  "enterprise_prefix": "NB",
+  "page_assets": {
+    "filter_fields": [
+      // 来自 scan_filter_fields() 的完整字段矩阵
+      // 每个元素必须包含 name / type / operators / values(下拉字段)
+    ],
+    "toolbar_buttons": [ /* 来自 scan_toolbar_actions() */ ],
+    "filter_toolbar": [ /* 筛选区操作按钮（搜索/重置/设置等） */ ],
+    "table_columns": [ /* 来自 scan_table() / capture_page_model().tables.scan.columns */ ],
+    "status_fields": { /* 状态类字段及其可选值映射 */ }
+  },
+  "coverage_matrix": [
+    // 每个已验证/待验证的场景一项
+    // 每项包含 area / feature / scenario / type / status
+  ],
+  "coverage_checks": { /* 覆盖检查清单布尔值 */ },
+  "gap_notes": [ /* 剩余缺口说明 */ ]
+}
+```
+
+其他必须产出的清单（可与文件内容重合，用于对话展示）：
 - 页面资产清单：筛选字段、按钮、页签、表格列、行操作、弹窗、接口、状态字段、关键数据样本
 - 可测功能点清单：每个页面资产对应的可验证行为
 - 场景覆盖矩阵：正向、反向、边界、组合、状态流转、幂等、权限/可见性、数据一致性
@@ -107,6 +136,17 @@ role_session_close(role_id) -> cleanup
 ### Phase 2 — 用例生成
 
 每个用例 **19 个字段**，字段定义见 `references/field-spec.md`。
+
+用例 JSON 文件在数组之外必须包含的顶层字段：
+- **`filter_field_matrix`** — 来自 Phase 1.5 `scan_filter_fields()` 的完整字段矩阵，**必须写入**，不可省略。格式：
+  ```json
+  "filter_field_matrix": [
+    {"field": "字段名", "inputType": "text-input|searchable-dropdown|date-range",
+     "operators": ["包含","不包含","等于"], "options": ["下拉值1","下拉值2"],
+     "valueMode": "free-text|must-select-option|date-range"}
+  ]
+  ```
+  此字段是 Excel 导出时「筛选字段矩阵」Sheet 的唯一数据源。
 
 **质量门**（详见 `references/quality-rubric.md`）：
 - 预期结果(L) 必须可验证——优先用 `explore_action(listen_targets="gateway")` 返回的接口响应作为可断言预期
@@ -143,7 +183,11 @@ role_session_close(role_id) -> cleanup
 3. 导出 Excel 前必须按功能维度稳定排序：以排序后 JSON 文件中的首次出现顺序确定功能组顺序，相同 `function` 的用例连续写入；同一功能组内按 `case_id` 自然序 + 原始顺序排序。
 4. MUST 按视觉布局安排 JSON 文件序号：筛选区(F) → 页签/按钮(I/B) → 表格交互(T/I) → 页面级(P/D/W)。导出器只负责稳定分组，不依赖人工手动拖动 Excel 行。
 5. 用 `uv run python .claude/skills/test-case-generator-dp/scripts/generate_from_json.py test_cases/<LEVEL1_PINYIN>_<MODULE_PINYIN>/*.json` 导出 Excel
-6. 告知用户文件路径
+6. 导出器自动检测并附加补充 Sheet：
+   - 若 JSON 含 `filter_field_matrix` → 生成「筛选字段矩阵」Sheet
+   - 若同目录存在 `coverage-model.json` → 生成「覆盖矩阵」Sheet
+   - 始终生成「模块信息」Sheet（汇总统计数据）
+7. 告知用户文件路径
 
 新流程禁止把用例硬编码进 Python。用例数据必须先沉淀为 JSON，再由通用导出器生成 Excel。
 
