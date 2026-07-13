@@ -11,6 +11,7 @@ from time import perf_counter
 from urllib.parse import urlparse
 
 from ..core import config, ui_contract
+from ..core.lock import _rwlock
 from . import browser_session
 
 logger = logging.getLogger("drissionpage-mcp")
@@ -18,6 +19,9 @@ logger = logging.getLogger("drissionpage-mcp")
 SCM_ADMIN_URL = config.SCM_ADMIN_URL
 NEEDED_COOKIES = config.NEEDED_COOKIES
 _DEFAULT_CREDENTIAL_ENVS = ("HL_SCM_USERNAME", "HL_SCM_USERPWD")
+
+# OCR 实例缓存，由 warmup_ocr() 在服务启动时预加载，避免首次调用延迟
+_ocr_instance = None
 
 
 def _is_admin_app_url(url: str) -> bool:
@@ -53,6 +57,20 @@ def _require_creds(username: str, password: str, credential_envs: tuple[str, str
         )
 
 
+def warmup_ocr():
+    """预加载 OCR 模型（ddddocr），让首次 get_login_auth 跳过模型加载延迟。
+
+    在 MCP 服务启动时调用，将模型加载耗时从工具调用中剥离。
+    纯 HTTP 步骤不受影响，但模型加载 ~0.5s 不会再占用工具可见执行时间。
+    """
+    global _ocr_instance
+    if _ocr_instance is not None:
+        return
+    import ddddocr
+    _ocr_instance = ddddocr.DdddOcr(show_ad=False)
+    _ocr_instance.set_ranges("0123456789")
+
+
 def get_login_auth(
     username: str = None,
     password: str = None,
@@ -66,11 +84,14 @@ def get_login_auth(
     username = config.SCM_USERNAME if username is None else username
     password = config.SCM_USERPWD if password is None else password
     _require_creds(username, password, credential_envs)
-    import ddddocr
     import httpx
 
-    ocr = ddddocr.DdddOcr(show_ad=False)
-    ocr.set_ranges("0123456789")
+    global _ocr_instance
+    if _ocr_instance is None:
+        import ddddocr
+        _ocr_instance = ddddocr.DdddOcr(show_ad=False)
+        _ocr_instance.set_ranges("0123456789")
+    ocr = _ocr_instance
 
     cookies = {"SESSION": str(uuid.uuid4())}
     with httpx.Client(base_url=config.SCM_BASE_URL, timeout=config.REFRESH_HTTP_TIMEOUT) as client:
@@ -166,18 +187,32 @@ def _login_ocr_on_tab(
     password: str = None,
     credential_envs: tuple[str, str] = _DEFAULT_CREDENTIAL_ENVS,
 ):
-    """在给定 tab 上完成 OCR 登录；供默认会话和角色隔离会话共用。"""
+    """在给定 tab 上完成 OCR 登录；供默认会话和角色隔离会话共用。
+
+    分段加锁策略：
+      1. 无锁段：OCR 识别 + HTTP 登录（纯网络 IO，不涉及浏览器）
+      2. 有锁段：浏览器导航 → 清缓存 → 注入 cookie → 刷新
+    """
     started = perf_counter()
     timings = {}
+
+    # ====== 无锁段：OCR + HTTP 获取 cookie（不碰浏览器）=======
     auth_cookies = _stage(
         timings,
         "get_login_auth",
         lambda: get_login_auth(username, password, credential_envs),
     )
-    navigation = _stage(timings, "ensure_admin_host", lambda: _ensure_on_admin_host(tab))
-    cache = _stage(timings, "clear_cache", lambda: _clear_cache(tab))
-    injected = _stage(timings, "inject_cookies", lambda: _inject_cookies(auth_cookies, tab))
-    reload_loaded = _stage(timings, "reload", lambda: _bounded_reload(tab))
+
+    # ====== 有锁段：操作浏览器 ======
+    _rwlock.acquire_write()
+    try:
+        navigation = _stage(timings, "ensure_admin_host", lambda: _ensure_on_admin_host(tab))
+        cache = _stage(timings, "clear_cache", lambda: _clear_cache(tab))
+        injected = _stage(timings, "inject_cookies", lambda: _inject_cookies(auth_cookies, tab))
+        reload_loaded = _stage(timings, "reload", lambda: _bounded_reload(tab))
+    finally:
+        _rwlock.release_write()
+
     timings["total"] = round(perf_counter() - started, 3)
     return {"ok": True, "cookies": [c["name"] for c in injected],
             "url": tab.url, "title": tab.title, "navigation": navigation,

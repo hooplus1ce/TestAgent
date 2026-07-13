@@ -26,6 +26,7 @@ from DrissionPage.common import Keys
 
 from . import __version__
 from .core import caps, config, ui_contract
+from .core.lock import _rwlock
 from .resources import resource_store
 from .services import (
     browser_session,
@@ -57,6 +58,14 @@ logger = logging.getLogger("drissionpage-mcp")
 mcp = FastMCP("drissionpage-mcp")
 mcp._mcp_server.version = __version__
 _fastmcp_tool = mcp.tool
+
+# ==================== 服务启动预热 ====================
+# 预加载 OCR 模型，避免首次 refresh_session 调用时有模型加载延迟
+try:
+    session_auth.warmup_ocr()
+    logger.info("warmup_ocr: OCR model loaded")
+except Exception as exc:
+    logger.warning("warmup_ocr skipped (%s); first refresh_session may load model lazily", exc)
 
 
 _READ_ONLY_TOOLS = {
@@ -170,61 +179,6 @@ def _cap_aware_tool(*args, **kwargs):
 mcp.tool = _cap_aware_tool
 
 
-class _RWLock:
-    """读-写锁：多读单写，写优先防止读饿死写。"""
-    def __init__(self):
-        self._lock = threading.Lock()
-        self._readers = 0
-        self._writers_waiting = 0
-        self._writing = False
-        self._writer_owner = None
-        self._writer_depth = 0
-        self._can_read = threading.Condition(self._lock)
-        self._can_write = threading.Condition(self._lock)
-
-    def acquire_read(self):
-        with self._lock:
-            if self._writing and self._writer_owner == threading.get_ident():
-                self._readers += 1
-                return
-            while self._writers_waiting > 0 or self._writing:
-                self._can_read.wait()
-            self._readers += 1
-
-    def release_read(self):
-        with self._lock:
-            self._readers -= 1
-            if self._readers == 0:
-                self._can_write.notify()
-
-    def acquire_write(self):
-        with self._lock:
-            current = threading.get_ident()
-            if self._writing and self._writer_owner == current:
-                self._writer_depth += 1
-                return
-            self._writers_waiting += 1
-            while self._readers > 0 or self._writing:
-                self._can_write.wait()
-            self._writing = True
-            self._writer_owner = current
-            self._writer_depth = 1
-            self._writers_waiting -= 1
-
-    def release_write(self):
-        with self._lock:
-            if self._writer_owner != threading.get_ident():
-                raise RuntimeError("write lock released by a non-owner")
-            self._writer_depth -= 1
-            if self._writer_depth:
-                return
-            self._writing = False
-            self._writer_owner = None
-            self._can_read.notify_all()
-            self._can_write.notify()
-
-
-_rwlock = _RWLock()
 
 
 def read_synchronized(fn):
@@ -324,13 +278,11 @@ def connect(port: int = config.DEFAULT_PORT, target_hint: str = config.DEFAULT_T
 
 
 @mcp.tool()
-@write_synchronized
 def refresh_session() -> dict:
     """会话过期时直接触发 OCR 登录 → 注入新 cookie → 刷新页面。不再依赖缓存。"""
     return session_auth.refresh_session()
 
 
-@write_synchronized
 def login_ocr() -> dict:
     """OCR 识别验证码 + HTTP 登录获取 cookie → 清缓存 → 注入 → 刷新。用于首次登录或完全失效。"""
     return session_auth.login_ocr()
