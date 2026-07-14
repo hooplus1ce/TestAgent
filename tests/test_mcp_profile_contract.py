@@ -43,8 +43,8 @@ def test_all_agent_configs_share_workspace_entry_and_full_profile():
         server = payload["mcpServers"]["drissionpage-mcp"]
         assert server["env"]["DRISSIONPAGE_MCP_PROFILE"] == "full"
         assert server["args"] == expected_args
-        assert "HL_SCM_USERNAME" not in server["env"]
-        assert "HL_SCM_USERPWD" not in server["env"]
+        assert "HL_USERNAME" not in server["env"]
+        assert "HL_USERPWD" not in server["env"]
 
     with (ROOT / ".codex/config.toml").open("rb") as config_file:
         server = tomllib.load(config_file)["mcp_servers"]["drissionpage-mcp"]

@@ -283,6 +283,26 @@ def refresh_session() -> dict:
     return session_auth.refresh_session()
 
 
+@mcp.tool()
+def set_target_env(host_prefix: str) -> dict:
+    """运行时切换目标环境（无需重启 MCP 服务）。
+
+    只需提供 host 前缀，例如 'demo15-scm'，系统自动推导 5 个关联配置
+    (HL_URL / HL_BASE_URL / HL_LOGIN_PAGE / HL_COOKIE_DOMAIN / HL_ACCESS_DOMAIN)。
+    调用后即刻生效，后续 connect / refresh_session 使用新环境。
+    """
+    config.set_target_prefix(host_prefix)
+    return {
+        "ok": True,
+        "host_prefix": host_prefix,
+        "HL_URL": config.SCM_ADMIN_URL,
+        "HL_BASE_URL": config.SCM_BASE_URL,
+        "HL_LOGIN_PAGE": config.SCM_LOGIN_PAGE,
+        "HL_COOKIE_DOMAIN": config.COOKIE_DOMAIN,
+        "HL_ACCESS_DOMAIN": config.SCM_ACCESS_DOMAIN,
+    }
+
+
 def login_ocr() -> dict:
     """OCR 识别验证码 + HTTP 登录获取 cookie → 清缓存 → 注入 → 刷新。用于首次登录或完全失效。"""
     return session_auth.login_ocr()

@@ -328,8 +328,8 @@ def test_flow_omits_account_json_network_noise(monkeypatch, tmp_path):
             "action": {"ok": True, "action": "click"},
             "signal": {
                 "type": "network",
-                "url": "https://demo19-scm.hoolinks.com//main/api/v1/account.json",
-                "api_target": "https://demo19-scm.hoolinks.com//main/api/v1/account.json",
+                "url": "https://scm.example.com//main/api/v1/account.json",
+                "api_target": "https://scm.example.com//main/api/v1/account.json",
                 "events": [{
                     "type": "network",
                     "url": "https://example.test/gateway",

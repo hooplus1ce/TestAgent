@@ -86,15 +86,15 @@ def test_role_login_uses_only_role_credentials_and_hides_password(monkeypatch):
 
 def test_role_login_does_not_fall_back_to_default_credentials(monkeypatch):
     _prepare_role(monkeypatch)
-    monkeypatch.setenv("HL_SCM_USERNAME", "default-user")
-    monkeypatch.setenv("HL_SCM_USERPWD", "default-secret")
+    monkeypatch.setenv("HL_USERNAME", "default-user")
+    monkeypatch.setenv("HL_USERPWD", "default-secret")
 
     assert role_sessions.open_role("requester")["ok"] is True
     result = role_sessions.login_role("requester")
 
     assert result["ok"] is False
-    assert "HL_SCM_ROLE_REQUESTER_USERNAME" in result["reason"]
-    assert "HL_SCM_ROLE_REQUESTER_USERPWD" in result["reason"]
+    assert "HL_ROLE_REQUESTER_USERNAME" in result["reason"]
+    assert "HL_ROLE_REQUESTER_USERPWD" in result["reason"]
 
 
 def test_role_login_failure_does_not_echo_password(monkeypatch):

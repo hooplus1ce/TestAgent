@@ -5,9 +5,9 @@ import os
 
 def test_defaults():
     from drissionpage_mcp.core import config
-    assert config.SCM_ADMIN_URL.startswith("https://")
-    assert config.COOKIE_DOMAIN.startswith(".")
-    assert config.SCM_ACCESS_DOMAIN.startswith(".")
+    assert config.SCM_ADMIN_URL == ""
+    assert config.COOKIE_DOMAIN == ""
+    assert config.SCM_ACCESS_DOMAIN == ""
     assert config.NEEDED_COOKIES == ["SESSION", "UCTOKEN", "cookie_token"]
     assert config.DEFAULT_PORT == 9222
     assert config.DEFAULT_TARGET_HINT == "诺贝科技"
@@ -24,7 +24,7 @@ def test_defaults():
 
 
 def test_env_override(monkeypatch):
-    monkeypatch.setenv("HL_SCM_URL", "https://preprod.example.com/")
+    monkeypatch.setenv("HL_URL", "https://preprod.example.com/")
     monkeypatch.setenv("HL_COOKIE_DOMAIN", ".preprod.example.com")
     monkeypatch.setenv("HL_REMOTE_PORT", "9333")
     monkeypatch.setenv("HL_TARGET_HINT", "某其他系统")
@@ -42,7 +42,7 @@ def test_env_override(monkeypatch):
     assert config.REFRESH_HTTP_TIMEOUT == 5.5
     # 还原默认值，避免污染后续测试
     for k in [
-        "HL_SCM_URL",
+        "HL_URL",
         "HL_COOKIE_DOMAIN",
         "HL_REMOTE_PORT",
         "HL_TARGET_HINT",

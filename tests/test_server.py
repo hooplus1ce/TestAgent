@@ -1749,10 +1749,10 @@ def test_network_capture_ignores_account_json_before_business_packet():
     from drissionpage_mcp import server
 
     noise = SimpleNamespace(
-        url="https://demo19-scm.hoolinks.com//main/api/v1/account.json",
+        url="https://scm.example.com//main/api/v1/account.json",
         method="GET",
         request=SimpleNamespace(headers={
-            "api-target": "https://demo19-scm.hoolinks.com//main/api/v1/account.json",
+            "api-target": "https://scm.example.com//main/api/v1/account.json",
         }),
         response=SimpleNamespace(status=200, body={"ok": True}),
     )
@@ -1777,8 +1777,8 @@ def test_listen_wait_skips_account_json_and_returns_next_business_packet():
     from drissionpage_mcp import server
 
     noise = SimpleNamespace(
-        url="https://demo19-scm.hoolinks.com//main/api/v1/account.json",
-        request=SimpleNamespace(headers={"api-target": "https://demo19-scm.hoolinks.com//main/api/v1/account.json"}),
+        url="https://scm.example.com//main/api/v1/account.json",
+        request=SimpleNamespace(headers={"api-target": "https://scm.example.com//main/api/v1/account.json"}),
     )
     business = SimpleNamespace(
         url="https://example.test/gateway",
@@ -1810,8 +1810,8 @@ def test_observe_queue_skips_account_json_before_business_signal():
     from drissionpage_mcp.services import observe
 
     noise = SimpleNamespace(
-        url="https://demo19-scm.hoolinks.com//main/api/v1/account.json",
-        request=SimpleNamespace(headers={"api-target": "https://demo19-scm.hoolinks.com//main/api/v1/account.json"}),
+        url="https://scm.example.com//main/api/v1/account.json",
+        request=SimpleNamespace(headers={"api-target": "https://scm.example.com//main/api/v1/account.json"}),
     )
     business = SimpleNamespace(
         url="https://example.test/gateway",
@@ -2164,7 +2164,7 @@ def test_browser_tabs_closing_current_prefers_business_tab():
     from drissionpage_mcp import server
     current = SimpleNamespace(tab_id="temporary")
     business = SimpleNamespace(
-        tab_id="business", url="https://demo19-scm.hoolinks.com/", title="诺贝科技",
+        tab_id="business", url="https://scm.example.com/", title="诺贝科技",
     )
     browser = MagicMock()
     browser.tab_ids = ["temporary", "business"]

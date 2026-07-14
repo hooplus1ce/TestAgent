@@ -43,8 +43,8 @@ def credential_env_names(role_id: str) -> tuple[str, str]:
     normalized = normalize_role_id(role_id)
     token = normalized.upper().replace("-", "_")
     return (
-        "HL_SCM_ROLE_%s_USERNAME" % token,
-        "HL_SCM_ROLE_%s_USERPWD" % token,
+        "HL_ROLE_%s_USERNAME" % token,
+        "HL_ROLE_%s_USERPWD" % token,
     )
 
 

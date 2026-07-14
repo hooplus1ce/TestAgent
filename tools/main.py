@@ -9,6 +9,7 @@ from DrissionPage.items import ChromiumElement, ChromiumFrame, ChromiumTab
 from fast_vtable_helper import FastVTableHelper
 from loguru import logger
 from rich import print
+from drissionpage_mcp.core import config
 
 
 def get_login_auth():
@@ -23,9 +24,9 @@ def get_login_auth():
         "Cache-Control": "no-cache",
         "Connection": "keep-alive",
         "Pragma": "no-cache",
-        "Referer": "https://demo19-scm.hoolinks.com/meLogin.do?",
+        "Referer": f"{config.SCM_BASE_URL}/meLogin.do?",
         "Sec-Fetch-Dest": "image",
-        "Origin": "https://demo19-scm.hoolinks.com",
+        "Origin": config.SCM_BASE_URL,
         "Sec-Fetch-Mode": "no-cors",
         "Sec-Fetch-Site": "same-origin",
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36",
@@ -33,7 +34,7 @@ def get_login_auth():
         "sec-ch-ua-mobile": "?0",
         "sec-ch-ua-platform": '"Windows"',
     }
-    client = httpx.Client(base_url="https://demo19-scm.hoolinks.com")
+    client = httpx.Client(base_url=config.SCM_BASE_URL)
     cookies = {"SESSION": str(uuid.uuid4())}
     params = {"key": "regValidateCode"}
     response = client.get(
@@ -46,7 +47,7 @@ def get_login_auth():
     print(f"纯数字识别结果: {result}")
 
     headers["Accept"] = "*/*"
-    data = {"username": "Hooplus1ce", "userpwd": "Ac123456", "vcode": result}
+    data = {"username": config.SCM_USERNAME, "userpwd": config.SCM_USERPWD, "vcode": result}
     response = client.post("/signin.html", headers=headers, cookies=cookies, data=data)
     print(response.json())
     client.close()
@@ -60,7 +61,7 @@ def set_tab_cookies(tab: ChromiumTab):
     """
     cookies = get_login_auth()
     tab.get(
-        "https://demo19-scm.hoolinks.com/scm-static/scm-admin/scm-admin/#/",
+        config.SCM_ADMIN_URL,
     )
     tab.set.cookies(cookies)
     tab.refresh()
@@ -297,9 +298,9 @@ def main():
     vtable = FastVTableHelper()
 
     # tab = set_tab_cookies(tab)
-    # go_to_tab(tab, "销货统计表")
+    go_to_tab(tab, "销货统计表")
     # tab.set.window.full()
-
+    exit()
     iframe = get_active_iframe(tab)
     iframe.set.show_trail(True)
 

@@ -16,9 +16,8 @@ from . import browser_session
 
 logger = logging.getLogger("drissionpage-mcp")
 
-SCM_ADMIN_URL = config.SCM_ADMIN_URL
 NEEDED_COOKIES = config.NEEDED_COOKIES
-_DEFAULT_CREDENTIAL_ENVS = ("HL_SCM_USERNAME", "HL_SCM_USERPWD")
+_DEFAULT_CREDENTIAL_ENVS = ("HL_USERNAME", "HL_USERPWD")
 
 # OCR 实例缓存，由 warmup_ocr() 在服务启动时预加载，避免首次调用延迟
 _ocr_instance = None
@@ -27,7 +26,7 @@ _ocr_instance = None
 def _is_admin_app_url(url: str) -> bool:
     try:
         current = urlparse(url or "")
-        target = urlparse(SCM_ADMIN_URL)
+        target = urlparse(config.SCM_ADMIN_URL)
     except Exception:
         return False
     if (current.hostname or "") != (target.hostname or ""):
@@ -83,6 +82,10 @@ def get_login_auth(
     """
     username = config.SCM_USERNAME if username is None else username
     password = config.SCM_USERPWD if password is None else password
+    if not config.SCM_BASE_URL:
+        raise RuntimeError("缺少 SCM 站点根 URL，请配置 HL_BASE_URL 环境变量")
+    if not config.SCM_LOGIN_PAGE:
+        raise RuntimeError("缺少 SCM 登录页 URL，请配置 HL_LOGIN_PAGE 环境变量")
     _require_creds(username, password, credential_envs)
     import httpx
 
@@ -112,15 +115,14 @@ def _inject_cookies(cookies: list, tab=None):
     """用 DrissionPage 内置方法注入 cookies，自动处理域名解析、格式校验、前缀处理。
 
     注意：OCR 登录返回的 cookies 不含 domain 字段。set.cookies 不带 domain 时
-    默认用当前 host（demo19-scm.hoolinks.com，host-only），这样 cookie 不会发给
-    gateway.hoolinks.com 等其他子域。手动补 domain=.hoolinks.com 确保所有子域
-    都能携带认证 cookie。
+    默认用当前 host（host-only），这样 cookie 不会发给其他子域。
+    手动补 domain 确保所有子域都能携带认证 cookie。
     """
     tab = tab or browser_session.get_tab()
     enriched = []
     for c in cookies:
         c = dict(c)
-        if "domain" not in c:
+        if "domain" not in c and config.SCM_ACCESS_DOMAIN:
             c["domain"] = config.SCM_ACCESS_DOMAIN
         enriched.append(c)
     tab.set.cookies(enriched)
@@ -135,12 +137,13 @@ def refresh_session():
 
 def _ensure_on_admin_host(tab):
     """进入 SCM Admin 应用页；只有已经在应用页时才跳过导航。"""
+    if not config.SCM_ADMIN_URL:
+        raise RuntimeError("缺少目标系统入口 URL，请配置 HL_URL 环境变量")
     current_url = getattr(tab, "url", "")
     if _is_admin_app_url(current_url):
         return {"skipped": True, "reason": "already_on_admin_page", "url": current_url}
-
     result = tab.get(
-        SCM_ADMIN_URL,
+        config.SCM_ADMIN_URL,
         retry=0,
         interval=0,
         timeout=config.REFRESH_NAV_TIMEOUT,

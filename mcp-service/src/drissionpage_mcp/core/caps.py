@@ -26,7 +26,7 @@ import os
 CAP_GROUPS = {
     "core": [
         # 连接与会话
-        "connect", "refresh_session", "check_session",
+        "connect", "refresh_session", "check_session", "set_target_env",
         # 导航与 frame
         "enter_module", "get_active_frame",
         # 通用 DOM 原语
@@ -105,7 +105,7 @@ CAP_GROUPS = {
 # enterprise profile 只保留无歧义的企业测试主路径；full profile 暴露全部分组工具。
 ENTERPRISE_TOOLS = {
     # 浏览器、会话与模块导航
-    "connect", "browser_tabs", "check_session", "refresh_session",
+    "connect", "browser_tabs", "check_session", "refresh_session", "set_target_env",
     "enter_module", "get_active_frame",
     # 页面理解与统一交互
     "capture_page_model", "scan_filter_fields", "scan_table", "find_elements",

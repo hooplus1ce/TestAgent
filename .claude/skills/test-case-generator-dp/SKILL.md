@@ -65,7 +65,7 @@ role_session_activate(requester) -> 验证结果与可见权限
 role_session_close(role_id) -> cleanup
 ```
 
-`role_id` 使用稳定英文逻辑名，如 `requester`、`dept_manager`、`finance_approver`。服务会读取对应的 `HL_SCM_ROLE_<ROLE_ID>_USERNAME` 与 `HL_SCM_ROLE_<ROLE_ID>_USERPWD`。每个角色的首个业务动作前必须调用 `role_session_activate`；`automation_recipe.cleanup` 必须关闭所有已创建角色会话。账号只解决身份登录，正式回归还必须固定账号所属部门、权限矩阵、审批模板/路由、测试数据夹具和每个节点的业务断言。
+`role_id` 使用稳定英文逻辑名，如 `requester`、`dept_manager`、`finance_approver`。服务会读取对应的 `HL_ROLE_<ROLE_ID>_USERNAME` 与 `HL_ROLE_<ROLE_ID>_USERPWD`。每个角色的首个业务动作前必须调用 `role_session_activate`；`automation_recipe.cleanup` 必须关闭所有已创建角色会话。账号只解决身份登录，正式回归还必须固定账号所属部门、权限矩阵、审批模板/路由、测试数据夹具和每个节点的业务断言。
 
 ### 工具集
 `drissionpage-mcp` 的完整工具目录均可调用。常规业务测试优先使用稳定 facade：通用动作使用 `explore_action`，表格动作使用 `table_action`，表格断言使用 `query_table` / `inspect_table_cell`，浮层读取使用 `observe_snapshot`；只有 facade 无法表达场景或进行服务诊断时才选择对应底层工具。
@@ -272,7 +272,7 @@ row/column/target 参数。确需坐标工具时，坐标必须来自 `get_eleme
 | 异常 | 处理 |
 |---|---|
 | MCP 服务器未注册 | 检查 `.mcp.json`；`claude mcp list` 应见 `drissionpage-mcp` |
-| 角色登录失败 | 检查对应 `HL_SCM_ROLE_<ROLE_ID>_USERNAME/USERPWD` 是否注入 MCP 进程，并确认 `roles` capability 已启用 |
+| 角色登录失败 | 检查对应 `HL_ROLE_<ROLE_ID>_USERNAME/USERPWD` 是否注入 MCP 进程，并确认 `roles` capability 已启用 |
 | 浏览器连接失败 | 检查 `http://localhost:9222/json`；确认 Chrome 以 9222 启动 |
 | `scan_table` 失败 | `get_active_frame()` 确认 iframe；仍失败按截图/DOM 降级生成低级用例 |
 | `enter_module` iframe 未就绪 | 重新调用 `enter_module`；检查菜单文本匹配 |

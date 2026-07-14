@@ -120,13 +120,7 @@ def _ensure_display_env():
 
 
 def _pick_tab(browser, hint):
-    """按固定 SCM 域、标题提示、最后激活顺序选择标签页。"""
-    try:
-        tab = browser.get_tab(url="hoolinks")
-        if tab:
-            return tab
-    except Exception as exc:
-        logger.debug("get_tab(url=hoolinks) 失败: %s", exc)
+    """按标题提示、最后激活顺序选择标签页。"""
     if hint:
         try:
             tab = browser.get_tab(title=hint)

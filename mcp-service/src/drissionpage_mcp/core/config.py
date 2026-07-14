@@ -1,11 +1,13 @@
 """配置外置：从环境变量读取，保留默认值。
 
 环境变量：
-  HL_SCM_URL          SCM Admin URL
-  HL_SCM_BASE_URL      SCM 站点根 URL（OCR 登录用）
-  HL_SCM_LOGIN_PAGE    登录页 URL（Referer）
-  HL_SCM_USERNAME      登录用户名
-  HL_SCM_USERPWD       登录密码
+  HL_HOST_PREFIX   一键切换环境前缀（推荐），自动推导 HL_URL / HL_BASE_URL /
+                   HL_LOGIN_PAGE / HL_COOKIE_DOMAIN / HL_ACCESS_DOMAIN
+  HL_URL           SCM Admin URL（逐个覆盖，优先级更高）
+  HL_BASE_URL      SCM 站点根 URL（OCR 登录用）
+  HL_LOGIN_PAGE    登录页 URL（Referer）
+  HL_USERNAME      登录用户名
+  HL_USERPWD       登录密码
   HL_COOKIE_DOMAIN    cookie 域
   HL_ACCESS_DOMAIN    CDP 注入 cookie 的域
   HL_TARGET_HINT      connect 时选 tab 的标题提示
@@ -52,15 +54,59 @@ CONFIG_DIR = Path(
 ).resolve()
 DP_CONFIG_PATH = CONFIG_DIR / "dp_configs.ini"
 
-SCM_ADMIN_URL = os.environ.get("HL_SCM_URL", "https://demo19-scm.hoolinks.com/scm-static/scm-admin/scm-admin/#/")
-COOKIE_DOMAIN = os.environ.get("HL_COOKIE_DOMAIN", ".demo19-scm.hoolinks.com")
-SCM_ACCESS_DOMAIN = os.environ.get("HL_ACCESS_DOMAIN", ".hoolinks.com")
+# ---- 目标环境：通过 HL_HOST_PREFIX 一键派生，也支持逐个覆盖 ----
+# 优先 HL_HOST_PREFIX 批量推导，逐个环境变量（HL_URL / HL_BASE_URL 等）可覆盖。
+# 调用 set_target_env(prefix) 可运行时切换，无需重启 MCP 服务。
+_HOST_PREFIX = os.environ.get("HL_HOST_PREFIX", "").strip()
+
+def _derive_all(prefix: str) -> dict:
+    """从 host 前缀推导 5 个关联配置。"""
+    base = f"https://{prefix}.hoolinks.com"
+    return {
+        "HL_URL": f"{base}/scm-static/scm-admin/scm-admin/#/",
+        "HL_BASE_URL": base,
+        "HL_LOGIN_PAGE": f"{base}/meLogin.do",
+        "HL_COOKIE_DOMAIN": f".{prefix}.hoolinks.com",
+        "HL_ACCESS_DOMAIN": f".{prefix}.hoolinks.com",
+    }
+
+def _apply_prefix(prefix: str) -> None:
+    """将派生值写入 os.environ（不覆盖已有显式环境变量）。"""
+    for key, value in _derive_all(prefix).items():
+        os.environ.setdefault(key, value)
+
+if _HOST_PREFIX:
+    _apply_prefix(_HOST_PREFIX)
+
+# ---- 逐个变量取值（已被上面 setdefault 或显式 env 填充） ----
+SCM_ADMIN_URL = os.environ.get("HL_URL", "")
+COOKIE_DOMAIN = os.environ.get("HL_COOKIE_DOMAIN", "")
+SCM_ACCESS_DOMAIN = os.environ.get("HL_ACCESS_DOMAIN", "")
 
 # OCR 登录端点与凭据（demo 环境；凭据优先走环境变量）
-SCM_BASE_URL = os.environ.get("HL_SCM_BASE_URL", "https://demo19-scm.hoolinks.com")
-SCM_LOGIN_PAGE = os.environ.get("HL_SCM_LOGIN_PAGE", "https://demo19-scm.hoolinks.com/meLogin.do?")
-SCM_USERNAME = os.environ.get("HL_SCM_USERNAME", "")
-SCM_USERPWD = os.environ.get("HL_SCM_USERPWD", "")
+SCM_BASE_URL = os.environ.get("HL_BASE_URL", "")
+SCM_LOGIN_PAGE = os.environ.get("HL_LOGIN_PAGE", "")
+SCM_USERNAME = os.environ.get("HL_USERNAME", "")
+SCM_USERPWD = os.environ.get("HL_USERPWD", "")
+
+
+def reload_target_config():
+    """运行时重新读取 os.environ 中的目标地址配置（set_target_env 切换环境后调用）。"""
+    global SCM_ADMIN_URL, COOKIE_DOMAIN, SCM_ACCESS_DOMAIN
+    global SCM_BASE_URL, SCM_LOGIN_PAGE
+    SCM_ADMIN_URL = os.environ.get("HL_URL", "")
+    COOKIE_DOMAIN = os.environ.get("HL_COOKIE_DOMAIN", "")
+    SCM_ACCESS_DOMAIN = os.environ.get("HL_ACCESS_DOMAIN", "")
+    SCM_BASE_URL = os.environ.get("HL_BASE_URL", "")
+    SCM_LOGIN_PAGE = os.environ.get("HL_LOGIN_PAGE", "")
+
+
+def set_target_prefix(prefix: str):
+    """切换目标环境前缀，写入 os.environ 并刷新模块级常量。"""
+    os.environ["HL_HOST_PREFIX"] = prefix
+    for key, value in _derive_all(prefix).items():
+        os.environ[key] = value
+    reload_target_config()
 
 NEEDED_COOKIES = ["SESSION", "UCTOKEN", "cookie_token"]
 

@@ -30,7 +30,7 @@ def test_list_tabs_with_mock_browser():
     from drissionpage_mcp.services import browser_session
     mock_tab1 = MagicMock()
     mock_tab1.tab_id = "t1"
-    mock_tab1.url = "https://demo19-scm.hoolinks.com/page1"
+    mock_tab1.url = "https://scm.example.com/page1"
     mock_tab1.title = "页面1"
     mock_tab2 = MagicMock()
     mock_tab2.tab_id = "t2"
@@ -45,7 +45,7 @@ def test_list_tabs_with_mock_browser():
         tabs = browser_session.list_tabs()
 
     assert len(tabs) == 2
-    assert tabs[0]["url"] == "https://demo19-scm.hoolinks.com/page1"
+    assert tabs[0]["url"] == "https://scm.example.com/page1"
     assert tabs[0]["title"] == "页面1"
     assert tabs[1]["url"] == "https://other.com/page2"
 
@@ -64,10 +64,10 @@ def test_list_tabs_browser_error():
 
 
 def test_pick_tab_prefers_hoolinks_url():
-    """_pick_tab 优先选 url 含 hoolinks 的 tab。"""
+    """_pick_tab 按 hint 标题匹配优先选择 tab。"""
     from drissionpage_mcp.services import browser_session
     hoolinks_tab = MagicMock()
-    hoolinks_tab.url = "https://demo19-scm.hoolinks.com/admin"
+    hoolinks_tab.url = "https://scm.example.com/admin"
     other_tab = MagicMock()
     other_tab.url = "https://google.com"
 

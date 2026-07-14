@@ -128,7 +128,7 @@ role_session_start -> role_session_activate
 
 Use stable role IDs such as `requester`, `dept_manager`, and
 `finance_approver`. Credentials must be supplied through the derived
-`HL_SCM_ROLE_<ROLE_ID>_USERNAME` and `HL_SCM_ROLE_<ROLE_ID>_USERPWD`
+`HL_ROLE_<ROLE_ID>_USERNAME` and `HL_ROLE_<ROLE_ID>_USERPWD`
 environment variables. Never place passwords in a recipe, test case, skill, or
 MCP JSON file. Activate the required role before every actor-specific business
 step, and close all role sessions in `cleanup`.

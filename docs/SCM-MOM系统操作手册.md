@@ -1,6 +1,6 @@
 # 诺贝科技 SCM/MOM 系统操作手册
 
-> **版本**：v1.0　**生成日期**：2026-07-03　**适用系统**：demo19-scm.hoolinks.com  
+> **版本**：v1.0　**生成日期**：2026-07-03　**适用系统**：SCM（地址由 `HL_URL` 环境变量配置）  
 > 本手册基于系统实际页面探索生成，核心模块字段均经实页验证。
 
 ---
@@ -41,7 +41,7 @@
 | 前端框架 | Ant Design Pro + React SPA |
 | 表格渲染 | VTable Canvas（`.vtable` 元素，支持按值/按条件筛选） |
 | 模块嵌入 | 业务页面以 iframe 内嵌旧版 spo 模块（`/scm-static/nuobei/next/spo/`） |
-| 入口 | `https://demo19-scm.hoolinks.com/scm-static/scm-admin/scm-admin/#/` |
+| 入口 | `HL_URL` 环境变量配置 |
 | 设备集成 | AGV、立库、CTU、海康等智能仓储设备 |
 
 ### 1.3 模块全景
@@ -63,7 +63,7 @@
 ### 2.1 登录
 
 1. 访问 SCM Admin 入口 URL。
-2. 系统跳转至登录页 `https://demo19-scm.hoolinks.com/meLogin.do`。
+2. 系统跳转至登录页（由 `HL_URL` 环境变量配置）。
 3. 输入用户名、密码，填写图形验证码（纯数字）。
 4. 点击「登录」。
 5. 登录成功后自动跳转回 SCM Admin 主界面，页面标题显示"诺贝科技（中山）有限公司"。

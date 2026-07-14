@@ -5,7 +5,7 @@ metadata:
   type: project
 ---
 
-SCM 系统（demo19-scm.hoolinks.com）的"保存"类按钮有**两种形态**，点击前必须先 `run_js` 读 `button.className` 判断，不能假定所有保存按钮行为一致：
+目标 SCM 系统的"保存"类按钮有**两种形态**，点击前必须先 `run_js` 读 `button.className` 判断，不能假定所有保存按钮行为一致：
 
 **形态一·下拉触发器型**：`className` 含 `ant-dropdown-trigger`（如销售订单新增页"保 存"为 `ant-btn ant-dropdown-trigger ant-btn-primary`）。点击只弹下拉菜单，常见项"保存"/"保存并新增"。需**二次点击菜单项**才真正保存：
 ```python

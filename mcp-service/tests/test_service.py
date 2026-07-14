@@ -12,7 +12,7 @@ def test_registered_catalog_matches_the_source_service():
 
     tool_names = {tool.name for tool in tools}
     grouped_tools = {tool for group in caps.CAP_GROUPS.values() for tool in group}
-    assert len(tools) == 88
+    assert len(tools) == 90
     assert tool_names == grouped_tools
     assert {"role_session_open", "role_session_login", "run_js", "click_xy"} <= tool_names
     assert {str(resource.uri) for resource in resources} == {

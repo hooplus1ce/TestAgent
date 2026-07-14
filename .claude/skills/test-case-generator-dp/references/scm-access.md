@@ -4,8 +4,8 @@
 
 | 配置项 | 值 |
 |--------|-----|
-| **SCM Admin 入口** | `https://demo19-scm.hoolinks.com/scm-static/scm-admin/scm-admin/#/` |
-| **SCM 登录页** | `https://demo19-scm.hoolinks.com/meLogin.do` |
+| **SCM Admin 入口** | `https://scm.example.com/scm-static/scm-admin/scm-admin/#/` |
+| **SCM 登录页** | `https://scm.example.com/meLogin.do` |
 | **默认待测页面** | 未指定 URL 时使用 SCM Admin 入口；只给模块名时先打开入口再 `enter_module(...)` |
 | **企业名称** | 诺贝科技（中山）有限公司 |
 | **技术栈** | Ant Design Pro + React SPA（侧边栏菜单 + 顶部标签导航） |
