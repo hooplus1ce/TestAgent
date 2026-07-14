@@ -11,7 +11,7 @@
 - `test_cases/`：项目级测试用例 JSON 和导出结果。
 
 不存在第二套 MCP 实现。Codex、Claude 和 Trae 均从根 uv workspace 执行
-`uv run --package drissionpage-mcp drissionpage-mcp`，对外服务名均为
+`uv run --package drissionpage-mcp -m drissionpage_mcp`，对外服务名均为
 `drissionpage-mcp`。
 
 ## 快速开始
@@ -51,7 +51,7 @@ uv run pytest -q
 手动启动 stdio 服务：
 
 ```bash
-uv run --package drissionpage-mcp drissionpage-mcp
+uv run --package drissionpage-mcp -m drissionpage_mcp
 ```
 
 完整使用说明见 [docs/项目使用说明.md](docs/项目使用说明.md)，服务架构与工具说明见

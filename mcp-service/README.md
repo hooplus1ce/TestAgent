@@ -27,7 +27,7 @@ mcp-service/
 
 ```bash
 uv sync --all-packages --all-groups
-uv run --package drissionpage-mcp drissionpage-mcp
+uv run --package drissionpage-mcp -m drissionpage_mcp
 ```
 
 MCP client 配置示例：

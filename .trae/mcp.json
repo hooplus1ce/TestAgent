@@ -6,7 +6,8 @@
                 "run",
                 "--package",
                 "drissionpage-mcp",
-                "drissionpage-mcp"
+                "-m",
+                "drissionpage_mcp"
             ],
             "cwd": "${workspaceFolder}",
             "env": {

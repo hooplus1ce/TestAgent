@@ -33,7 +33,7 @@ description: 为 WMS/MOM/ERP 等企业系统迭代生成测试用例（DrissionP
 ### 唯一服务与配置契约
 
 - 本项目只允许使用 `mcp-service/` 中的实现，对外服务名固定为 `drissionpage-mcp`。
-- Claude、Codex、Trae 均从根 workspace 执行 `uv run --package drissionpage-mcp drissionpage-mcp`。Skill 不自行拼装启动命令。
+- Claude、Codex、Trae 均从根 workspace 执行 `uv run --package drissionpage-mcp -m drissionpage_mcp`。Skill 不自行拼装启动命令。
 - 浏览器配置只读取 `mcp-service/configs/dp_configs.ini`，其中 `../dp_profile` 指向项目根浏览器数据目录。
 - 账号密码只通过 MCP 进程环境变量注入，禁止写入 Skill、用例 JSON、`.mcp.json` 或自动化配方。
 - 所有 Agent 正常运行统一使用 `DRISSIONPAGE_MCP_PROFILE=full` 与 `DRISSIONPAGE_MCP_CAPS=all`，模型可调用完整工具目录；只有主动压缩上下文时才切换 `enterprise`。

@@ -24,7 +24,7 @@ Before generating test cases, confirm the active Codex session has loaded
 
 `mcp-service/` is the only MCP implementation in this repository. Codex starts
 the package directly from `.codex/config.toml` with
-`uv run --package drissionpage-mcp drissionpage-mcp`; the config does not use an
+`uv run --package drissionpage-mcp -m drissionpage_mcp`; the config does not use an
 explicit MCP `cwd`. Do not construct another MCP command.
 Browser settings come from
 `mcp-service/configs/dp_configs.ini`. The service fills missing process variables

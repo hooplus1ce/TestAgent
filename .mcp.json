@@ -6,7 +6,8 @@
                 "run",
                 "--package",
                 "drissionpage-mcp",
-                "drissionpage-mcp"
+                "-m",
+                "drissionpage_mcp"
             ],
             "env": {
                 "DRISSIONPAGE_MCP_PROFILE": "full",

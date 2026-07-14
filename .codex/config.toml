@@ -3,7 +3,7 @@ sandbox_mode = "danger-full-access"
 
 [mcp_servers.drissionpage-mcp]
 command = "uv"
-args = ["run", "--package", "drissionpage-mcp", "drissionpage-mcp"]
+args = ["run", "--package", "drissionpage-mcp", "-m", "drissionpage_mcp"]
 enabled = true
 required = false
 startup_timeout_sec = 30

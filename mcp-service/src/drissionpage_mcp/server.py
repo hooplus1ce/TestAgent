@@ -3,7 +3,7 @@
 供 AI 驱动的 UI 测试技能调用。浏览器原语(连接/扫描/点击/输入/截图)、
 VTable 工具(内部 frame.run_js 注入 bundled JS)、会话维持、弹窗检测、网络监听。
 
-启动：uv run --package drissionpage-mcp drissionpage-mcp  (stdio 传输)
+启动：uv run --package drissionpage-mcp -m drissionpage_mcp  (stdio 传输)
 """
 import functools
 import importlib.metadata

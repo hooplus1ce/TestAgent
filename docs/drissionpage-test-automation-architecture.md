@@ -10,7 +10,7 @@
 Agent platform config
         |
         +-- Codex / Claude / Trae:
-            uv run --package drissionpage-mcp drissionpage-mcp
+            uv run --package drissionpage-mcp -m drissionpage_mcp
         |
         v
 drissionpage_mcp.server (stdio FastMCP 3.x / standalone `fastmcp`)

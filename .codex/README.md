@@ -11,7 +11,7 @@ Codex reads `.codex/config.toml` in trusted projects. This project configures:
 
 Codex uses the root uv workspace package entry. The MCP config intentionally
 omits `cwd`, so Codex uses the session workspace root and runs
-`uv run --package drissionpage-mcp drissionpage-mcp`. The
+`uv run --package drissionpage-mcp -m drissionpage_mcp`. The
 package module then fixes its runtime directory to `mcp-service/`, preserving
 `configs/dp_configs.ini` relative-path behavior.
 All Agent sessions use the complete `full` tool catalog. `enterprise` remains
