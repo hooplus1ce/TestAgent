@@ -651,6 +651,8 @@ def _perform_pointer_action(
     hover_first: bool = True,
     duration: float = 0.3,
     drag_to: dict = None,
+    source_x: float = None,
+    source_y: float = None,
 ):
     try:
         vx = float(vx)
@@ -686,19 +688,26 @@ def _perform_pointer_action(
             destination_y = float(destination_y)
             if not math.isfinite(destination_x) or not math.isfinite(destination_y):
                 return {"ok": False, "reason": "drag 目标坐标必须为有限数值"}
+            # VTable 列拖拽：调用侧先 click 选中列头，再调 drag 执行 hold+drag
+            #   第一步（调用侧执行）：click 列头 → 列选中
+            #   第二步（本函数）：move_to → hold(抓取列) → move_to(拖拽) → release
+            src_x = float(source_x) if source_x is not None else vx
+            src_y = float(source_y) if source_y is not None else vy
             held = False
             try:
-                tab.actions.move_to((vx, vy), duration=move_duration)
-                tab.actions.hold()
+                ac.move_to((src_x, src_y), duration=move_duration)
+                ac.hold()
                 held = True
-                tab.actions.move_to(
+                ac.move_to(
                     (destination_x, destination_y), duration=max(duration, 0.1)
                 )
             finally:
                 if held:
-                    tab.actions.release()
+                    ac.release()
             return {
                 "ok": True,
+                "sourceX": round(src_x, 1),
+                "sourceY": round(src_y, 1),
                 "destinationX": round(destination_x, 1),
                 "destinationY": round(destination_y, 1),
             }
@@ -718,11 +727,16 @@ def vtable_action(
     duration: float = 0.3,
     drag_to: dict = None,
     scroll: bool = True,
+    source_x: float = None,
+    source_y: float = None,
 ):
     """统一执行 VTable 指针动作。
 
     流程：确保实例有效 → 必要时 scrollToCell → 重新读取顶层视口坐标 → click/double_click/hover/drag。
     该函数是所有 VTable 坐标型交互的单一入口，调用侧不需要自行计算 iframe/canvas 偏移。
+
+    source_x/source_y: 拖拽动作可选的源位置偏移（覆盖列中心），
+                       用于避免列头图标干扰。传 None 则使用列中心。
     """
     if col is None:
         return {"ok": False, "reason": "VTable 动作需要 col"}
@@ -748,8 +762,17 @@ def vtable_action(
         return point
     vx = point["viewportX"]
     vy = point["viewportY"]
+
+    # 对 header 拖拽自动偏移源位置：左移 20px 避开列头右侧图标（冻结/筛选等）
+    source_pos_x = source_x
+    source_pos_y = source_y
+    if action_name == "drag" and target_name == "header":
+        if source_pos_x is None:
+            source_pos_x = vx - 20
+
     performed = _perform_pointer_action(
-        action_name, vx, vy, hover_first=hover_first, duration=duration, drag_to=drag_to
+        action_name, vx, vy, hover_first=hover_first, duration=duration, drag_to=drag_to,
+        source_x=source_pos_x, source_y=source_pos_y,
     )
     if not performed.get("ok"):
         return performed
@@ -910,3 +933,92 @@ def resize_column(col: int, width: int):
         return result
     except Exception as exc:
         return {"ok": False, "reason": "调整 VTable 列宽失败: %s" % exc}
+
+
+def reorder_column(col: int, target_col: int, position: str = "after"):
+    """拖拽 VTable 列头重排列。
+
+    VTable 拖拽重排列要求三步式鼠标动作：
+      move_to → click（选中列头）→ move_to → hold → move_to → release
+
+    区别于普通 drag（move_to → hold → move_to → release），
+    少了 click 步骤 VTable 不会触发列拖拽。
+
+    Args:
+        col: 要拖动列索引
+        target_col: 目标锚点列索引
+        position: "after"（拖到 target 右侧, 默认）或 "before"（左侧）
+
+    Returns:
+        {ok, action, source_col, target_col, dropX, dropY, ...}
+    """
+    col, reason = _index(col, "col")
+    if reason:
+        return {"ok": False, "reason": reason}
+    target_col, reason = _index(target_col, "col")
+    if reason:
+        return {"ok": False, "reason": reason}
+    if col == target_col:
+        return {"ok": False, "reason": "源列与目标列相同，无需重排"}
+    if not _ensure_vtable():
+        return {"ok": False, "reason": _VTABLE_RETRY_REASON}
+
+    try:
+        # 1. 滚动到源列，获取视口坐标
+        source = get_cell_rect(col, 0, scroll=True)
+        if not source.get("ok"):
+            return {"ok": False, "reason": "无法获取源列坐标: %s" % source.get("reason")}
+
+        # 2. 滚动到目标列，获取视口坐标
+        target = get_cell_rect(target_col, 0, scroll=True)
+        if not target.get("ok"):
+            return {"ok": False, "reason": "无法获取目标列坐标: %s" % target.get("reason")}
+
+        # 3. 获取目标列渲染信息（canvas 宽度，用于计算右侧边界）
+        render = get_cell_render_info(target_col, 0, scroll=False, detail="summary")
+        if render.get("ok") and render.get("cellBounds"):
+            canvas_width = render["cellBounds"].get("width", 120)
+            # 假定 canvas 像素与视口像素 1:1
+            if position == "after":
+                drop_x = round(target["viewportX"] + canvas_width / 2 + 40)
+            else:
+                drop_x = round(target["viewportX"] - canvas_width / 2 - 40)
+        else:
+            # 无渲染信息时用默认偏移量（列宽约 120px）
+            offset = 110  # 半宽 + 边距
+            drop_x = round(target["viewportX"] + (offset if position == "after" else -offset))
+
+        # 4. 重新滚动到源列，获得该 scroll 状态下的最新坐标
+        source_fresh = get_cell_rect(col, 0, scroll=True)
+        if not source_fresh.get("ok"):
+            return {"ok": False, "reason": "无法刷新源列坐标: %s" % source_fresh.get("reason")}
+        src_vx = source_fresh["viewportX"]
+        src_vy = source_fresh["viewportY"]
+        # 左移 20px 避免列头右侧的冻结/筛选图标干扰
+        src_vx = src_vx - 20
+
+        # 5. 执行三步式拖拽：click → hold → move_to → release
+        tab = browser_session.get_tab()
+        held = False
+        try:
+            tab.actions.move_to((src_vx, src_vy), duration=0.1)
+            tab.actions.click()
+            tab.actions.move_to((src_vx, src_vy), duration=0.1)
+            tab.actions.hold()
+            held = True
+            tab.actions.move_to((drop_x, src_vy), duration=0.5)
+        finally:
+            if held:
+                tab.actions.release()
+
+        return {
+            "ok": True,
+            "action": "reorder",
+            "source_col": col,
+            "target_col": target_col,
+            "dropX": round(drop_x, 1),
+            "dropY": round(src_vy, 1),
+            "position": position,
+        }
+    except Exception as exc:
+        return {"ok": False, "reason": "VTable 列重排失败: %s" % exc}

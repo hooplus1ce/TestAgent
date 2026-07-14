@@ -56,6 +56,7 @@ CAP_GROUPS = {
         "get_all_table_data", "scan_action_availability_by_selection",
         "get_vtable_cell_render_info", "get_vtable_cell_icons",
         "vtable_action", "click_table_cell", "hover_table_cell", "resize_table_column",
+        "reorder_vtable_column",
     ],
     "filter": [
         # 筛选区

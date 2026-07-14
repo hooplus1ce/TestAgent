@@ -5097,8 +5097,12 @@ def vtable_action(action: str = "click", row: int = 0, col: int = None,
                   hover_first: bool = True,
                   duration: float = 0.3, drag_to_x: float = None,
                   drag_to_y: float = None, drag_by_x: float = None,
-                  drag_by_y: float = None, clean_overlays: bool = True) -> dict:
-    """VTable 专项指针动作。工具内部负责滚动到可见、重算顶层视口坐标，再执行 click/double_click/hover/drag。"""
+                  drag_by_y: float = None, clean_overlays: bool = True,
+                  source_x: float = None, source_y: float = None) -> dict:
+    """VTable 专项指针动作。工具内部负责滚动到可见、重算顶层视口坐标，再执行 click/double_click/hover/drag。
+
+    source_x/source_y: 拖拽源位置偏移（覆盖列中心），用于避免列头图标干扰拖拽。
+    """
     action_key = (action or "click").strip().lower().replace("-", "_")
     cleanup = None if action_key in {"hover", "move", "move_to", "mouseover", "mouse_over"} else _pre_click_cleanup(clean_overlays)
     target_col, reason = _resolve_vtable_action_col(col=col, column_title=column_title)
@@ -5120,6 +5124,8 @@ def vtable_action(action: str = "click", row: int = 0, col: int = None,
             hover_first=hover_first,
             duration=duration,
             drag_to=drag_to,
+            source_x=source_x,
+            source_y=source_y,
         ),
     )
     return _attach_cleanup(result, cleanup)
@@ -5234,6 +5240,42 @@ def resize_table_column(width: int, col: int = None, column_title: str = None, k
 
 
 @mcp.tool()
+@write_synchronized
+def reorder_vtable_column(
+    column_title: str = None, col: int = None,
+    target_column_title: str = None, target_col: int = None,
+    position: Literal["after", "before"] = "after",
+) -> dict:
+    """拖拽 VTable 列头重排列（仅 VTable 支持）。
+
+    VTable 列重排需要三步式鼠标动作：click 选中列头 → hold → move_to → release。
+    本工具封装此流程，只需指定要拖动的列和目标锚点列。
+
+    Args:
+        column_title: 要拖动的列标题（与 col 二选一）
+        col: 要拖动的列索引（与 column_title 二选一）
+        target_column_title: 目标锚点列标题（与 target_col 二选一）
+        target_col: 目标锚点列索引（与 target_column_title 二选一）
+        position: "after"（默认，拖到目标列右侧）或 "before"（拖到左侧）
+
+    Returns:
+        {ok, source_col, target_col, dropX, dropY, position}
+    """
+    source_col, reason = _resolve_vtable_action_col(col=col, column_title=column_title)
+    if source_col is None:
+        return {"ok": False, "kind": "vtable", "reason": reason}
+    target_col_resolved, reason = _resolve_vtable_action_col(
+        col=target_col, column_title=target_column_title
+    )
+    if target_col_resolved is None:
+        return {"ok": False, "kind": "vtable", "reason": reason}
+    return _tag_table_result(
+        "vtable",
+        vtable.reorder_column(source_col, target_col_resolved, position),
+    )
+
+
+@mcp.tool()
 @read_synchronized
 def query_table(operation: Literal["values", "data", "find", "count", "row"] = "values",
                 column_title: str = None,
@@ -5329,7 +5371,8 @@ def table_action(action: Literal["click", "double_click", "hover", "drag", "resi
                  drag_by_y: float = None, clean_overlays: bool = True,
                  signals: list[str] = None, listen_targets: str = None,
                  timeout: float = 8, include_snapshot: bool = True,
-                 detail: str = "summary") -> dict:
+                 detail: str = "summary",
+                 drag_from_x: float = None, drag_from_y: float = None) -> dict:
     """统一表格动作入口。
 
     action 可选 click/double_click/hover/drag/resize。普通单元格支持 HTML 与
@@ -5380,6 +5423,7 @@ def table_action(action: Literal["click", "double_click", "hover", "drag", "resi
                 drag_to_x=drag_to_x, drag_to_y=drag_to_y,
                 drag_by_x=drag_by_x, drag_by_y=drag_by_y,
                 clean_overlays=False,
+                source_x=drag_from_x, source_y=drag_from_y,
             )
     else:
         result = {
