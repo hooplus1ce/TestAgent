@@ -20,7 +20,7 @@ import tempfile
 from datetime import datetime
 from typing import Literal
 
-from mcp.server.fastmcp import FastMCP
+from fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 from DrissionPage.common import Keys
 
@@ -28,7 +28,9 @@ from . import __version__
 from .core import caps, config, ui_contract
 from .core.lock import _rwlock
 from .resources import resource_store
+from .core import page_family
 from .services import (
+    bootstrap_table,
     browser_session,
     filter_area,
     html_table,
@@ -55,8 +57,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger("drissionpage-mcp")
 
-mcp = FastMCP("drissionpage-mcp")
-mcp._mcp_server.version = __version__
+# FastMCP 3.x：version 为公开构造参数；不再写私有 _mcp_server.version
+mcp = FastMCP("drissionpage-mcp", version=__version__)
 _fastmcp_tool = mcp.tool
 
 # ==================== 服务启动预热 ====================
@@ -72,6 +74,8 @@ _READ_ONLY_TOOLS = {
     "browser_get_element_state",
     "browser_list_caps",
     "check_session",
+    "detect_page_family",
+    "scan_layer_content",
     "find_batch",
     "find_elements",
     "get_active_frame",
@@ -227,13 +231,14 @@ def caps_resource() -> str:
 )
 def context_resource() -> str:
     packages = {}
-    for package_name in ("mcp", "DrissionPage"):
+    for package_name in ("fastmcp", "mcp", "DrissionPage"):
         try:
             packages[package_name] = importlib.metadata.version(package_name)
         except importlib.metadata.PackageNotFoundError:
             packages[package_name] = None
     return json.dumps({
         "ok": True,
+        "server_version": __version__,
         "resource_context": resource_store.get_context(),
         "enabled_caps": sorted(caps.ENABLED_CAPS),
         "tool_profile": caps.ENABLED_PROFILE,
@@ -448,6 +453,31 @@ def scan_filter_fields() -> dict:
     自动展开每个下拉字段获取待选项。需先 enter_module 并展开筛选区。
     """
     return filter_area.scan_filter_fields()
+
+
+@mcp.tool()
+@read_synchronized
+def detect_page_family(include_top: bool = True, include_frame: bool = True) -> dict:
+    """探测当前页面族（壳层 AntD SPA / 遗留 jQuery+Bootstrap / VTable 业务页）。
+
+    返回 family、confidence、preferred_table_kind、adapters，供 scan_table/observe
+    等 facade 路由；进入模块后建议先调用一次。
+    """
+    return page_family.detect_page_family(
+        include_top=include_top, include_frame=include_frame,
+    )
+
+
+@mcp.tool()
+@read_synchronized
+def scan_layer_content(layer_index: int = -1, timeout: float = 3.0) -> dict:
+    """扫描可见 layer.js 弹层内容（自动进入嵌套 iframe 表单）。
+
+    返回 title/fields/buttons/content_url。编辑账号、修改密码等遗留弹层用此工具
+    或 scan_form_fields(scope='layer')。
+    """
+    from .services import layer_modal as _layer_modal
+    return _layer_modal.scan_layer_content(layer_index=layer_index, timeout=timeout)
 
 
 @mcp.tool()
@@ -937,7 +967,10 @@ def scan_toolbar_actions(scope: str = "page", in_frame: bool = True, max_items: 
 @read_synchronized
 def scan_form_fields(scope: str = "page", include_hidden: bool = False,
                      in_frame: bool = True, max_fields: int = 200) -> dict:
-    """扫描通用表单字段，不限筛选区。scope 可为 page/filter/modal/drawer/all 或自定义 CSS 选择器。"""
+    """扫描通用表单字段。scope: page/filter/modal/drawer/layer/all 或自定义 CSS。
+
+    layer 会自动进入 layer.js 嵌套 iframe 表单（账号新增/编辑等）。
+    """
     return page_model.scan_form_fields(scope=scope, include_hidden=include_hidden,
                                        in_frame=in_frame, max_fields=max_fields)
 
@@ -983,9 +1016,11 @@ def scan_pagination(in_frame: bool = True) -> dict:
 @write_synchronized
 def select_option(field_name: str, option_text: str, select_index: int = 0,
                   scope: str = "auto", timeout: float = 5.0) -> dict:
-    """按字段名选择 Ant Design 下拉项。适用于筛选区和普通表单下拉。
+    """按字段名选择下拉项。
 
-    field_name 为空时选择第一个可见下拉；select_index 用于同一字段内有多个下拉的情况。
+    支持 Ant Design Select / Legions Quick Filter，以及遗留 bootstrap-select。
+    scope: auto | frame | top | layer（仅 layer 内容区 / bootstrap-select）。
+    field_name 为空时选择第一个可见下拉；select_index 用于同名字段多个下拉。
     """
     return page_model.select_option(field_name=field_name, option_text=option_text,
                                     select_index=select_index, scope=scope, timeout=timeout)
@@ -1024,25 +1059,38 @@ def _click_table_cell_raw(row: int, col: int = None, column_title: str = None,
             return {"ok": False, "kind": "vtable", "reason": "VTable 点击需要 col 或 column_title"}
         return _tag_table_result("vtable", vtable.click_cell(target_col, row, icon_name, hover_first, duration, double_click))
 
-    if kind == "vtable":
-        return _click_vtable()
-    if kind == "html":
+    def _click_bootstrap():
+        if not column_title:
+            return {"ok": False, "kind": "bootstrap", "reason": "Bootstrap Table 点击需要 column_title"}
+        return _tag_table_result(
+            "bootstrap",
+            bootstrap_table.click_bootstrap_table_cell(column_title, row, table_index),
+        )
+
+    def _click_html():
         if not column_title:
             return {"ok": False, "kind": "html", "reason": "HTML 表格点击需要 column_title"}
         return _tag_table_result("html", html_table.click_html_table_cell(column_title, row, table_index))
 
-    vt = _click_vtable()
-    if vt.get("ok"):
-        return vt
-    if column_title:
-        ht = _tag_table_result("html", html_table.click_html_table_cell(column_title, row, table_index))
-        if ht.get("ok"):
-            ht["fallback_from"] = "vtable"
-            ht["vtable_reason"] = vt.get("reason", "")
-            return ht
-        return {"ok": False, "kind": "auto", "reason": "表格单元格点击失败",
-                "vtable_reason": vt.get("reason", ""), "html_reason": ht.get("reason", "")}
-    return vt
+    if kind == "vtable":
+        return _click_vtable()
+    if kind == "bootstrap":
+        return _click_bootstrap()
+    if kind == "html":
+        return _click_html()
+
+    reasons = {}
+    for item in _auto_table_scan_order():
+        if item == "vtable":
+            candidate = _click_vtable()
+        elif item == "bootstrap":
+            candidate = _click_bootstrap()
+        else:
+            candidate = _click_html()
+        reasons[item] = candidate.get("reason", "")
+        if candidate.get("ok"):
+            return candidate
+    return {"ok": False, "kind": "auto", "reason": "表格单元格点击失败", "details": reasons}
 
 
 _KEY_ALIASES = {
@@ -1392,12 +1440,19 @@ def _native_element_input(control, value: str, clear: bool, timeout: float) -> N
 def set_field_value(field_name: str, value: str, in_frame: bool = True,
                     clear: bool = True, timeout: float = 5.0,
                     scope: str = "auto", select_index: int = 0) -> dict:
-    """按可见标签写入文本字段；所有候选定位共享一个总超时预算。"""
+    """按可见标签写入文本字段；所有候选定位共享一个总超时预算。
+
+    scope 支持 layer / layui：写入可见 layer.js 嵌套 iframe 表单字段。
+    auto 时优先 Ant/页面字段，未命中再尝试 layer 内容。
+    """
     field_name = str(field_name or "").strip()
     if not field_name:
         return {"ok": False, "reason": "field_name is required"}
     scope = str(scope or "auto").lower()
-    supported = {"auto", "top", "frame", "iframe", "modal", "drawer", "overlay", "filter", "page"}
+    supported = {
+        "auto", "top", "frame", "iframe", "modal", "drawer", "overlay",
+        "filter", "page", "layer", "layui", "layui-layer",
+    }
     if scope not in supported:
         return {"ok": False, "reason": "unsupported scope: %s" % scope}
     timeout = max(float(timeout or 0), 0.0)
@@ -1407,6 +1462,16 @@ def set_field_value(field_name: str, value: str, in_frame: bool = True,
     def remaining(cap=None):
         available = max(deadline - time.monotonic(), 0.0)
         return min(available, cap) if cap is not None else available
+
+    if scope in {"layer", "layui", "layui-layer"}:
+        from .services import layer_modal as _layer_modal
+        return _layer_modal.set_layer_field_value(
+            field_name=field_name,
+            value=value,
+            clear=clear,
+            select_index=select_index,
+            timeout=timeout,
+        )
 
     tab = browser_session.get_tab()
     contexts = []
@@ -1517,9 +1582,33 @@ def set_field_value(field_name: str, value: str, in_frame: bool = True,
                 index = min(select_index, len(controls) - 1)
                 return apply_control(controls[index], scope_name, "filter", index)
 
+    # auto/modal：Ant 路径未命中时尝试 layer 嵌套表单
+    if scope in {"auto", "modal", "overlay"} and remaining() > 0:
+        from .services import layer_modal as _layer_modal
+        legacy = _layer_modal.set_layer_field_value(
+            field_name=field_name,
+            value=value,
+            clear=clear,
+            select_index=select_index,
+            timeout=remaining(),
+        )
+        if legacy.get("ok"):
+            legacy["fallback_from"] = "ant-field"
+            return legacy
+        layer_reason = legacy.get("reason")
+    else:
+        layer_reason = None
+
     reason = "field lookup timed out" if remaining() <= 0 else "field not found"
-    return {"ok": False, "reason": "%s: %s" % (reason, field_name),
-            "scope": scope, "in_frame": in_frame}
+    result = {
+        "ok": False,
+        "reason": "%s: %s" % (reason, field_name),
+        "scope": scope,
+        "in_frame": in_frame,
+    }
+    if layer_reason:
+        result["layer_reason"] = layer_reason
+    return result
 
 
 def _click_field_raw(field_name: str, in_frame: bool = True, timeout: float = 5.0,
@@ -4236,14 +4325,40 @@ def scan_action_availability_by_selection(row: int = 0, col: int = 0,
     if select_row:
         cleanup = _pre_click_cleanup(True)
         table_kind = _normalize_table_kind(kind)
-        if table_kind in ("auto", "vtable"):
+        if table_kind == "vtable":
             select_result = _tag_table_result("vtable", vtable.click_cell(col, row, hover_first=True))
-            if not select_result.get("ok") and table_kind == "auto":
-                html = page_model.click_html_row_selection(row=row, table_index=table_index)
-                select_result = _tag_table_result("html", html)
-                select_result["fallback_from"] = "vtable"
+        elif table_kind == "bootstrap":
+            select_result = _tag_table_result(
+                "bootstrap",
+                bootstrap_table.click_bootstrap_row_selection(row=row, table_index=table_index),
+            )
+        elif table_kind == "html":
+            select_result = _tag_table_result(
+                "html", page_model.click_html_row_selection(row=row, table_index=table_index),
+            )
         else:
-            select_result = _tag_table_result("html", page_model.click_html_row_selection(row=row, table_index=table_index))
+            select_result = {"ok": False, "reason": "row selection failed"}
+            for item in _auto_table_scan_order():
+                if item == "vtable":
+                    candidate = _tag_table_result(
+                        "vtable", vtable.click_cell(col, row, hover_first=True),
+                    )
+                elif item == "bootstrap":
+                    candidate = _tag_table_result(
+                        "bootstrap",
+                        bootstrap_table.click_bootstrap_row_selection(
+                            row=row, table_index=table_index,
+                        ),
+                    )
+                else:
+                    candidate = _tag_table_result(
+                        "html",
+                        page_model.click_html_row_selection(row=row, table_index=table_index),
+                    )
+                if candidate.get("ok"):
+                    select_result = candidate
+                    break
+                select_result = candidate
         select_result = _attach_cleanup(select_result, cleanup)
         if select_result.get("ok"):
             if select_result.get("kind") == "vtable":
@@ -4715,8 +4830,7 @@ def run_js(script: str, in_frame: bool = True, max_chars: int = 4000) -> dict:
 
 
 def _normalize_table_kind(kind: str) -> str:
-    kind = (kind or "auto").lower()
-    return kind if kind in {"auto", "vtable", "html"} else "auto"
+    return page_family.normalize_table_kind(kind)
 
 
 def _tag_table_result(kind: str, result: dict) -> dict:
@@ -4725,6 +4839,36 @@ def _tag_table_result(kind: str, result: dict) -> dict:
     tagged = dict(result)
     tagged.setdefault("kind", kind)
     return tagged
+
+
+def _scan_table_bootstrap(table_index: int = 0) -> dict:
+    result = bootstrap_table.scan_bootstrap_table()
+    tagged = _tag_table_result("bootstrap", result)
+    if not tagged.get("ok"):
+        return tagged
+    tables = tagged.get("tables") or []
+    if table_index >= len(tables):
+        return {
+            "ok": False,
+            "kind": "bootstrap",
+            "reason": "visible bootstrap-table not found at index %s" % table_index,
+            "table_count": len(tables),
+        }
+    tagged["tables"] = [tables[table_index]]
+    tagged["table_index"] = table_index
+    tagged["table_count"] = len(tables)
+    return tagged
+
+
+def _auto_table_scan_order() -> list[str]:
+    """根据页面族决定 auto 扫描顺序。"""
+    preferred = "auto"
+    try:
+        family = page_family.detect_page_family()
+        preferred = (family or {}).get("preferred_table_kind") or "auto"
+    except Exception:
+        preferred = "auto"
+    return page_family.auto_table_scan_order(preferred)
 
 
 def _find_vtable_col(column_title: str, max_col: int = 100):
@@ -4802,8 +4946,13 @@ def _scan_table_html(table_index: int = 0) -> dict:
 @mcp.tool()
 @read_synchronized
 def scan_table(kind: str = "auto", max_col: int = 50, table_index: int = 0, filename: str = None) -> dict:
-    """扫描当前可见表格。auto 优先 VTable；HTML 按可见 table_index 返回单个表格。
-    filename 提供时保存到文件，不返回大 JSON。"""
+    """扫描当前可见表格。
+
+    kind:
+      - auto: 按页面族优先（VTable / Bootstrap Table / ant-table）回退
+      - vtable / html / bootstrap: 指定后端
+    filename 提供时保存到文件，不返回大 JSON。
+    """
     try:
         parsed_table_index = int(table_index)
     except (TypeError, ValueError):
@@ -4814,21 +4963,39 @@ def scan_table(kind: str = "auto", max_col: int = 50, table_index: int = 0, file
     kind = _normalize_table_kind(kind)
     if kind == "vtable":
         result = _scan_table_vtable(max_col)
+    elif kind == "bootstrap":
+        result = _scan_table_bootstrap(table_index)
     elif kind == "html":
         result = _scan_table_html(table_index)
     else:
-        vt = _scan_table_vtable(max_col)
-        if vt.get("ok"):
-            result = vt
-        else:
-            ht = _scan_table_html(table_index)
-            if ht.get("ok") and (ht.get("tables") or []):
-                ht["fallback_from"] = "vtable"
-                ht["vtable_reason"] = vt.get("reason", "")
-                result = ht
+        reasons = {}
+        result = {
+            "ok": False,
+            "kind": "auto",
+            "reason": "未识别到 VTable / Bootstrap Table / ant-table",
+        }
+        order = _auto_table_scan_order()
+        for item in order:
+            if item == "vtable":
+                candidate = _scan_table_vtable(max_col)
+            elif item == "bootstrap":
+                candidate = _scan_table_bootstrap(table_index)
             else:
-                result = {"ok": False, "kind": "auto", "reason": "未识别到 VTable 或 HTML 表格",
-                        "vtable_reason": vt.get("reason", ""), "html_reason": ht.get("reason", "")}
+                candidate = _scan_table_html(table_index)
+            reasons[item] = candidate.get("reason", "")
+            ok = candidate.get("ok")
+            if ok and item in {"html", "bootstrap"} and not (candidate.get("tables") or []):
+                ok = False
+                reasons[item] = reasons[item] or "tables empty"
+            if ok:
+                if item != order[0]:
+                    candidate["fallback_from"] = order[0]
+                    candidate["scan_order"] = order
+                result = candidate
+                break
+        if not result.get("ok"):
+            result["details"] = reasons
+            result["scan_order"] = order
 
     # filename 参数优先
     if filename and result.get("ok"):
@@ -4862,29 +5029,56 @@ def get_table_values(column_title: str, kind: str = "auto", raw: bool = False, t
     kind = _normalize_table_kind(kind)
     if kind == "vtable":
         result = _tag_table_result("vtable", vtable.get_column_values(column_title, raw))
+    elif kind == "bootstrap":
+        if raw:
+            return {"ok": False, "kind": "bootstrap",
+                    "reason": "Bootstrap Table 仅支持界面文本，raw=true 只适用于 VTable"}
+        result = _tag_table_result(
+            "bootstrap",
+            bootstrap_table.get_bootstrap_table_values(column_title, table_index),
+        )
+        result.setdefault("raw", False)
     elif kind == "html":
         if raw:
             return {"ok": False, "kind": "html", "reason": "HTML 表格仅支持界面文本，raw=true 只适用于 VTable"}
         result = _tag_table_result("html", html_table.get_html_table_values(column_title, table_index))
         result.setdefault("raw", False)
     else:
-        vt = _tag_table_result("vtable", vtable.get_column_values(column_title, raw))
-        if vt.get("ok"):
-            result = vt
-        elif raw:
-            return {"ok": False, "kind": "auto",
-                    "reason": "未找到可读取原始值的 VTable；HTML 表格不支持 raw=true",
-                    "vtable_reason": vt.get("reason", "")}
-        else:
-            ht = _tag_table_result("html", html_table.get_html_table_values(column_title, table_index))
-            if ht.get("ok"):
-                ht["fallback_from"] = "vtable"
-                ht["vtable_reason"] = vt.get("reason", "")
-                ht.setdefault("raw", False)
-                result = ht
+        reasons = {}
+        result = {"ok": False, "kind": "auto", "reason": "列值读取失败"}
+        for item in _auto_table_scan_order():
+            if item == "vtable":
+                candidate = _tag_table_result("vtable", vtable.get_column_values(column_title, raw))
+            elif item == "bootstrap":
+                if raw:
+                    reasons["bootstrap"] = "raw=true 不支持"
+                    continue
+                candidate = _tag_table_result(
+                    "bootstrap",
+                    bootstrap_table.get_bootstrap_table_values(column_title, table_index),
+                )
+                candidate.setdefault("raw", False)
             else:
-                result = {"ok": False, "kind": "auto", "reason": "列值读取失败",
-                        "vtable_reason": vt.get("reason", ""), "html_reason": ht.get("reason", "")}
+                if raw:
+                    reasons["html"] = "raw=true 不支持"
+                    continue
+                candidate = _tag_table_result(
+                    "html", html_table.get_html_table_values(column_title, table_index),
+                )
+                candidate.setdefault("raw", False)
+            reasons[item] = candidate.get("reason", "")
+            if candidate.get("ok"):
+                result = candidate
+                break
+        if not result.get("ok"):
+            if raw:
+                return {
+                    "ok": False,
+                    "kind": "auto",
+                    "reason": "未找到可读取原始值的 VTable；其它表格不支持 raw=true",
+                    "details": reasons,
+                }
+            result["details"] = reasons
 
     # filename 参数优先
     if filename and result.get("ok"):
@@ -5151,56 +5345,11 @@ def vtable_action(action: str = "click", row: int = 0, col: int = None,
     return _attach_cleanup(result, cleanup)
 
 
-@mcp.tool()
-@write_synchronized
-def click_table_cell(row: int, col: int = None, column_title: str = None, kind: str = "auto",
-                     table_index: int = 0, icon_name: str = None, hover_first: bool = True,
-                     duration: float = 0.3, double_click: bool = False,
-                     clean_overlays: bool = True) -> dict:
-    """统一点击表格单元格。VTable 可用 col 或 column_title；HTML Table 使用 column_title。
-    clean_overlays=True 时先清理上一操作残留的 Ant notification/message。"""
-    cleanup = _pre_click_cleanup(clean_overlays)
-    kind = _normalize_table_kind(kind)
-
-    def _click_vtable():
-        target_col = col
-        if target_col is None and column_title:
-            target_col, reason = _find_vtable_col(column_title)
-            if target_col is None:
-                return {"ok": False, "kind": "vtable", "reason": reason}
-        if target_col is None:
-            return {"ok": False, "kind": "vtable", "reason": "VTable 点击需要 col 或 column_title"}
-        return _tag_table_result("vtable", vtable.click_cell(target_col, row, icon_name, hover_first, duration, double_click))
-
-    if kind == "vtable":
-        return _attach_cleanup(_click_vtable(), cleanup)
-    if kind == "html":
-        if not column_title:
-            return _attach_cleanup({"ok": False, "kind": "html", "reason": "HTML 表格点击需要 column_title"}, cleanup)
-        return _attach_cleanup(_tag_table_result("html", html_table.click_html_table_cell(column_title, row, table_index)), cleanup)
-
-    vt = _click_vtable()
-    if vt.get("ok"):
-        return _attach_cleanup(vt, cleanup)
-    if column_title:
-        ht = _tag_table_result("html", html_table.click_html_table_cell(column_title, row, table_index))
-        if ht.get("ok"):
-            ht["fallback_from"] = "vtable"
-            ht["vtable_reason"] = vt.get("reason", "")
-            return _attach_cleanup(ht, cleanup)
-        return _attach_cleanup(
-            {"ok": False, "kind": "auto", "reason": "表格单元格点击失败",
-             "vtable_reason": vt.get("reason", ""), "html_reason": ht.get("reason", "")},
-            cleanup,
-        )
-    return _attach_cleanup(vt, cleanup)
-
-
-@mcp.tool()
-@write_synchronized
-def hover_table_cell(row: int, col: int = None, column_title: str = None, kind: str = "auto",
-                     table_index: int = 0, duration: float = 0.3) -> dict:
-    """统一悬停表格单元格。VTable 可用 col 或 column_title；HTML Table 使用 column_title。"""
+def _hover_table_cell_raw(
+    row: int, col: int = None, column_title: str = None, kind: str = "auto",
+    table_index: int = 0, duration: float = 0.3,
+) -> dict:
+    """Undecorated table hover helper（VTable / Bootstrap / ant-table）。"""
     kind = _normalize_table_kind(kind)
 
     def _hover_vtable():
@@ -5213,42 +5362,91 @@ def hover_table_cell(row: int, col: int = None, column_title: str = None, kind: 
             return {"ok": False, "kind": "vtable", "reason": "VTable 悬停需要 col 或 column_title"}
         return _tag_table_result(
             "vtable",
-            vtable.vtable_action(action="hover", col=target_col, row=row,
-                                 target="cell", duration=duration),
+            vtable.vtable_action(
+                action="hover", col=target_col, row=row, target="cell", duration=duration,
+            ),
+        )
+
+    def _hover_bootstrap():
+        if not column_title:
+            return {"ok": False, "kind": "bootstrap", "reason": "Bootstrap Table 悬停需要 column_title"}
+        return _tag_table_result(
+            "bootstrap",
+            bootstrap_table.hover_bootstrap_table_cell(
+                column_title, row, table_index, duration=duration,
+            ),
+        )
+
+    def _hover_html():
+        if not column_title:
+            return {"ok": False, "kind": "html", "reason": "HTML 表格悬停需要 column_title"}
+        return _tag_table_result(
+            "html",
+            html_table.hover_html_table_cell(
+                column_title, row, table_index, duration=duration,
+            ),
         )
 
     if kind == "vtable":
         return _hover_vtable()
+    if kind == "bootstrap":
+        return _hover_bootstrap()
     if kind == "html":
-        if not column_title:
-            return {"ok": False, "kind": "html", "reason": "HTML 表格悬停需要 column_title"}
-        return _tag_table_result("html", html_table.hover_html_table_cell(
-            column_title, row, table_index, duration=duration
-        ))
+        return _hover_html()
 
-    vt = _hover_vtable()
-    if vt.get("ok"):
-        return vt
-    if column_title:
-        ht = _tag_table_result("html", html_table.hover_html_table_cell(
-            column_title, row, table_index, duration=duration
-        ))
-        if ht.get("ok"):
-            ht["fallback_from"] = "vtable"
-            ht["vtable_reason"] = vt.get("reason", "")
-            return ht
-        return {"ok": False, "kind": "auto", "reason": "表格单元格悬停失败",
-                "vtable_reason": vt.get("reason", ""), "html_reason": ht.get("reason", "")}
-    return vt
+    reasons = {}
+    for item in _auto_table_scan_order():
+        if item == "vtable":
+            candidate = _hover_vtable()
+        elif item == "bootstrap":
+            candidate = _hover_bootstrap()
+        else:
+            candidate = _hover_html()
+        reasons[item] = candidate.get("reason", "")
+        if candidate.get("ok"):
+            return candidate
+    return {"ok": False, "kind": "auto", "reason": "表格单元格悬停失败", "details": reasons}
+
+
+@mcp.tool()
+@write_synchronized
+def click_table_cell(row: int, col: int = None, column_title: str = None, kind: str = "auto",
+                     table_index: int = 0, icon_name: str = None, hover_first: bool = True,
+                     duration: float = 0.3, double_click: bool = False,
+                     clean_overlays: bool = True) -> dict:
+    """统一点击表格单元格。
+
+    kind: auto | vtable | html | bootstrap。
+    VTable 可用 col 或 column_title；HTML / Bootstrap Table 使用 column_title。
+    clean_overlays=True 时先清理上一操作残留的 Ant notification/message。
+    """
+    cleanup = _pre_click_cleanup(clean_overlays)
+    result = _click_table_cell_raw(
+        row=row, col=col, column_title=column_title, kind=kind,
+        table_index=table_index, icon_name=icon_name, hover_first=hover_first,
+        duration=duration, double_click=double_click,
+    )
+    return _attach_cleanup(result, cleanup)
+
+
+@mcp.tool()
+@write_synchronized
+def hover_table_cell(row: int, col: int = None, column_title: str = None, kind: str = "auto",
+                     table_index: int = 0, duration: float = 0.3) -> dict:
+    """统一悬停表格单元格。kind: auto | vtable | html | bootstrap。"""
+    return _hover_table_cell_raw(
+        row=row, col=col, column_title=column_title, kind=kind,
+        table_index=table_index, duration=duration,
+    )
 
 
 @mcp.tool()
 @write_synchronized
 def resize_table_column(width: int, col: int = None, column_title: str = None, kind: str = "vtable") -> dict:
-    """统一调整表格列宽。目前仅 VTable 支持列宽拖拽，HTML Table 返回不支持。"""
+    """统一调整表格列宽。目前仅 VTable 支持列宽拖拽，HTML/Bootstrap Table 返回不支持。"""
     kind = _normalize_table_kind(kind)
-    if kind == "html":
-        return {"ok": False, "kind": "html", "reason": "HTML 表格暂不支持列宽调整"}
+    if kind in {"html", "bootstrap"}:
+        return {"ok": False, "kind": kind, "reason": "%s 表格暂不支持列宽调整" % kind}
     target_col = col
     if target_col is None and column_title:
         target_col, reason = _find_vtable_col(column_title)
@@ -5301,16 +5499,17 @@ def query_table(operation: Literal["values", "data", "find", "count", "row"] = "
                 column_title: str = None,
                 value: str = None, key_column: str = None, key_value: str = None,
                 column_titles: list[str] = None,
-                kind: Literal["auto", "html", "vtable"] = "auto",
+                kind: Literal["auto", "html", "vtable", "bootstrap"] = "auto",
                 table_index: int = 0, raw: bool = False,
                 match: Literal["equals", "contains"] = "equals",
                 expected_count: int = None, timeout: float = 0,
                 filename: str = None) -> dict:
     """统一表格读取入口。
 
+    kind: auto | html | vtable | bootstrap。
     operation 只能是：
-    - values：读取 column_title 的全部可见值（HTML/VTable）。
-    - data：读取当前表格完整可读数据（HTML/VTable）。
+    - values：读取 column_title 的全部可见值（HTML/VTable/Bootstrap）。
+    - data：读取当前表格完整可读数据（HTML/VTable/Bootstrap）。
     - find：按 column_title/value 唯一定位 VTable 行。
     - count：统计 column_title/value 匹配的 VTable 行数。
     - row：按 key_column/key_value 读取 column_titles 指定的同一 VTable 行。
@@ -5381,7 +5580,7 @@ def inspect_table_cell(row: int, col: int = None, column_title: str = None,
 def table_action(action: Literal["click", "double_click", "hover", "drag", "resize"] = "click",
                  row: int = 0, col: int = None,
                  column_title: str = None,
-                 kind: Literal["auto", "html", "vtable"] = "auto",
+                 kind: Literal["auto", "html", "vtable", "bootstrap"] = "auto",
                  table_index: int = 0,
                  target: Literal["cell", "header", "header-icon", "cell-icon"] = "cell",
                  icon_name: str = None, icon_index: int = None,
@@ -5395,11 +5594,13 @@ def table_action(action: Literal["click", "double_click", "hover", "drag", "resi
                  drag_from_x: float = None, drag_from_y: float = None) -> dict:
     """统一表格动作入口。
 
-    action 可选 click/double_click/hover/drag/resize。普通单元格支持 HTML 与
-    VTable；header/header-icon/cell-icon、drag 和 resize 仅支持 VTable。
+    kind: auto | html | vtable | bootstrap。
+    action 可选 click/double_click/hover/drag/resize。普通单元格支持 HTML、
+    Bootstrap Table 与 VTable；header/header-icon/cell-icon、drag 和 resize 仅支持 VTable。
     """
     action_key = str(action or "click").strip().lower().replace("-", "_")
     target_key = str(target or "cell").strip().lower().replace("_", "-")
+    kind_key = _normalize_table_kind(kind)
     cleanup = (None if action_key == "hover" else _pre_click_cleanup(clean_overlays))
     effective_signals = signals
     if effective_signals is None and listen_targets:
@@ -5414,25 +5615,25 @@ def table_action(action: Literal["click", "double_click", "hover", "drag", "resi
             result = {"ok": False, "reason": "resize 必须提供 width", "action": action_key}
         else:
             result = resize_table_column(
-                width=width, col=col, column_title=column_title, kind=kind,
+                width=width, col=col, column_title=column_title, kind=kind_key,
             )
     elif action_key == "hover" and target_key == "cell" and icon_index is None:
         result = hover_table_cell(
-            row=row, col=col, column_title=column_title, kind=kind,
+            row=row, col=col, column_title=column_title, kind=kind_key,
             table_index=table_index, duration=duration,
         )
     elif action_key in {"click", "double_click"} and target_key == "cell" and icon_index is None:
         result = click_table_cell(
-            row=row, col=col, column_title=column_title, kind=kind,
+            row=row, col=col, column_title=column_title, kind=kind_key,
             table_index=table_index, icon_name=icon_name,
             hover_first=hover_first, duration=duration,
             double_click=action_key == "double_click",
             clean_overlays=False,
         )
     elif action_key in {"click", "double_click", "hover", "drag"}:
-        if kind == "html":
+        if kind_key in {"html", "bootstrap"}:
             result = {
-                "ok": False, "kind": "html", "action": action_key,
+                "ok": False, "kind": kind_key, "action": action_key,
                 "reason": "该 target/action 组合仅支持 VTable",
             }
         else:
@@ -6557,10 +6758,12 @@ def browser_get_element_state(locator: str, state: str = None) -> dict:
 
 def main():
     logger.info(
-        "Starting drissionpage-mcp server, profile=%s, enabled caps=%s",
+        "Starting drissionpage-mcp server version=%s profile=%s enabled_caps=%s",
+        __version__,
         caps.ENABLED_PROFILE,
         sorted(caps.ENABLED_CAPS),
     )
+    # FastMCP 3：stdio 为默认传输；host/port 等若将来需要 HTTP 应传给 run()
     mcp.run()
 
 

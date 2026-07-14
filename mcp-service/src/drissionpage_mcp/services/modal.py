@@ -310,6 +310,65 @@ def close_modal(tab=None):
                 return
             closed.append("%s:%s" % (scope, kind))
 
+    def close_layer(scope, target, root):
+        """关闭可见 layer.js 弹层：优先取消/关闭文案，再点右上角 X。"""
+        from ..core import ui_contract_legacy as legacy
+
+        for _ in range(10):
+            layers = root.eles("c:" + legacy.LAYER_ROOT, timeout=0.2) or []
+            visible = []
+            for layer in layers:
+                states = getattr(layer, "states", None)
+                if not bool(getattr(states, "is_displayed", False)):
+                    continue
+                cls = str((layer.attrs or {}).get("class", ""))
+                # 跳过遮罩
+                if "layui-layer-shade" in cls:
+                    continue
+                visible.append(layer)
+            if not visible:
+                return
+            active = visible[-1]
+            cancel = None
+            # layer 按钮多为 .layui-layer-btn a
+            for link in active.eles("c:.layui-layer-btn a", timeout=0.2) or []:
+                states = getattr(link, "states", None)
+                if not bool(getattr(states, "is_displayed", True)):
+                    continue
+                label = (link.text or "").replace(" ", "").strip()
+                if label in legacy.LAYER_SAFE_LABELS or any(
+                    label.startswith(prefix) for prefix in legacy.LAYER_SAFE_LABELS
+                ):
+                    cancel = link
+                    break
+            if cancel is None:
+                for button in active.eles("c:button.btnClose, button.btn-default", timeout=0.2) or []:
+                    states = getattr(button, "states", None)
+                    if not bool(getattr(states, "is_displayed", True)):
+                        continue
+                    label = (button.text or "").replace(" ", "").strip()
+                    if label in legacy.LAYER_SAFE_LABELS or label in safe_labels:
+                        cancel = button
+                        break
+            control = cancel or active.ele("c:" + legacy.LAYER_CLOSE, timeout=0.2)
+            if not control:
+                errors.append("%s layer: 无安全的取消/关闭按钮" % scope)
+                return
+            control.click(by_js=False, timeout=2, wait_stop=False)
+            hidden = target.wait.ele_hidden(active, timeout=3, raise_err=False)
+            if not hidden:
+                # layer 关闭后节点常被移除
+                still = root.eles("c:" + legacy.LAYER_ROOT, timeout=0.2) or []
+                still_vis = [
+                    item for item in still
+                    if bool(getattr(getattr(item, "states", None), "is_displayed", False))
+                    and "layui-layer-shade" not in str((item.attrs or {}).get("class", ""))
+                ]
+                if still_vis and active in still_vis:
+                    errors.append("%s layer: 等待关闭超时" % scope)
+                    return
+            closed.append("%s:layer" % scope)
+
     for scope, target in _target_contexts(tab):
         root = _document_root(target)
         try:
@@ -321,6 +380,7 @@ def close_modal(tab=None):
                 scope, target, root, "drawer",
                 ui_contract.DRAWER, ".ant-drawer-close",
             )
+            close_layer(scope, target, root)
         except Exception as exc:
             logger.debug("close_modal 失败(%s): %s", scope, exc)
             errors.append("%s: %s" % (scope, exc))

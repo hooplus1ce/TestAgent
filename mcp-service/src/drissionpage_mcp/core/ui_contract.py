@@ -1,21 +1,25 @@
 """诺贝 SCM 固定前端组件契约。
 
-本服务不是通用网页驱动器：前端已固定为 Ant Design 3、Legions Pro Quick Filter
-与 VisActor VTable。这里集中保存跨模块复用的稳定 DOM 契约，业务组件升级时先修改本
-文件，再运行各能力分组的契约测试；功能模块不得另写一套同义选择器。
+本服务不是通用网页驱动器：主路径前端已固定为 Ant Design 3、Legions Pro Quick Filter
+与 VisActor VTable。iframe 内遗留 jQuery/Bootstrap 页的选择器见
+``ui_contract_legacy``；本文件仍集中保存跨模块复用的壳层/新业务 DOM 契约。
 
 选择器来自 2026-07-12 对“上工记录”“工资明细”真实页面的表单、筛选区、弹窗、
-日期面板、下拉菜单、HTML Table 与 VTable Canvas 采集。优先使用精确组件 class；
+日期面板、下拉菜单、HTML Table 与 VTable Canvas 采集；layer.js 根选择器于
+2026-07-14 并入浮层列表以支持账号管理等遗留弹层观察。优先使用精确组件 class；
 XPath 只作为 DrissionPage 定位失败时的兼容路径。
 """
 
+from . import ui_contract_legacy as _legacy
+
 # 该版本随 DOM 契约变化递增，便于页面模型、执行证据和测试报告定位兼容范围。
 CONTRACT_NAME = "nuobei-scm-fixed-ui"
-CONTRACT_VERSION = "2026.07.12.1"
+CONTRACT_VERSION = "2026.07.14.1"
 FRAMEWORKS = {
     "component_library": "Ant Design 3",
     "quick_filter": "Legions Pro Quick Filter",
     "canvas_table": "VisActor VTable",
+    "legacy_iframe": "jQuery + Bootstrap 3 + Bootstrap Table + layer.js",
 }
 
 # 顶层工作区：只有 aria-hidden=false 的 tabpanel 才是当前业务页。
@@ -112,9 +116,17 @@ DROPDOWN = '.ant-dropdown'
 SELECT_DROPDOWN = '.ant-select-dropdown'
 DATE_PICKER_OVERLAY = '.ant-calendar-picker-container'
 DATE_CALENDAR = '.ant-calendar'
+# layer.js 弹层（遗留 iframe 页；选择器权威源见 ui_contract_legacy）
+LAYER_ROOT = _legacy.LAYER_ROOT
+LAYER_TITLE = _legacy.LAYER_TITLE
+LAYER_CONTENT = _legacy.LAYER_CONTENT
+LAYER_CLOSE = _legacy.LAYER_CLOSE
+LAYER_MSG = _legacy.LAYER_MSG
+
 OVERLAY_CLOSE = (
     '.ant-modal-close,.ant-drawer-close,.ant-notification-notice-close,'
-    '.ant-message-notice-close'
+    '.ant-message-notice-close,'
+    '.layui-layer-close,.layui-layer-setwin .layui-layer-close'
 )
 
 # VTable 浮层和画布。ROOT_FALLBACK 仅用于旧页面缺少精确 .vtable class 的场景。
@@ -140,6 +152,7 @@ INTERACTIVE_CONTROLS = (
 )
 
 # 页面快照使用组件根，MutationObserver 使用最早挂载的内容节点；二者用途不同，不能合并。
+# layer.js 根节点同时进入快照与观察列表，保证遗留「新增/编辑」弹层可被 detect。
 FLOAT_ROOTS = (
     MODAL,
     DRAWER,
@@ -154,6 +167,7 @@ FLOAT_ROOTS = (
     VTABLE_MENU,
     DATE_PICKER_OVERLAY,
     DATE_CALENDAR,
+    LAYER_ROOT,
 )
 
 OBSERVABLE_OVERLAYS = (
@@ -170,4 +184,5 @@ OBSERVABLE_OVERLAYS = (
     DATE_CALENDAR,
     NOTIFICATION,
     MESSAGE,
+    LAYER_ROOT,
 )

@@ -13,7 +13,7 @@ Agent platform config
             uv run --package drissionpage-mcp drissionpage-mcp
         |
         v
-drissionpage_mcp.server (stdio FastMCP)
+drissionpage_mcp.server (stdio FastMCP 3.x / standalone `fastmcp`)
         |
         +-- core: config / capabilities / UI contract
         +-- services: browser / auth / roles / tables / overlays / network

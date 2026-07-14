@@ -2,6 +2,15 @@ import asyncio
 import os
 
 
+def _template_uri(template) -> str:
+    """FastMCP 3 uses uri_template; older SDK used uriTemplate."""
+    return (
+        getattr(template, "uri_template", None)
+        or getattr(template, "uriTemplate", None)
+        or ""
+    )
+
+
 def test_registered_catalog_matches_the_source_service():
     from drissionpage_mcp import server
     from drissionpage_mcp.core import caps
@@ -12,15 +21,29 @@ def test_registered_catalog_matches_the_source_service():
 
     tool_names = {tool.name for tool in tools}
     grouped_tools = {tool for group in caps.CAP_GROUPS.values() for tool in group}
-    assert len(tools) == 90
+    assert len(tools) == len(grouped_tools)
     assert tool_names == grouped_tools
     assert {"role_session_open", "role_session_login", "run_js", "click_xy"} <= tool_names
+    assert {"detect_page_family", "scan_layer_content"} <= tool_names
     assert {str(resource.uri) for resource in resources} == {
         "drissionpage-mcp://caps",
         "drissionpage-mcp://context",
         "drissionpage-mcp://resources",
     }
     assert len(templates) == 1
+    assert "drissionpage-mcp://resources/{resource_path}" in {
+        _template_uri(t) for t in templates
+    }
+
+
+def test_server_uses_standalone_fastmcp():
+    """Import path must be standalone fastmcp 3.x, with public version."""
+    import importlib.metadata
+    from drissionpage_mcp import server
+
+    assert server.FastMCP.__module__.startswith("fastmcp")
+    assert getattr(server.mcp, "version", None) == server.__version__
+    assert importlib.metadata.version("fastmcp").split(".")[0] >= "3"
 
 
 def test_bundled_browser_assets_are_available():

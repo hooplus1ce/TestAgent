@@ -11,9 +11,17 @@ import os
 import time
 from DrissionPage.common import Keys
 
-from ..core import ui_contract
+from ..core import page_family, ui_contract
 from ..resources import resource_store
-from . import browser_session, filter_area, html_table, vtable
+from . import (
+    bootstrap_select,
+    bootstrap_table,
+    browser_session,
+    filter_area,
+    html_table,
+    layer_modal,
+    vtable,
+)
 
 
 def _parse_json(res, default):
@@ -568,17 +576,41 @@ def scan_form_fields(
     in_frame: bool = True,
     max_fields: int = 200,
 ) -> dict:
-    """Scan form-like controls outside or inside overlays."""
+    """Scan form-like controls outside or inside overlays.
+
+    scope 额外支持 ``layer``：自动进入可见 layer.js 弹层（含嵌套 iframe 表单）。
+    """
+    scope_key = (scope or "page").lower()
+    max_fields = min(max(int(max_fields or 0), 0), 1000)
+
+    # layer.js 内容可能在子 iframe，走专用适配
+    if scope_key in {"layer", "layui", "layui-layer"}:
+        scanned = layer_modal.scan_layer_content()
+        if not scanned.get("ok"):
+            return scanned
+        fields = list(scanned.get("fields") or [])[:max_fields]
+        return {
+            "ok": True,
+            "scope": "layer",
+            "rootCount": 1,
+            "total": len(fields),
+            "fields": fields,
+            "buttons": scanned.get("buttons") or [],
+            "title": scanned.get("title"),
+            "content_url": scanned.get("content_url"),
+            "content_kind": scanned.get("content_kind"),
+            "layerKind": scanned.get("layerKind"),
+        }
+
     _, _, target = _target(in_frame=in_frame)
     selector_map = {
         "page": "body",
         "filter": ".page-query,.legions-pro-quick-filter",
-        "modal": ".ant-modal:not([style*='display: none'])",
+        "modal": ".ant-modal:not([style*='display: none']), .layui-layer:not(.layui-layer-shade)",
         "drawer": ".ant-drawer:not(.ant-drawer-hidden)",
         "all": "body",
     }
-    selector = selector_map.get((scope or "page").lower(), scope or "body")
-    max_fields = min(max(int(max_fields or 0), 0), 1000)
+    selector = selector_map.get(scope_key, scope or "body")
     js = (
         _COMMON_JS
         + """
@@ -601,9 +633,23 @@ return JSON.stringify({ok:true, scope:SCOPE, rootCount:roots.length, total:field
         .replace("SCOPE", json.dumps(scope))
         .replace("MAX_FIELDS", str(max_fields))
         .replace("INCLUDE_HIDDEN", "true" if include_hidden else "false")
-        .replace("ALLOW_BODY_FALLBACK", "true" if (scope or "page").lower() in {"page", "all"} else "false")
+        .replace("ALLOW_BODY_FALLBACK", "true" if scope_key in {"page", "all"} else "false")
     )
-    return _run_json(target, js, {"ok": False, "reason": "scan failed"})
+    result = _run_json(target, js, {"ok": False, "reason": "scan failed"})
+    # modal 范围未命中 ant-modal 时，尝试 layer 内容
+    if (
+        scope_key == "modal"
+        and isinstance(result, dict)
+        and result.get("ok")
+        and not (result.get("fields") or [])
+    ):
+        layer_fields = scan_form_fields(
+            scope="layer", include_hidden=include_hidden, max_fields=max_fields,
+        )
+        if layer_fields.get("ok") and (layer_fields.get("fields") or []):
+            layer_fields["fallback_from"] = "ant-modal"
+            return layer_fields
+    return result
 
 
 def _scan_overlay(kind: str, max_items: int = 20) -> dict:
@@ -882,13 +928,29 @@ for (var i = 0; i < nodes.length; i++) {
   else if (duHasClass(n, 'vtable__bubble-tooltip-element')) kind = 'vtable-tooltip';
   else if (duHasClass(n, 'vtable__menu-element')) kind = 'vtable-menu';
   else if (duIsCalendarNode(n)) kind = 'calendar';
+  else if (duHasClass(n, 'layui-layer') && !duHasClass(n, 'layui-layer-shade')) {
+    if (duHasClass(n, 'layui-layer-msg')) kind = 'layer-msg';
+    else kind = 'layer';
+  }
+  var layerMeta = null;
+  if (kind === 'layer' || kind === 'layer-msg') {
+    var nestedIfs = [].slice.call(n.querySelectorAll('iframe')).map(function(f){
+      return {src: f.src || '', id: f.id || '', name: f.name || ''};
+    }).slice(0, 3);
+    layerMeta = {
+      layerKind: duHasClass(n, 'layui-layer-iframe') ? 'iframe'
+        : (duHasClass(n, 'layui-layer-dialog') ? 'dialog'
+          : (kind === 'layer-msg' ? 'msg' : 'page')),
+      nestedIframes: nestedIfs
+    };
+  }
   var calendar = kind === 'calendar' ? duScanCalendar(n) : null;
   var options = (kind === 'dropdown' || kind === 'select-dropdown') ? duOverlayOptions(n) : [];
   var isConfirm = kind === 'modal' && !!n.querySelector('.ant-confirm-body');
   var vtableFilter = kind === 'vtable-filter-menu' ? duScanVTableFilterMenu(n) : null;
   var vtableOverlay = (kind === 'vtable-tooltip' || kind === 'vtable-menu') ? duScanVTableOverlay(n) : null;
   // 标题提取
-  var titleEl = n.querySelector('.ant-modal-title, .ant-drawer-title, .ant-modal-header');
+  var titleEl = n.querySelector('.ant-modal-title, .ant-drawer-title, .ant-modal-header, .layui-layer-title');
   var title = titleEl ? duCleanText(titleEl.textContent) : '';
   if (!title && kind === 'notification') {
     var notificationText = n.querySelector('.ant-notification-notice-message,.ant-notification-notice-description');
@@ -982,7 +1044,10 @@ for (var i = 0; i < nodes.length; i++) {
   }
 
   // 关闭按钮携带稳定语义 XPath；组件升级时只需更新 ui_contract 与此处根选择器。
-  var closeBtn = n.querySelector('.ant-modal-close, .ant-drawer-close, .ant-notification-notice-close, .ant-message-notice-close');
+  var closeBtn = n.querySelector(
+    '.ant-modal-close, .ant-drawer-close, .ant-notification-notice-close, .ant-message-notice-close, ' +
+    '.layui-layer-close, .layui-layer-setwin .layui-layer-close'
+  );
   var closeButton = null;
   if (closeBtn) {
     var closeText = duCleanText(closeBtn.textContent || closeBtn.getAttribute('aria-label') || closeBtn.getAttribute('title') || '关闭');
@@ -995,8 +1060,32 @@ for (var i = 0; i < nodes.length; i++) {
       center: frCenter(closeBtn), rect: frRect(closeBtn)
     };
   }
+  // layer 底部「取消」等安全按钮也记入 buttons（常为 a.layui-layer-btn*）
+  if (kind === 'layer' || kind === 'layer-msg') {
+    var layerAnchors = n.querySelectorAll('.layui-layer-btn a, .layui-layer-btn0, .layui-layer-btn1');
+    for (var lai = 0; lai < layerAnchors.length; lai++) {
+      var la = layerAnchors[lai];
+      if (!duVisible(la)) continue;
+      var laTxt = duCleanText(la.textContent);
+      if (!laTxt) continue;
+      var laDup = false;
+      for (var lbi = 0; lbi < buttons.length; lbi++) {
+        if (buttons[lbi].text === laTxt) { laDup = true; break; }
+      }
+      if (laDup) continue;
+      buttons.push({
+        text: laTxt, tag: la.tagName.toLowerCase(),
+        selectorHint: duCssHint(la), center: frCenter(la), rect: frRect(la),
+        kind: 'layer-btn', disabled: duDisabled(la)
+      });
+    }
+    if (!title && kind === 'layer-msg') {
+      var lmsg = n.querySelector('.layui-layer-content');
+      title = lmsg ? duCleanText(lmsg.textContent).slice(0, 60) : title;
+    }
+  }
 
-  // 表格检测 + 数据提取
+  // 表格检测 + 数据提取（ant-table + bootstrap-table）
   var tableWrappers = [].slice.call(n.querySelectorAll('.ant-table-wrapper'));
   var tables = [];
   tableWrappers.forEach(function(tw){
@@ -1035,12 +1124,30 @@ for (var i = 0; i < nodes.length; i++) {
       dataTruncated: !!(INCLUDE_TABLE_DATA && bodyRows > rowData.length)
     });
   });
+  // bootstrap-table 根（浮层内较少见，但统一探测）
+  var btRoots = [].slice.call(n.querySelectorAll('.bootstrap-table'));
+  btRoots.forEach(function(br, bti){
+    var ths = br.querySelectorAll('.fixed-table-header th, thead th');
+    var headers = [];
+    for (var hi = 0; hi < ths.length; hi++) {
+      var ht = duCleanText(ths[hi].textContent || '');
+      if (ht) headers.push(ht);
+    }
+    var bodyRows = br.querySelectorAll('.fixed-table-body tbody tr[data-index], tbody tr[data-index]').length;
+    if (!bodyRows) bodyRows = br.querySelectorAll('.fixed-table-body tbody tr, tbody tr').length;
+    tables.push({
+      index: bti, kind: 'bootstrap',
+      headers: headers, rowCount: bodyRows, data: [],
+      dataTruncated: false
+    });
+  });
 
   out.push({
     index: out.length,
     title: title, type: kind, isConfirm: isConfirm, text: text.slice(0, 800),
     buttons: buttons, fields: fields, options: options, closeButton: closeButton,
     calendar: calendar, vtableFilter: vtableFilter, vtableOverlay: vtableOverlay,
+    layer: layerMeta,
     tableCount: tables.length, tables: tables,
     center: frCenter(n), rect: frRect(n)
   });
@@ -1071,6 +1178,16 @@ return JSON.stringify({ok:true, floats:out});
                 all_floats.append(item)
         else:
             errors.append({"scope": scope, "reason": data.get("reason", "")})
+
+    # 为 layer.js 弹层补全嵌套 iframe 内字段/按钮（壳层 JS 扫不到子文档）
+    layer_ordinal = 0
+    for item in all_floats:
+        if item.get("type") in ("layer", "layer-msg"):
+            try:
+                layer_modal.enrich_layer_overlay(item, layer_index=layer_ordinal)
+            except Exception as exc:
+                item["content_enrich_error"] = str(exc)
+            layer_ordinal += 1
 
     result = {
         "ok": successful_scopes > 0,
@@ -1131,11 +1248,26 @@ def select_option(
     scope: str = "auto",
     timeout: float = 5.0,
 ) -> dict:
-    """按标签定位 Ant Select，在一个总超时预算内选择唯一匹配项。"""
+    """按标签定位下拉并选择唯一匹配项。
+
+    优先 Ant Design Select / Legions Quick Filter；失败后回退 bootstrap-select
+    与原生 ``<select>``（含 layer 弹层内表单）。
+    scope:
+      - auto/frame/iframe/top: Ant 路径作用域
+      - layer: 仅在 layer 内容区用 bootstrap-select 适配
+    """
     expected = str(option_text or "").strip()
     if not expected:
         return {"ok": False, "reason": "option_text is required"}
     scope = str(scope or "auto").lower()
+    if scope in {"layer", "layui", "bootstrap", "legacy"}:
+        return bootstrap_select.select_bootstrap_option(
+            field_name=field_name,
+            option_text=option_text,
+            select_index=select_index,
+            prefer_layer=scope in {"layer", "layui", "auto", "bootstrap", "legacy"},
+            timeout=timeout,
+        )
     if scope not in {"auto", "frame", "iframe", "top"}:
         return {"ok": False, "reason": "unsupported scope: %s" % scope}
     select_index = max(int(select_index or 0), 0)
@@ -1230,7 +1362,24 @@ def select_option(
             container_anchor = column
 
     if select_element is None or target is None:
-        return {"ok": False, "reason": "select not found for field: %s" % field_name}
+        # Ant Select 未命中时回退遗留 bootstrap-select / 原生 select（含 layer）
+        legacy = bootstrap_select.select_bootstrap_option(
+            field_name=field_name,
+            option_text=option_text,
+            select_index=select_index,
+            prefer_layer=True,
+            timeout=remaining() if timeout else 5.0,
+        )
+        if legacy.get("ok"):
+            legacy["fallback_from"] = "ant-select"
+            return legacy
+        return {
+            "ok": False,
+            "reason": "select not found for field: %s" % field_name,
+            "ant_reason": "select not found for field: %s" % field_name,
+            "legacy_reason": legacy.get("reason"),
+            "legacy_available": legacy.get("available"),
+        }
 
     def close_dropdown():
         try:
@@ -1249,7 +1398,22 @@ def select_option(
             raise_err=False,
         )
         if not dropdown:
-            return {"ok": False, "reason": "dropdown not visible after click"}
+            # 可能实际是 bootstrap 控件被误匹配，再试遗留适配
+            legacy = bootstrap_select.select_bootstrap_option(
+                field_name=field_name,
+                option_text=option_text,
+                select_index=select_index,
+                prefer_layer=True,
+                timeout=remaining() if remaining() > 0 else 3.0,
+            )
+            if legacy.get("ok"):
+                legacy["fallback_from"] = "ant-select-dropdown"
+                return legacy
+            return {
+                "ok": False,
+                "reason": "dropdown not visible after click",
+                "legacy_reason": legacy.get("reason"),
+            }
 
         search_input = select_element.ele(
             "css:.ant-select-search__field, input", timeout=remaining(0.3)
@@ -1466,29 +1630,66 @@ def get_all_table_data(
     if table_index < 0:
         return {"ok": False, "reason": "table_index 必须为非负整数"}
     kind = (kind or "auto").lower()
-    if kind not in {"auto", "html", "vtable"}:
+    if kind in {"bootstrap-table", "bootstrap_table", "bt"}:
+        kind = "bootstrap"
+    if kind not in {"auto", "html", "vtable", "bootstrap"}:
         kind = "auto"
 
     if kind == "vtable":
         result = _read_vtable_rows(max_columns=max_columns, max_rows=max_rows, raw=raw)
+    elif kind == "bootstrap":
+        if raw:
+            return {"ok": False, "kind": "bootstrap",
+                    "reason": "Bootstrap Table 仅支持界面文本，raw=true 只适用于 VTable"}
+        result = _read_bootstrap_table(table_index, max_rows=max_rows)
     elif kind == "html":
         if raw:
             return {"ok": False, "kind": "html", "reason": "HTML 表格仅支持界面文本，raw=true 只适用于 VTable"}
         result = _read_html_pages(table_index, max_pages=max_pages, max_rows=max_rows)
     else:
-        vt = _read_vtable_rows(max_columns=max_columns, max_rows=max_rows, raw=raw)
-        if vt.get("ok"):
-            result = vt
-        elif raw:
-            return {"ok": False, "kind": "auto",
-                    "reason": "未找到可读取原始值的 VTable；HTML 表格不支持 raw=true",
-                    "vtable_reason": vt.get("reason", "")}
-        else:
-            html = _read_html_pages(table_index, max_pages=max_pages, max_rows=max_rows)
-            if html.get("ok"):
-                html["fallback_from"] = "vtable"
-                html["vtable_reason"] = vt.get("reason", "")
-            result = html
+        # auto：页面族优先，再按 vtable → bootstrap → ant-table 回退
+        preferred = "auto"
+        try:
+            family = page_family.detect_page_family()
+            if family.get("ok"):
+                preferred = family.get("preferred_table_kind") or "auto"
+        except Exception:
+            preferred = "auto"
+
+        order = []
+        if preferred in {"vtable", "bootstrap", "html"}:
+            order.append(preferred)
+        for item in ("vtable", "bootstrap", "html"):
+            if item not in order:
+                order.append(item)
+
+        result = {"ok": False, "kind": "auto", "reason": "未识别到可读取的表格"}
+        reasons = {}
+        for item in order:
+            if item == "vtable":
+                candidate = _read_vtable_rows(max_columns=max_columns, max_rows=max_rows, raw=raw)
+            elif item == "bootstrap":
+                if raw:
+                    reasons["bootstrap"] = "raw=true 不支持 Bootstrap Table"
+                    continue
+                candidate = _read_bootstrap_table(table_index, max_rows=max_rows)
+            else:
+                if raw:
+                    reasons["html"] = "raw=true 不支持 HTML 表格"
+                    continue
+                candidate = _read_html_pages(table_index, max_pages=max_pages, max_rows=max_rows)
+            reasons[item] = candidate.get("reason", "")
+            if candidate.get("ok"):
+                if item != order[0]:
+                    candidate["fallback_from"] = order[0]
+                result = candidate
+                break
+        if not result.get("ok"):
+            if raw:
+                return {"ok": False, "kind": "auto",
+                        "reason": "未找到可读取原始值的 VTable；其它表格不支持 raw=true",
+                        "details": reasons}
+            result = {"ok": False, "kind": "auto", "reason": "未识别到可读取的表格", "details": reasons}
 
     if filename and result.get("ok"):
         saved = save_json_result(result, filename)
@@ -1496,6 +1697,28 @@ def get_all_table_data(
         saved["count"] = result.get("count", 0)
         return saved
     return result
+
+
+def _read_bootstrap_table(table_index: int = 0, max_rows: int = 1000) -> dict:
+    """读取当前页 Bootstrap Table（客户端分页时仅当前可见行）。"""
+    data = bootstrap_table.get_bootstrap_table_data(table_index)
+    if not data.get("ok"):
+        return data
+    rows = list(data.get("rows") or [])
+    if max_rows >= 0:
+        rows = rows[:max_rows]
+    return {
+        "ok": True,
+        "kind": "bootstrap",
+        "headers": data.get("headers") or [],
+        "rows": rows,
+        "count": len(rows),
+        "pages_read": 1,
+        "page_moves": 0,
+        "mutated_page": False,
+        "stop_reason": "bootstrap_table_current_view",
+        "limitation": "Bootstrap Table 当前仅采集可见页数据，未自动翻页",
+    }
 
 
 def _read_html_pages(
@@ -1553,6 +1776,60 @@ def click_html_row_selection(row: int = 0, table_index: int = 0) -> dict:
     return html_table.click_html_row_selection(row=row, table_index=table_index)
 
 
+def _scan_tables_for_model(preferred: str = "auto") -> dict:
+    """按页面族优先顺序扫描表格结构，供 capture_page_model 使用。"""
+    preferred = (preferred or "auto").lower()
+    if preferred in {"bootstrap-table", "bootstrap_table", "bt"}:
+        preferred = "bootstrap"
+    order = []
+    if preferred in {"vtable", "bootstrap", "html"}:
+        order.append(preferred)
+    for item in ("vtable", "bootstrap", "html"):
+        if item not in order:
+            order.append(item)
+
+    reasons = {}
+    for item in order:
+        if item == "vtable":
+            vt = vtable.scan_vtable_columns(50)
+            reasons["vtable"] = vt.get("reason", "")
+            if vt.get("ok"):
+                return {"ok": True, "kind": "vtable", "scan": vt, "tried": order}
+        elif item == "bootstrap":
+            bt = bootstrap_table.scan_bootstrap_table()
+            reasons["bootstrap"] = bt.get("reason", "")
+            if bt.get("ok") and (bt.get("tables") or []):
+                return {
+                    "ok": True,
+                    "kind": "bootstrap",
+                    "scan": bt,
+                    "tried": order,
+                    "table_count": len(bt.get("tables") or []),
+                }
+            if bt.get("ok") and not (bt.get("tables") or []):
+                reasons["bootstrap"] = "bootstrap-table roots empty"
+        else:
+            ht = html_table.scan_html_table()
+            reasons["html"] = ht.get("reason", "")
+            if ht.get("ok") and (ht.get("tables") or []):
+                return {
+                    "ok": True,
+                    "kind": "html",
+                    "scan": ht,
+                    "tried": order,
+                    "table_count": len(ht.get("tables") or []),
+                }
+            if ht.get("ok") and not (ht.get("tables") or []):
+                reasons["html"] = "ant-table wrappers empty"
+    return {
+        "ok": False,
+        "kind": "auto",
+        "reason": "未识别到 VTable / Bootstrap Table / ant-table",
+        "details": reasons,
+        "tried": order,
+    }
+
+
 def capture_page_model(
     include_filters: bool = True,
     include_tables: bool = True,
@@ -1566,6 +1843,12 @@ def capture_page_model(
     max_elements = min(max(int(max_elements or 0), 0), 1_000)
     tab = browser_session.get_tab()
     fr = _active_frame(tab)
+    family_info = {}
+    try:
+        family_info = page_family.detect_page_family(tab=tab)
+    except Exception as exc:
+        family_info = {"ok": False, "reason": str(exc)}
+
     model = {
         "ok": True,
         "captured_at": int(time.time()),
@@ -1574,17 +1857,24 @@ def capture_page_model(
             "version": ui_contract.CONTRACT_VERSION,
             "frameworks": dict(ui_contract.FRAMEWORKS),
         },
+        "page_family": family_info,
         "page": {
             "url": getattr(tab, "url", "") or "",
             "title": getattr(tab, "title", "") or "",
             "frame_url": getattr(fr, "url", "") if fr is not None else "",
             "has_active_frame": fr is not None,
+            "family": family_info.get("family") if isinstance(family_info, dict) else None,
+            "preferred_table_kind": (
+                family_info.get("preferred_table_kind")
+                if isinstance(family_info, dict) else None
+            ),
         },
         "actions": {},
         "fields": {},
         "overlays": {},
         "modals": {},
         "drawers": {},
+        "layers": {},
         "pagination": {},
         "tables": {},
     }
@@ -1614,34 +1904,57 @@ def capture_page_model(
         "count": sum(item.get("type") == "drawer" for item in overlay_items),
         "overlays": [item for item in overlay_items if item.get("type") == "drawer"],
     }
+    layer_overlays = [
+        item for item in overlay_items
+        if item.get("type") in ("layer", "layer-msg")
+    ]
+    model["layers"] = {
+        "ok": overlay_ok,
+        "kind": "layer",
+        "count": len(layer_overlays),
+        "overlays": layer_overlays,
+        "enriched": any(item.get("content_enriched") for item in layer_overlays),
+    }
     _safe("pagination", scan_pagination)
 
     if include_filters:
         try:
-            model["filters"] = filter_area.scan_filter_fields(tab)
+            # 遗留 Bootstrap 页通常没有 Legions Quick Filter
+            if (
+                isinstance(family_info, dict)
+                and family_info.get("family") == page_family.FAMILY_LEGACY
+                and "bootstrap_table" in (family_info.get("adapters") or [])
+                and not (family_info.get("signals") or {}).get("quick_filter")
+            ):
+                model["filters"] = {
+                    "ok": False,
+                    "reason": "当前页面族为 legacy_jq_bootstrap，无 Legions Quick Filter（.page-query）",
+                    "family": page_family.FAMILY_LEGACY,
+                    "hint": "请使用工具栏关键词搜索或 Bootstrap Table 列过滤",
+                }
+            else:
+                model["filters"] = filter_area.scan_filter_fields(tab)
         except Exception as e:
             model["filters"] = {"ok": False, "reason": str(e)}
 
     if include_tables:
         try:
-            vt = vtable.scan_vtable_columns(50)
-            if vt.get("ok"):
-                model["tables"] = {"ok": True, "kind": "vtable", "scan": vt}
-            else:
-                ht = html_table.scan_html_table()
-                model["tables"] = {
-                    "ok": ht.get("ok", False),
-                    "kind": "html",
-                    "scan": ht,
-                    "vtable_reason": vt.get("reason", ""),
-                }
+            preferred = "auto"
+            if isinstance(family_info, dict) and family_info.get("ok"):
+                preferred = family_info.get("preferred_table_kind") or "auto"
+            model["tables"] = _scan_tables_for_model(preferred)
         except Exception as e:
             model["tables"] = {"ok": False, "reason": str(e)}
 
     if include_tables and include_table_data:
         try:
+            kind = "auto"
+            if isinstance(family_info, dict) and family_info.get("preferred_table_kind") in {
+                "vtable", "bootstrap", "html",
+            }:
+                kind = family_info["preferred_table_kind"]
             model["table_data"] = get_all_table_data(
-                kind="auto", max_pages=1, max_rows=max_table_rows
+                kind=kind, max_pages=1, max_rows=max_table_rows
             )
         except Exception as e:
             model["table_data"] = {"ok": False, "reason": str(e)}

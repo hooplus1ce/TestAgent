@@ -7,9 +7,9 @@ requires-python = ">=3.11"
 dependencies = [
     "ddddocr>=1.6.1",
     "drissionpage>=4.2.0b20",
+    "fastmcp>=3.0.0",
     "httpx>=0.28.1",
     "loguru>=0.7.3",
-    "mcp[cli]>=1.28.1,<2",
     "openpyxl>=3.1.5",
     "python-dotenv>=1.2.2",
     "regex>=2024.11.6",

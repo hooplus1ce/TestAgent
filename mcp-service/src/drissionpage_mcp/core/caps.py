@@ -11,7 +11,8 @@
 
 分组说明：
   core      - 核心自动化（默认）：连接、导航、通用交互
-  vtable    - Canvas 表格操作
+  vtable    - Canvas 表格操作（含统一表格 facade）
+  legacy    - 遗留 jQuery/Bootstrap Table / layer 页面族
   filter    - 筛选区操作
   observe   - 观察/弹窗检测
   network   - 网络监听
@@ -28,7 +29,7 @@ CAP_GROUPS = {
         # 连接与会话
         "connect", "refresh_session", "check_session", "set_target_env",
         # 导航与 frame
-        "enter_module", "get_active_frame",
+        "enter_module", "get_active_frame", "detect_page_family", "scan_layer_content",
         # 通用 DOM 原语
         "click", "click_xy", "input", "set_field_value", "insert_text", "hover", "set_date",
         # 页面理解
@@ -57,6 +58,14 @@ CAP_GROUPS = {
         "get_vtable_cell_render_info", "get_vtable_cell_icons",
         "vtable_action", "click_table_cell", "hover_table_cell", "resize_table_column",
         "reorder_vtable_column",
+    ],
+    "legacy": [
+        # 遗留页能力通过统一 facade 暴露；分组便于裁剪工具面时保留双栈
+        "detect_page_family",
+        "scan_layer_content", "scan_form_fields", "select_option", "set_field_value",
+        "scan_table", "get_table_values", "get_table_data", "get_all_table_data",
+        "click_table_cell", "query_table", "table_action",
+        "observe_snapshot", "close_modal", "capture_page_model",
     ],
     "filter": [
         # 筛选区
@@ -106,9 +115,11 @@ CAP_GROUPS = {
 ENTERPRISE_TOOLS = {
     # 浏览器、会话与模块导航
     "connect", "browser_tabs", "check_session", "refresh_session", "set_target_env",
-    "enter_module", "get_active_frame",
+    "enter_module", "get_active_frame", "detect_page_family",
     # 页面理解与统一交互
-    "capture_page_model", "scan_filter_fields", "scan_table", "find_elements",
+    "capture_page_model", "scan_filter_fields", "scan_form_fields",
+    "scan_layer_content", "select_option", "set_field_value",
+    "scan_table", "find_elements",
     "observe_snapshot", "explore_action", "close_modal", "screenshot",
     # 表格、网络证据
     "query_table", "inspect_table_cell", "table_action",
@@ -189,4 +200,6 @@ _INTERNAL_TOOLS = {
     "scan_modal", "scan_drawer", "scan_floats",
     "scan_html_table", "get_html_table_values", "click_html_table_cell",
     "hover_html_table_cell", "get_html_table_data",
+    "scan_bootstrap_table", "get_bootstrap_table_values",
+    "click_bootstrap_table_cell", "get_bootstrap_table_data",
 }

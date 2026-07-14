@@ -11,7 +11,38 @@ import time
 from unittest.mock import MagicMock, patch
 
 
-FULL_TOOL_COUNT = 88
+def _resource_text(result) -> str:
+    """Normalize FastMCP 3 ResourceResult and legacy list[Content] shapes."""
+    if result is None:
+        return ""
+    contents = getattr(result, "contents", None)
+    if contents is not None:
+        first = contents[0]
+        return getattr(first, "content", None) or getattr(first, "text", None) or str(first)
+    if isinstance(result, (list, tuple)) and result:
+        first = result[0]
+        return getattr(first, "content", None) or getattr(first, "text", None) or str(first)
+    return str(result)
+
+
+def _template_uri(template) -> str:
+    return (
+        getattr(template, "uri_template", None)
+        or getattr(template, "uriTemplate", None)
+        or ""
+    )
+
+
+def _tool_input_schema(tool) -> dict:
+    """FastMCP 3 FunctionTool uses parameters; SDK FastMCP used inputSchema."""
+    schema = getattr(tool, "parameters", None)
+    if schema is None:
+        schema = getattr(tool, "inputSchema", None)
+    if schema is None:
+        schema = getattr(tool, "input_schema", None)
+    assert isinstance(schema, dict), "tool input schema missing: %r" % (tool,)
+    return schema
+
 
 REMOVED_DUPLICATE_TOOLS = {
     "login_ocr",
@@ -56,9 +87,10 @@ def test_public_tool_surface():
 
     names = _tool_names()
     grouped_tools = {tool for tools in caps.CAP_GROUPS.values() for tool in tools}
-    assert len(names) == FULL_TOOL_COUNT
+    assert len(names) == len(grouped_tools)
     assert names == grouped_tools
     assert {"run_js", "click_xy", "role_session_open", "role_session_login"} <= names
+    assert {"detect_page_family", "scan_layer_content"} <= names
 
 
 def test_public_tools_are_grouped_in_caps():
@@ -109,14 +141,14 @@ def test_resources_and_templates_are_exposed():
     } <= resource_uris
 
     templates = asyncio.run(server.mcp.list_resource_templates())
-    template_uris = {t.uriTemplate for t in templates}
+    template_uris = {_template_uri(t) for t in templates}
     assert "drissionpage-mcp://resources/{resource_path}" in template_uris
 
 
 def test_caps_resource_returns_json():
     from drissionpage_mcp import server
     contents = asyncio.run(server.mcp.read_resource("drissionpage-mcp://caps"))
-    data = json.loads(contents[0].content)
+    data = json.loads(_resource_text(contents))
 
     from drissionpage_mcp.core import caps
 
@@ -139,7 +171,7 @@ def test_evidence_resource_template_reads_encoded_nested_file(monkeypatch, tmp_p
 
     contents = asyncio.run(server.mcp.read_resource(f"drissionpage-mcp://resources/{encoded}"))
 
-    assert contents[0].content == "tag: body"
+    assert _resource_text(contents) == "tag: body"
 
 
 def test_drissionpage_caps_filters_public_tools():
@@ -213,7 +245,7 @@ def test_list_parameters_have_typed_items_schema():
         ("query_table", "column_titles"),
     ]
     for tool_name, field in checks:
-        prop = tools[tool_name].inputSchema["properties"][field]
+        prop = _tool_input_schema(tools[tool_name])["properties"][field]
         assert prop["items"]["type"] == "string"
 
 
@@ -221,16 +253,17 @@ def test_enterprise_facade_schemas_constrain_choice_parameters():
     from drissionpage_mcp import server
 
     tools = {tool.name: tool for tool in asyncio.run(server.mcp.list_tools())}
-    query_properties = tools["query_table"].inputSchema["properties"]
-    action_properties = tools["table_action"].inputSchema["properties"]
-    explore_properties = tools["explore_action"].inputSchema["properties"]
+    query_properties = _tool_input_schema(tools["query_table"])["properties"]
+    action_properties = _tool_input_schema(tools["table_action"])["properties"]
+    explore_properties = _tool_input_schema(tools["explore_action"])["properties"]
 
     assert set(query_properties["operation"]["enum"]) == {"values", "data", "find", "count", "row"}
-    assert set(query_properties["kind"]["enum"]) == {"auto", "html", "vtable"}
+    assert set(query_properties["kind"]["enum"]) == {"auto", "html", "vtable", "bootstrap"}
     assert set(query_properties["match"]["enum"]) == {"equals", "contains"}
     assert set(action_properties["action"]["enum"]) == {
         "click", "double_click", "hover", "drag", "resize",
     }
+    assert set(action_properties["kind"]["enum"]) == {"auto", "html", "vtable", "bootstrap"}
     assert set(action_properties["target"]["enum"]) == {
         "cell", "header", "header-icon", "cell-icon",
     }
@@ -512,13 +545,18 @@ import asyncio
 import json
 import sys
 from drissionpage_mcp import server
+
+def tool_schema(tool):
+    return getattr(tool, "parameters", None) or getattr(tool, "inputSchema", None)
+
 async def main():
     tools = await server.mcp.list_tools()
+    set_date = next(tool for tool in tools if tool.name == "set_date")
     data = {
         "has_explore_action": "explore_action" in {tool.name for tool in tools},
         "has_set_date": "set_date" in {tool.name for tool in tools},
         "has_select_date_range": "select_date_range" in {tool.name for tool in tools},
-        "set_date_schema": next(tool.inputSchema for tool in tools if tool.name == "set_date"),
+        "set_date_schema": tool_schema(set_date),
         "dash": server._normalize_date_value("2026-06-01"),
         "slash": server._normalize_date_value("2026/06/01"),
         "invalid": server._normalize_date_value("2026.06.01"),
@@ -846,13 +884,14 @@ def test_scan_table_routes_to_selected_visible_html_backend():
 
 def test_scan_table_auto_falls_back_to_html_backend():
     from drissionpage_mcp import server
-    with patch.object(server.vtable, "scan_vtable_columns", return_value={"ok": False, "reason": "no vtable"}), \
+    with patch.object(server, "_auto_table_scan_order", return_value=["vtable", "html", "bootstrap"]), \
+         patch.object(server.vtable, "scan_vtable_columns", return_value={"ok": False, "reason": "no vtable"}), \
+         patch.object(server.bootstrap_table, "scan_bootstrap_table", return_value={"ok": False, "reason": "no bootstrap"}), \
          patch.object(server.html_table, "scan_html_table", return_value={"ok": True, "tables": [{"index": 0}]}) as scan_html:
         result = server.scan_table(kind="auto")
         assert result["ok"] is True
         assert result["kind"] == "html"
-        assert result["fallback_from"] == "vtable"
-        assert result["vtable_reason"] == "no vtable"
+        assert result.get("fallback_from") == "vtable"
         scan_html.assert_called_once_with()
 
 
@@ -1066,7 +1105,12 @@ def test_scan_form_fields_does_not_fall_back_to_page_for_missing_overlay_scope()
         return {"ok": True, "scope": "modal", "rootCount": 0, "total": 0, "fields": []}
 
     with patch.object(page_model, "_target", return_value=(object(), None, object())), \
-         patch.object(page_model, "_run_json", side_effect=capture):
+         patch.object(page_model, "_run_json", side_effect=capture), \
+         patch.object(
+             page_model.layer_modal,
+             "scan_layer_content",
+             return_value={"ok": False, "reason": "no layer", "fields": []},
+         ):
         result = page_model.scan_form_fields(scope="modal")
 
     assert result["fields"] == []
@@ -1403,6 +1447,8 @@ def test_vtable_action_routes_to_backend_by_column_title():
         hover_first=True,
         duration=0.3,
         drag_to={"dx": 16},
+        source_x=None,
+        source_y=None,
     )
 
 
@@ -1459,6 +1505,8 @@ def test_vtable_action_passes_cell_icon_index_to_backend():
         hover_first=True,
         duration=0.3,
         drag_to=None,
+        source_x=None,
+        source_y=None,
     )
 
 

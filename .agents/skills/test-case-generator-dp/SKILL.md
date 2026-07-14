@@ -53,8 +53,8 @@ Read only the references needed for the requested area when the task is narrow.
 ## Workflow
 
 1. Run the Browser Ready Gate whenever the user says "connect browser" or before real page exploration:
-   `connect(port=9222, target_hint=<TEST_PAGE_URL>)` -> open/select the page under test with `browser_tabs` -> `check_session` -> if expired, `refresh_session` -> return to the page/module -> final `check_session` -> `get_active_frame`. Stop if the final session check still reports expiration or if no active iframe is available.
-2. Enter the requested module with `enter_module(..., expand_filter=True)` when the ready gate did not already land on the target module, then run `get_active_frame` again.
+   `connect(port=9222, target_hint=<TEST_PAGE_URL>)` -> open/select the page under test with `browser_tabs` -> `check_session` -> if expired, `refresh_session` -> return to the page/module -> final `check_session` -> `get_active_frame` -> `detect_page_family`. Stop if the final session check still reports expiration or if no active iframe is available.
+2. Enter the requested module with `enter_module(..., expand_filter=True)` when the ready gate did not already land on the target module, then run `get_active_frame` and `detect_page_family` again. Use the returned `preferred_table_kind` / `adapters` when choosing table and modal strategies (`bootstrap` + `layer` for legacy jQuery pages; `vtable`/`html` for AntD modules).
 3. Start an evidence flow with `flow_start(module=<MODULE_NAME>)`. While it is active,
    use `explore_action(...)` for each business interaction so the MCP records the
    element, observed feedback, network request/response summary, screenshot and
@@ -68,6 +68,10 @@ Read only the references needed for the requested area when the task is narrow.
    asserting status text/colors. Prefer these facades for normal business tests;
    the complete tool catalog is available when a specialized interaction or
    service diagnosis requires it.
+   For legacy jQuery/Bootstrap modules (`detect_page_family` → `legacy_jq_bootstrap`):
+   use `scan_table(kind="bootstrap"|"auto")`, open dialogs via toolbar buttons, then
+   `scan_form_fields(scope="layer")` / `scan_layer_content` for layer.js iframe forms,
+   and `select_option(..., scope="layer")` for bootstrap-select fields.
 5. Build a coverage model before generating cases: asset inventory, testable
    functions, scenario matrix, and coverage statuses (`已验证`, `待验证`,
    `需用户确认`, `工具缺口`).

@@ -34,6 +34,7 @@ _SIGNAL_PRIORITY = {
         "message", "notification", "confirm", "interactive", "drawer",
         "popover", "tooltip", "dropdown", "select-dropdown", "calendar",
         "vtable-filter-menu", "vtable-tooltip", "vtable-menu",
+        "layer", "layer-msg",
     )
 }
 _SIGNAL_PRIORITY.update({"url_change": 1, "tab_change": 1, "network": 2})
@@ -413,6 +414,42 @@ function classify(el){
     var cc = el.querySelector('[class*="ant-message-"]');
     if (cc) { var mm = (cc.className||'').match(/ant-message-(success|info|warning|error|loading)/); if (mm) kind = mm[1]; }
     return {type:'message', scope:scope, kind:kind, message: c ? cleanText(c.textContent) : '',
+            rect: rectOf(el)};
+  }
+  // layer.js（遗留 jQuery 页弹层 / toast；page 型内容可能嵌套 iframe）
+  if (cls.indexOf('layui-layer') >= 0) {
+    var isMsg = cls.indexOf('layui-layer-msg') >= 0 || (
+      cls.indexOf('layui-layer-dialog') >= 0 && !el.querySelector('.layui-layer-title')
+    );
+    // 纯 shade 不作为业务信号
+    if (cls.indexOf('layui-layer-shade') >= 0) return null;
+    var lt = el.querySelector('.layui-layer-title');
+    var lc = el.querySelector('.layui-layer-content');
+    var lbtns = buttonTexts(el);
+    // layer 底部按钮区常为 a 标签
+    [].slice.call(el.querySelectorAll('.layui-layer-btn a')).forEach(function(a){
+      var t = cleanText(a.textContent);
+      if (t && lbtns.indexOf(t) < 0) lbtns.push(t);
+    });
+    var nested = [].slice.call(el.querySelectorAll('iframe')).map(function(f){
+      return {src: f.src || '', id: f.id || '', name: f.name || ''};
+    }).slice(0, 3);
+    var layerKind = 'page';
+    if (cls.indexOf('layui-layer-iframe') >= 0) layerKind = 'iframe';
+    else if (cls.indexOf('layui-layer-dialog') >= 0) layerKind = 'dialog';
+    else if (isMsg) layerKind = 'msg';
+    if (isMsg && !lt) {
+      return {type:'layer-msg', scope:scope, layerKind:layerKind,
+              message: lc ? cleanText(lc.textContent).slice(0,200) : cleanText(el.textContent).slice(0,200),
+              buttons: lbtns, hasClose: !!el.querySelector('.layui-layer-close'),
+              nestedIframes: nested, rect: rectOf(el)};
+    }
+    return {type:'layer', scope:scope, layerKind:layerKind,
+            title: lt ? cleanText(lt.textContent) : '',
+            content: lc ? cleanText(lc.textContent).slice(0,200) : '',
+            buttons: lbtns,
+            hasClose: !!el.querySelector('.layui-layer-close'),
+            nestedIframes: nested,
             rect: rectOf(el)};
   }
   return null;
