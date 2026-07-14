@@ -1,4 +1,0 @@
-- [弹窗交互策略](modal-interaction-strategy.md) — 与SCM弹窗交互必须先dom_tree分析DOM结构再用精确选择器操作
-- [VTable下拉搜索策略](vtable-dropdown-search-strategy.md) — 点击VTable单元格后优先搜索virtual-option而非假设是Ant Design组件
-- [DrissionPage陷阱](drissionpage-gotchas.md) — run_js必须top-level return(IIFE吞返回值); tab.ele()递归iframe——scope精确检测用run_js+querySelector
-- [SCM保存按钮两种形态](scm-save-button-two-forms.md) — 保存按钮可能是下拉触发器型(ant-dropdown-trigger,弹菜单需二次点选项)或普通型(直接保存)，点击前必判className，两种情况分别处理
