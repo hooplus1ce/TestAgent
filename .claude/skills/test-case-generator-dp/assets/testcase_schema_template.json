@@ -1,0 +1,70 @@
+{
+  "module_info": {
+    "enterprise_prefix": "NB",
+    "module_name": "<一级模块>_<二级模块>",
+    "module_level1": "<一级模块>",
+    "module_level2": "<二级模块>",
+    "module_pinyin": "<MODULE_PINYIN>",
+    "menu_text": "<可由 enter_module 精确进入的菜单文本>",
+    "author": "<AUTHOR>"
+  },
+  "test_cases": [
+    {
+      "case_id": "F001",
+      "case_title": "按目标字段筛选列表记录",
+      "priority": "低级",
+      "verify_point": "筛选后表格仅显示符合条件的数据",
+      "test_type": "功能测试",
+      "function": "查询",
+      "preconditions": [
+        "已登录目标系统",
+        "已进入目标模块页面",
+        "数据表格已加载完成"
+      ],
+      "test_steps": [
+        "在目标筛选字段输入或选择真实页面数据",
+        "点击查询按钮"
+      ],
+      "test_data": {
+        "目标字段": "来自页面真实数据的值"
+      },
+      "expected_result": "1. 表格仅显示符合筛选条件的记录\n2. 目标列所有可见值均满足筛选条件\n3. 无不符合条件的记录",
+      "automation_suggestion": "使用 scan_filter_fields 获取字段矩阵，explore_action 设置真实值并查询，query_table 验证目标列",
+      "evidence_refs": [
+        {
+          "flow_id": "<真实探索 flow_id>",
+          "sequence": 1
+        }
+      ],
+      "automation_recipe": {
+        "setup": [],
+        "steps": [
+          {
+            "action": "explore_action",
+            "args": {
+              "action": "click",
+              "target": {
+                "type": "button",
+                "text": "查询"
+              }
+            },
+            "assertions": [
+              {
+                "path": "signal.payload.message",
+                "operator": "contains",
+                "value": "<真实观察到的业务反馈>",
+                "description": "查询业务反馈"
+              }
+            ]
+          }
+        ],
+        "cleanup": []
+      }
+    }
+  ],
+  "meta_data": {
+    "format_note": "测试数据Excel自动加「表单数据」首行+中文冒号；预期结果保持编号列表格式",
+    "generated_at": "<YYYY-MM-DD>",
+    "testcase_count": 1
+  }
+}
