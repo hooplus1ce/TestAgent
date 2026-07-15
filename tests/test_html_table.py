@@ -38,7 +38,7 @@ def test_visible_table_wrappers_maps_only_uncovered_dom_indexes():
             return json.dumps([2])
 
         def eles(self, locator, timeout=None):
-            assert locator == "c:.ant-table-wrapper"
+            assert locator == "c:" + html_table._TABLE_WRAPPER_SELECTOR
             return [hidden, covered, visible]
 
     assert html_table._visible_table_wrappers(Frame()) == [visible]
@@ -62,7 +62,7 @@ def test_business_rows_excludes_placeholder_expanded_and_measure_rows():
 
     class Wrapper:
         def ele(self, locator, timeout=None):
-            return body if locator == "c:.ant-table-body table" else None
+            return body if locator == "c:" + html_table._BODY_TABLE_SELECTOR else None
 
     rows = html_table._business_rows(Wrapper())
 

@@ -15,6 +15,7 @@ logger = logging.getLogger("drissionpage-mcp")
 FAMILY_SHELL = "scm_admin_shell"
 FAMILY_LEGACY = "legacy_jq_bootstrap"
 FAMILY_VTABLE = "antd_vtable"
+FAMILY_MODERN = "modern_component_ui"
 FAMILY_MIXED = "mixed"
 FAMILY_UNKNOWN = "unknown"
 
@@ -45,6 +46,12 @@ return (function(){
   out.counts.layui_shade = count('.layui-layer-shade');
   out.counts.adminlte = count('body.skin-blue, body.sidebar-mini');
   out.counts.glyphicon = count('.glyphicon');
+  out.counts.element_ui = count('.el-form, .el-table, .el-dialog, .el-select');
+  out.counts.mui = count('.MuiFormControl-root, .MuiDialog-root, .MuiDataGrid-root');
+  out.counts.mui_table = count('.MuiTable-root, .MuiTableContainer-root');
+  out.counts.arco = count('.arco-form, .arco-table, .arco-modal, .arco-select');
+  out.counts.semi = count('.semi-form, .semi-table, .semi-modal, .semi-select');
+  out.counts.native_table = count('table[role="grid"], table[data-testid], main table');
 
   out.signals.ant_shell = out.counts.ant_layout > 0;
   out.signals.ant_table = out.counts.ant_table > 0;
@@ -83,6 +90,10 @@ return (function(){
     out.signals.bootstrap_table || out.signals.adminlte;
   out.signals.wms_spa = /scm-wms/i.test(location.href || '') ||
     /#\//.test(location.href || '') && out.signals.vtable;
+  out.signals.modern_components = out.counts.element_ui > 0 || out.counts.mui > 0 ||
+    out.counts.arco > 0 || out.counts.semi > 0;
+  out.signals.generic_table = out.counts.native_table > 0 || out.counts.element_ui > 0 ||
+    out.counts.mui_table > 0 || out.counts.arco > 0 || out.counts.semi > 0;
 
   return JSON.stringify(out);
 })();
@@ -112,6 +123,7 @@ def _score_family(probe: dict) -> tuple[str, float, list[str]]:
         FAMILY_SHELL: 0.0,
         FAMILY_LEGACY: 0.0,
         FAMILY_VTABLE: 0.0,
+        FAMILY_MODERN: 0.0,
     }
 
     if signals.get("ant_shell") or signals.get("react_container") or globals_.get("ReactStore"):
@@ -147,6 +159,17 @@ def _score_family(probe: dict) -> tuple[str, float, list[str]]:
         scores[FAMILY_VTABLE] += 0.15
         reasons.append("ant-table")
 
+    modern_counts = sum(
+        int(counts.get(name, 0) or 0)
+        for name in ("element_ui", "mui", "arco", "semi")
+    )
+    if signals.get("modern_components") or modern_counts:
+        scores[FAMILY_MODERN] += 0.65
+        reasons.append("modern component library")
+    if signals.get("generic_table"):
+        scores[FAMILY_MODERN] += 0.15
+        reasons.append("generic dom table")
+
     ranked = sorted(scores.items(), key=lambda item: item[1], reverse=True)
     best_name, best_score = ranked[0]
     second_score = ranked[1][1] if len(ranked) > 1 else 0.0
@@ -173,6 +196,8 @@ def _adapters_for(family: str, probe: dict) -> list[str]:
         adapters.append("bootstrap_select")
     if family in (FAMILY_SHELL, FAMILY_MIXED) or signals.get("ant_shell"):
         adapters.append("antd_shell")
+    if family in (FAMILY_MODERN, FAMILY_MIXED) or signals.get("modern_components"):
+        adapters.append("generic_dom")
     # 保序去重
     seen = set()
     ordered = []
@@ -195,6 +220,8 @@ def _preferred_table_kind(family: str, probe: dict) -> str:
         return "bootstrap"
     if family == FAMILY_VTABLE:
         return "vtable"
+    if family == FAMILY_MODERN and signals.get("generic_table"):
+        return "html"
     return "auto"
 
 
@@ -292,6 +319,15 @@ def detect_page_family(tab=None, include_top: bool = True, include_frame: bool =
         frameworks["shell"] = dict(ui_contract.FRAMEWORKS)
     if family in (FAMILY_LEGACY, FAMILY_MIXED) or "bootstrap_table" in adapters:
         frameworks["legacy"] = dict(legacy.FRAMEWORKS)
+    if family in (FAMILY_MODERN, FAMILY_MIXED):
+        counts = primary.get("counts") or {}
+        frameworks["modern"] = {
+            "detected": [
+                name for name in ("element_ui", "mui", "arco", "semi")
+                if counts.get(name, 0)
+            ],
+            "fallback": "ARIA + label + stable DOM attributes",
+        }
 
     return {
         "ok": True,

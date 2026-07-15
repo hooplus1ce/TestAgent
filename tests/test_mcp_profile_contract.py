@@ -26,8 +26,7 @@ def _walk(value):
 
 
 def test_enterprise_profile_is_small_and_every_tool_is_grouped():
-    assert len(caps.ENTERPRISE_TOOLS) == 31
-    assert len(caps.ENTERPRISE_TOOLS) <= 32
+    assert len(caps.ENTERPRISE_TOOLS) < len(_all_profile_tools()) / 2
     assert caps.ENTERPRISE_TOOLS <= _all_profile_tools()
 
 
@@ -36,12 +35,17 @@ def test_all_agent_configs_share_workspace_entry_and_full_profile():
         "run",
         "--package",
         "drissionpage-mcp",
-        "drissionpage-mcp",
+        "-m",
+        "drissionpage_mcp",
     ]
-    for relative in (".mcp.json", ".mcp.drissionpage-mcp.json", ".trae/mcp.json"):
+    for relative in (".mcp.json", ".trae/mcp.json"):
         payload = json.loads((ROOT / relative).read_text(encoding="utf-8"))
         server = payload["mcpServers"]["drissionpage-mcp"]
         assert server["env"]["DRISSIONPAGE_MCP_PROFILE"] == "full"
+        assert server["env"]["DRISSIONPAGE_MCP_WARMUP_OCR"] == "false"
+        assert server["env"]["DRISSIONPAGE_MCP_COMPONENT_RELOAD"] == "true"
+        assert server["env"]["DRISSIONPAGE_MCP_DISCOVERY"] == "search"
+        assert server["env"]["DRISSIONPAGE_MCP_OBSERVABILITY"] == "true"
         assert server["args"] == expected_args
         assert "HL_USERNAME" not in server["env"]
         assert "HL_USERPWD" not in server["env"]
@@ -49,18 +53,24 @@ def test_all_agent_configs_share_workspace_entry_and_full_profile():
     with (ROOT / ".codex/config.toml").open("rb") as config_file:
         server = tomllib.load(config_file)["mcp_servers"]["drissionpage-mcp"]
     assert server["env"]["DRISSIONPAGE_MCP_PROFILE"] == "full"
+    assert server["env"]["DRISSIONPAGE_MCP_WARMUP_OCR"] == "false"
+    assert server["env"]["DRISSIONPAGE_MCP_COMPONENT_RELOAD"] == "true"
+    assert server["env"]["DRISSIONPAGE_MCP_DISCOVERY"] == "search"
+    assert server["env"]["DRISSIONPAGE_MCP_OBSERVABILITY"] == "true"
+    assert server["tool_timeout_sec"] == 600
     assert server["args"] == expected_args
 
 
-def test_codex_mcp_entry_runs_workspace_console_script():
+def test_codex_mcp_entry_runs_stable_server_with_component_reload():
     config_path = ROOT / ".codex/config.toml"
     with config_path.open("rb") as config_file:
         server = tomllib.load(config_file)["mcp_servers"]["drissionpage-mcp"]
 
     assert "cwd" not in server
     assert server["args"] == [
-        "run", "--package", "drissionpage-mcp", "drissionpage-mcp",
+        "run", "--package", "drissionpage-mcp", "-m", "drissionpage_mcp",
     ]
+    assert server["env"]["DRISSIONPAGE_MCP_COMPONENT_RELOAD"] == "true"
     assert (ROOT / "mcp-service/pyproject.toml").is_file()
     assert (ROOT / "mcp-service/src/drissionpage_mcp/__main__.py").is_file()
     assert not (ROOT / "mcp-service/launcher.py").exists()

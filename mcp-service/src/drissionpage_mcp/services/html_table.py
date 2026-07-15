@@ -1,4 +1,4 @@
-"""HTML 表格工具：处理 ant-design 原生 HTML 表格（非 VTable canvas 表格）。
+"""HTML 表格工具：处理 Ant/Element/Arco/Semi/MUI 与原生 DOM 表格。
 
 ant-table 结构:
   .ant-table-wrapper > .ant-spin-nested-loading > .ant-spin-container > .ant-table
@@ -16,7 +16,49 @@ from . import browser_session
 
 logger = logging.getLogger("drissionpage-mcp")
 
+_TABLE_WRAPPER_SELECTOR = (
+    ".ant-table-wrapper,.el-table,.arco-table,.semi-table,"
+    ".MuiTableContainer-root,table"
+)
+_BODY_TABLE_SELECTOR = (
+    ".ant-table-body table,.ant-table-content table,.el-table__body-wrapper table,"
+    ".arco-table-body table,.semi-table-body table,table"
+)
+_HEADER_TABLE_SELECTOR = (
+    ".ant-table-header table,.ant-table-body table,.ant-table-content table,"
+    ".el-table__header-wrapper table,.arco-table-header table,"
+    ".semi-table-header table,table"
+)
+
 _HEADER_MAP_JS = r"""
+function duTableWrappers() {
+    var selector = '.ant-table-wrapper,.el-table,.arco-table,.semi-table,.MuiTableContainer-root,table';
+    return [].slice.call(document.querySelectorAll(selector)).filter(function(node) {
+        if ((node.tagName || '').toLowerCase() !== 'table') return true;
+        return !node.closest('.ant-table-wrapper,.el-table,.arco-table,.semi-table,.MuiTableContainer-root');
+    });
+}
+function duTableRoot(wrapper) {
+    if (!wrapper) return null;
+    if ((wrapper.tagName || '').toLowerCase() === 'table') return wrapper;
+    return wrapper.querySelector('.ant-table') || wrapper;
+}
+function duHeaderTable(tableRoot) {
+    if (!tableRoot) return null;
+    if ((tableRoot.tagName || '').toLowerCase() === 'table') return tableRoot;
+    return tableRoot.querySelector(
+        '.ant-table-header table,.ant-table-body table,.ant-table-content table,' +
+        '.el-table__header-wrapper table,.arco-table-header table,.semi-table-header table,table'
+    );
+}
+function duBodyTable(tableRoot) {
+    if (!tableRoot) return null;
+    if ((tableRoot.tagName || '').toLowerCase() === 'table') return tableRoot;
+    return tableRoot.querySelector(
+        '.ant-table-body table,.ant-table-content table,.el-table__body-wrapper table,' +
+        '.arco-table-body table,.semi-table-body table,table'
+    );
+}
 function duLeafHeaders(headerTable) {
     if (!headerTable) return [];
     var rows = [].slice.call(headerTable.querySelectorAll('thead > tr'));
@@ -72,17 +114,24 @@ function duBusinessRows(bodyTable) {
 # JS 注入脚本：扫描 HTML 表格
 _SCAN_JS = _HEADER_MAP_JS + r"""
 return (function(){
-    var tables = [].slice.call(document.querySelectorAll('.ant-table-wrapper')).filter(duVisible);
+    var tables = duTableWrappers().filter(duVisible);
     var results = [];
     for (var ti = 0; ti < tables.length; ti++) {
         var wrapper = tables[ti];
-        var tableEl = wrapper.querySelector('.ant-table');
+        var tableEl = duTableRoot(wrapper);
         if (!tableEl) continue;
 
         var entry = {
             index: ti,
             tableClass: tableEl.className,
-            hasPagination: !!wrapper.querySelector('.ant-pagination'),
+            framework: wrapper.matches('.ant-table-wrapper') ? 'antd' :
+                (wrapper.matches('.el-table') ? 'element' :
+                (wrapper.matches('.arco-table') ? 'arco' :
+                (wrapper.matches('.semi-table') ? 'semi' :
+                (wrapper.matches('.MuiTableContainer-root') ? 'mui' : 'native')))),
+            hasPagination: !!wrapper.parentElement && !!wrapper.parentElement.querySelector(
+                '.ant-pagination,.el-pagination,.arco-pagination,.semi-page,.MuiTablePagination-root'
+            ),
             hasFixedHeader: tableEl.classList.contains('ant-table-fixed-header'),
             isBordered: tableEl.classList.contains('ant-table-bordered'),
             columns: [],
@@ -92,10 +141,7 @@ return (function(){
         };
 
         // ---- columns ----
-        var headerTable =
-            tableEl.querySelector('.ant-table-header table') ||
-            tableEl.querySelector('.ant-table-body table') ||
-            tableEl.querySelector('.ant-table-content table');
+        var headerTable = duHeaderTable(tableEl);
         duLeafHeaders(headerTable).forEach(function(header) {
             var th = header.element;
             var title = header.title;
@@ -108,21 +154,20 @@ return (function(){
                 index: header.index,
                 title: title,
                 alignment: align,
-                hasSorter: !!th.querySelector('.ant-table-column-sorter'),
-                hasFilter: !!th.querySelector('.ant-dropdown-trigger'),
+                hasSorter: !!th.querySelector('[class*="sort"], [aria-sort]'),
+                hasFilter: !!th.querySelector('[class*="filter"], [aria-haspopup="menu"]'),
             });
         });
 
         // ---- rows ----
-        var bodyTable = tableEl.querySelector('.ant-table-body table');
-        if (!bodyTable) bodyTable = tableEl.querySelector('.ant-table-content table');
+        var bodyTable = duBodyTable(tableEl);
         if (bodyTable) {
             var rows = duBusinessRows(bodyTable);
             entry.rowCount = rows.length;
 
             if (rows[0]) {
                 entry.hasExpandIcon = !!rows[0].querySelector('.ant-table-row-expand-icon');
-                entry.hasRowSelection = !!bodyTable.querySelector('.ant-checkbox-wrapper');
+                entry.hasRowSelection = !!bodyTable.querySelector('.ant-checkbox-wrapper,input[type="checkbox"],[role="checkbox"]');
             }
         }
 
@@ -150,18 +195,22 @@ def _nonnegative(value, name):
 
 
 def _get_frame():
-    """取活动 frame（优先只读，失败回退到加锁版本）。"""
+    """Use the active business frame, or the top document for modern SPAs."""
     try:
         fr = browser_session.get_active_frame_ro()
         if fr is not None:
             return fr
     except Exception:
         pass
-    return browser_session.get_active_frame()
+    try:
+        fr = browser_session.get_active_frame()
+        return fr if fr is not None else browser_session.get_tab()
+    except Exception:
+        return None
 
 
 def scan_html_table():
-    """扫描页面所有 ant-design HTML 表格，返回列定义和元数据。
+    """扫描页面所有受支持的 DOM 表格，返回框架、列定义和元数据。
 
     返回:
       {ok, tables: [{index, columns:[{index, title, alignment, hasSorter, hasFilter}],
@@ -189,18 +238,15 @@ return (function(){
     var COL_TITLE = %s;
     var TABLE_INDEX = %d;
 
-    var wrappers = [].slice.call(document.querySelectorAll('.ant-table-wrapper')).filter(duVisible);
+    var wrappers = duTableWrappers().filter(duVisible);
     var wrapper = wrappers[TABLE_INDEX];
     if (!wrapper) return JSON.stringify({error: 'visible table not found at index ' + TABLE_INDEX});
 
-    var tableEl = wrapper.querySelector('.ant-table');
-    if (!tableEl) return JSON.stringify({error: 'no .ant-table inside wrapper'});
+    var tableEl = duTableRoot(wrapper);
+    if (!tableEl) return JSON.stringify({error: 'no DOM table inside wrapper'});
 
     // find column index by title
-    var headerTable =
-        tableEl.querySelector('.ant-table-header table') ||
-        tableEl.querySelector('.ant-table-body table') ||
-        tableEl.querySelector('.ant-table-content table');
+    var headerTable = duHeaderTable(tableEl);
     if (!headerTable) return JSON.stringify({error: 'no header table'});
 
     var matches = duLeafHeaders(headerTable).filter(function(header) {
@@ -213,8 +259,7 @@ return (function(){
     var colIdx = matches[0].index;
 
     // get body rows
-    var bodyTable = tableEl.querySelector('.ant-table-body table');
-    if (!bodyTable) bodyTable = tableEl.querySelector('.ant-table-content table');
+    var bodyTable = duBodyTable(tableEl);
     if (!bodyTable) return JSON.stringify({error: 'no body table'});
 
     var rows = duBusinessRows(bodyTable);
@@ -248,7 +293,7 @@ def get_html_table_values(column_title: str, table_index: int = 0):
 
     Args:
         column_title: 列标题文字（精确匹配）
-        table_index: 表格索引（页面有多个 ant-table 时指定，默认 0）
+        table_index: 表格索引（页面有多个 DOM 表格时指定，默认 0）
 
     Returns:
         {ok, values: [str], cells: [{row, text, hasLink, ...}], column, count}
@@ -283,15 +328,19 @@ def get_html_table_values(column_title: str, table_index: int = 0):
 def _visible_table_wrappers(fr):
     """用页面命中测试选出未被浮层遮挡的 wrapper，再映射为 DrissionPage 元素。"""
     js = _HEADER_MAP_JS + r"""
-var wrappers = [].slice.call(document.querySelectorAll('.ant-table-wrapper'));
+var wrappers = [].slice.call(document.querySelectorAll(%s));
 var indexes = [];
-wrappers.forEach(function(wrapper, index) { if (duVisible(wrapper)) indexes.push(index); });
+wrappers.forEach(function(wrapper, index) {
+    var isNestedTable = (wrapper.tagName || '').toLowerCase() === 'table' &&
+        !!wrapper.closest('.ant-table-wrapper,.el-table,.arco-table,.semi-table,.MuiTableContainer-root');
+    if (!isNestedTable && duVisible(wrapper)) indexes.push(index);
+});
 return JSON.stringify(indexes);
-"""
+""" % json.dumps(_TABLE_WRAPPER_SELECTOR)
     try:
         raw = fr.run_js(js)
         indexes = json.loads(raw) if isinstance(raw, str) else raw
-        wrappers = fr.eles('c:.ant-table-wrapper', timeout=1) or []
+        wrappers = fr.eles('c:' + _TABLE_WRAPPER_SELECTOR, timeout=1) or []
         if not isinstance(indexes, list):
             return []
         return [wrappers[index] for index in indexes
@@ -311,8 +360,8 @@ def _table_wrapper(fr, table_index: int):
 
 def _business_rows(wrapper):
     body_table = (
-        wrapper.ele('c:.ant-table-body table', timeout=0.5)
-        or wrapper.ele('c:.ant-table-content table', timeout=0.5)
+        wrapper.ele('xpath:self::table', timeout=0)
+        or wrapper.ele('c:' + _BODY_TABLE_SELECTOR, timeout=0.5)
     )
     if not body_table:
         return []
@@ -331,9 +380,8 @@ def _get_col_indices(column_title: str, table_index: int, fr) -> dict:
     if not wrapper:
         return {"ok": False, "reason": "table not found at index %s" % table_index}
     header_table = (
-        wrapper.ele('c:.ant-table-header table', timeout=0.5)
-        or wrapper.ele('c:.ant-table-body table', timeout=0.5)
-        or wrapper.ele('c:.ant-table-content table', timeout=0.5)
+        wrapper.ele('xpath:self::table', timeout=0)
+        or wrapper.ele('c:' + _HEADER_TABLE_SELECTOR, timeout=0.5)
     )
     if not header_table:
         return {"ok": False, "reason": "header table not found"}
@@ -534,17 +582,15 @@ def get_html_table_data(table_index: int = 0):
 
     js = _HEADER_MAP_JS + r"""return (function(){
         var TI = %d;
-        var wrappers = [].slice.call(document.querySelectorAll('.ant-table-wrapper')).filter(duVisible);
+        var wrappers = duTableWrappers().filter(duVisible);
         var wrapper = wrappers[TI];
         if (!wrapper) return JSON.stringify({error: 'visible table not found at index ' + TI});
-        var tableEl = wrapper.querySelector('.ant-table');
-        if (!tableEl) return JSON.stringify({error: 'ant-table not found'});
-        var headerTable = tableEl.querySelector('.ant-table-header table') ||
-            tableEl.querySelector('.ant-table-body table') ||
-            tableEl.querySelector('.ant-table-content table');
+        var tableEl = duTableRoot(wrapper);
+        if (!tableEl) return JSON.stringify({error: 'DOM table not found'});
+        var headerTable = duHeaderTable(tableEl);
         if (!headerTable) return JSON.stringify({error: 'header table not found'});
         var headers = duLeafHeaders(headerTable).map(function(header) { return header.title; });
-        var bodyTable = tableEl.querySelector('.ant-table-body table') || tableEl.querySelector('.ant-table-content table');
+        var bodyTable = duBodyTable(tableEl);
         if (!bodyTable) return JSON.stringify({error: 'body table not found'});
         var rows = duBusinessRows(bodyTable);
         var data = [];

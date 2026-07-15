@@ -128,6 +128,35 @@ REMOVE_TEST_TYPE = os.environ.get("HL_REMOVE_TEST_TYPE", "").lower() in ("true",
 
 # 无头模式：CI/CD 等无图形环境场景。启用时跳过 Linux 图形环境探测，并加 --no-sandbox。
 HEADLESS = os.environ.get("HL_HEADLESS", "").lower() in ("true", "1", "yes")
+WARMUP_OCR = os.environ.get("DRISSIONPAGE_MCP_WARMUP_OCR", "true").lower() in (
+    "true", "1", "yes",
+)
+COMPONENT_RELOAD = os.environ.get(
+    "DRISSIONPAGE_MCP_COMPONENT_RELOAD", "false",
+).lower() in ("true", "1", "yes")
+DISCOVERY_MODE = os.environ.get(
+    "DRISSIONPAGE_MCP_DISCOVERY", "full",
+).strip().lower()
+if DISCOVERY_MODE not in {"full", "search"}:
+    DISCOVERY_MODE = "full"
+SEARCH_MAX_RESULTS = max(
+    1,
+    min(int(os.environ.get("DRISSIONPAGE_MCP_SEARCH_MAX_RESULTS", "5")), 20),
+)
+OBSERVABILITY = os.environ.get(
+    "DRISSIONPAGE_MCP_OBSERVABILITY", "true",
+).lower() in ("true", "1", "yes")
+INCLUDE_ERROR_TRACEBACK = os.environ.get(
+    "DRISSIONPAGE_MCP_ERROR_TRACEBACK", "false",
+).lower() in ("true", "1", "yes")
+RESPONSE_MAX_BYTES = max(
+    64_000,
+    int(os.environ.get("DRISSIONPAGE_MCP_RESPONSE_MAX_BYTES", "1000000")),
+)
+WAIT_TOOL_TIMEOUT = max(
+    5.0,
+    float(os.environ.get("DRISSIONPAGE_MCP_WAIT_TOOL_TIMEOUT", "45")),
+)
 
 # 会话刷新必须短超时、少重试，避免 MCP 单次工具调用被页面加载等待拖到外层超时。
 REFRESH_NAV_TIMEOUT = float(os.environ.get("HL_REFRESH_NAV_TIMEOUT", "10"))

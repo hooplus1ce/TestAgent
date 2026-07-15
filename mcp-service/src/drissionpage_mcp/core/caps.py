@@ -29,7 +29,8 @@ CAP_GROUPS = {
         # 连接与会话
         "connect", "refresh_session", "check_session", "set_target_env",
         # 导航与 frame
-        "enter_module", "get_active_frame", "detect_page_family", "scan_layer_content",
+        "enter_module", "get_active_frame", "detect_page_family", "activate_tool_groups",
+        "scan_layer_content",
         # 通用 DOM 原语
         "click", "click_xy", "input", "set_field_value", "insert_text", "hover", "set_date",
         # 页面理解
@@ -61,7 +62,7 @@ CAP_GROUPS = {
     ],
     "legacy": [
         # 遗留页能力通过统一 facade 暴露；分组便于裁剪工具面时保留双栈
-        "detect_page_family",
+        "detect_page_family", "activate_tool_groups",
         "scan_layer_content", "scan_form_fields", "select_option", "set_field_value",
         "scan_table", "get_table_values", "get_table_data", "get_all_table_data",
         "click_table_cell", "query_table", "table_action",
@@ -115,7 +116,7 @@ CAP_GROUPS = {
 ENTERPRISE_TOOLS = {
     # 浏览器、会话与模块导航
     "connect", "browser_tabs", "check_session", "refresh_session", "set_target_env",
-    "enter_module", "get_active_frame", "detect_page_family",
+    "enter_module", "get_active_frame", "detect_page_family", "activate_tool_groups",
     # 页面理解与统一交互
     "capture_page_model", "scan_filter_fields", "scan_form_fields",
     "scan_layer_content", "select_option", "set_field_value",
@@ -173,6 +174,27 @@ def get_tool_group(tool_name: str) -> str | None:
         if tool_name in tools:
             return cap
     return None
+
+
+def get_tool_groups(tool_name: str) -> set[str]:
+    """Return every capability group containing a public tool."""
+    return {
+        cap for cap, tools in CAP_GROUPS.items()
+        if tool_name in tools
+    }
+
+
+def get_tool_tags(tool_name: str) -> set[str]:
+    """Build FastMCP discovery tags from the existing capability contract."""
+    groups = get_tool_groups(tool_name)
+    tags = {f"cap:{group}" for group in groups}
+    if tool_name in ENTERPRISE_TOOLS:
+        tags.update({"profile:enterprise", "level:facade"})
+    elif "devtools" in groups:
+        tags.add("level:primitive")
+    else:
+        tags.add("level:advanced")
+    return tags
 
 
 def list_caps() -> dict:

@@ -7,7 +7,6 @@ requires-python = ">=3.11"
 dependencies = [
     "drissionpage-mcp",
     "openpyxl>=3.1.5",
-    "pandas>=3.0.3",
 ]
 
 [tool.uv]

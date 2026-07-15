@@ -10,40 +10,6 @@ import threading
 import time
 from unittest.mock import MagicMock, patch
 
-
-def _resource_text(result) -> str:
-    """Normalize FastMCP 3 ResourceResult and legacy list[Content] shapes."""
-    if result is None:
-        return ""
-    contents = getattr(result, "contents", None)
-    if contents is not None:
-        first = contents[0]
-        return getattr(first, "content", None) or getattr(first, "text", None) or str(first)
-    if isinstance(result, (list, tuple)) and result:
-        first = result[0]
-        return getattr(first, "content", None) or getattr(first, "text", None) or str(first)
-    return str(result)
-
-
-def _template_uri(template) -> str:
-    return (
-        getattr(template, "uri_template", None)
-        or getattr(template, "uriTemplate", None)
-        or ""
-    )
-
-
-def _tool_input_schema(tool) -> dict:
-    """FastMCP 3 FunctionTool uses parameters; SDK FastMCP used inputSchema."""
-    schema = getattr(tool, "parameters", None)
-    if schema is None:
-        schema = getattr(tool, "inputSchema", None)
-    if schema is None:
-        schema = getattr(tool, "input_schema", None)
-    assert isinstance(schema, dict), "tool input schema missing: %r" % (tool,)
-    return schema
-
-
 REMOVED_DUPLICATE_TOOLS = {
     "login_ocr",
     "expand_filter_area",
@@ -141,14 +107,14 @@ def test_resources_and_templates_are_exposed():
     } <= resource_uris
 
     templates = asyncio.run(server.mcp.list_resource_templates())
-    template_uris = {_template_uri(t) for t in templates}
+    template_uris = {t.uri_template for t in templates}
     assert "drissionpage-mcp://resources/{resource_path}" in template_uris
 
 
 def test_caps_resource_returns_json():
     from drissionpage_mcp import server
     contents = asyncio.run(server.mcp.read_resource("drissionpage-mcp://caps"))
-    data = json.loads(_resource_text(contents))
+    data = json.loads(contents.contents[0].content)
 
     from drissionpage_mcp.core import caps
 
@@ -171,7 +137,7 @@ def test_evidence_resource_template_reads_encoded_nested_file(monkeypatch, tmp_p
 
     contents = asyncio.run(server.mcp.read_resource(f"drissionpage-mcp://resources/{encoded}"))
 
-    assert _resource_text(contents) == "tag: body"
+    assert contents.contents[0].content == "tag: body"
 
 
 def test_drissionpage_caps_filters_public_tools():
@@ -245,7 +211,7 @@ def test_list_parameters_have_typed_items_schema():
         ("query_table", "column_titles"),
     ]
     for tool_name, field in checks:
-        prop = _tool_input_schema(tools[tool_name])["properties"][field]
+        prop = tools[tool_name].parameters["properties"][field]
         assert prop["items"]["type"] == "string"
 
 
@@ -253,9 +219,9 @@ def test_enterprise_facade_schemas_constrain_choice_parameters():
     from drissionpage_mcp import server
 
     tools = {tool.name: tool for tool in asyncio.run(server.mcp.list_tools())}
-    query_properties = _tool_input_schema(tools["query_table"])["properties"]
-    action_properties = _tool_input_schema(tools["table_action"])["properties"]
-    explore_properties = _tool_input_schema(tools["explore_action"])["properties"]
+    query_properties = tools["query_table"].parameters["properties"]
+    action_properties = tools["table_action"].parameters["properties"]
+    explore_properties = tools["explore_action"].parameters["properties"]
 
     assert set(query_properties["operation"]["enum"]) == {"values", "data", "find", "count", "row"}
     assert set(query_properties["kind"]["enum"]) == {"auto", "html", "vtable", "bootstrap"}
@@ -556,7 +522,7 @@ async def main():
         "has_explore_action": "explore_action" in {tool.name for tool in tools},
         "has_set_date": "set_date" in {tool.name for tool in tools},
         "has_select_date_range": "select_date_range" in {tool.name for tool in tools},
-        "set_date_schema": tool_schema(set_date),
+        "set_date_schema": next(tool.parameters for tool in tools if tool.name == "set_date"),
         "dash": server._normalize_date_value("2026-06-01"),
         "slash": server._normalize_date_value("2026/06/01"),
         "invalid": server._normalize_date_value("2026.06.01"),
@@ -1669,7 +1635,11 @@ def test_scan_controls_uses_drission_viewport_click_point():
         rect = SimpleNamespace(size=(80, 32), viewport_midpoint=(1152.2, 211.7))
 
         def attr(self, name):
-            return {"class": "el-button", "type": "button"}.get(name)
+            return {
+                "class": "el-button",
+                "type": "button",
+                "data-testid": "query-button",
+            }.get(name)
 
     class FakeTarget:
         def eles(self, locator, timeout=2):
@@ -1684,6 +1654,8 @@ def test_scan_controls_uses_drission_viewport_click_point():
     assert items[0]["viewportY"] == 211.7
     assert items[0]["coordinate_space"] == "top-viewport"
     assert items[0]["coord_source"] == "DrissionPage.Element.rect.viewport_midpoint"
+    assert items[0]["locator"] == "xpath://button[@data-testid='query-button']"
+    assert items[0]["locatorCandidates"][0] == items[0]["locator"]
 
 
 def test_listen_start_sets_http_listener_state_for_drissionpage_42():

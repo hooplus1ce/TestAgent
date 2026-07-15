@@ -86,6 +86,9 @@ def test_role_login_uses_only_role_credentials_and_hides_password(monkeypatch):
 
 def test_role_login_does_not_fall_back_to_default_credentials(monkeypatch):
     _prepare_role(monkeypatch)
+    username_env, password_env = role_sessions.credential_env_names("requester")
+    monkeypatch.delenv(username_env, raising=False)
+    monkeypatch.delenv(password_env, raising=False)
     monkeypatch.setenv("HL_USERNAME", "default-user")
     monkeypatch.setenv("HL_USERPWD", "default-secret")
 

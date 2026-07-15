@@ -38,10 +38,14 @@ def test_excel_auxiliary_sheet_uses_real_asset_inventory(tmp_path):
     source = tmp_path / "suite.json"
     source.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
 
-    module_info, cases, assets = exporter.load_testcases_from_json([str(source)])
+    module_info, cases, assets, filter_matrix, coverage_matrix = (
+        exporter.load_testcases_from_json([str(source)])
+    )
     target = exporter.build_excel(
         module_info, cases, output_dir=str(tmp_path), custom_filename="cases.xlsx",
         asset_inventory=assets,
+        filter_field_matrix=filter_matrix,
+        coverage_matrix=coverage_matrix,
     )
 
     workbook = load_workbook(target, read_only=True, data_only=True)

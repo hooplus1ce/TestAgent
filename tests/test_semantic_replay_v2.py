@@ -129,6 +129,70 @@ def test_set_field_value_prefers_latest_visible_overlay_field_in_iframe():
     assert latest_input.inputs == ["SUP-20260711"]
 
 
+def test_set_field_value_falls_back_to_framework_neutral_aria_control():
+    from drissionpage_mcp import server
+
+    control = _Input()
+
+    class GenericContext:
+        def eles(self, locator, timeout=0):
+            if "@aria-label" in locator:
+                return [control]
+            return []
+
+    tab = GenericContext()
+    with patch.object(server.browser_session, "get_tab", return_value=tab), \
+         patch.object(server.browser_session, "get_active_frame", return_value=None):
+        result = server.set_field_value(
+            "供应商编码", "SUP-20260711", in_frame=False, scope="page",
+        )
+
+    assert result["ok"] is True
+    assert result["adapter"] == "generic-dom"
+    assert control.inputs == ["SUP-20260711"]
+
+
+def test_generic_aria_select_uses_native_trigger_and_option_clicks():
+    from drissionpage_mcp.services import page_model
+
+    calls = []
+
+    class Element:
+        states = _States()
+
+        def __init__(self, text=""):
+            self.text = text
+
+        def ele(self, *_args, **_kwargs):
+            return None
+
+        def click(self, **kwargs):
+            calls.append((self.text or "trigger", kwargs.get("by_js")))
+
+    trigger = Element()
+    option = Element("已审核")
+
+    class Target:
+        def eles(self, locator, timeout=0):
+            if locator.startswith("css:[role='option']"):
+                return [option]
+            if "@role='combobox'" in locator:
+                return [trigger]
+            return []
+
+    result = page_model._select_generic_combobox_option(
+        [("top", Target())],
+        field_name="审批状态",
+        option_text="已审核",
+        select_index=0,
+        timeout=1.0,
+    )
+
+    assert result["ok"] is True
+    assert result["adapter"] == "generic-aria-select"
+    assert calls == [("trigger", False), ("已审核", False)]
+
+
 def test_semantic_button_prefers_latest_visible_modal_stable_xpath():
     from drissionpage_mcp import server
     modal_data = {

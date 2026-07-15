@@ -148,7 +148,9 @@ PAGINATION = '.ant-pagination'
 INTERACTIVE_CONTROLS = (
     'button,a[href],input,select,textarea,'
     '[role=button],[role=menuitem],[role=tab],[role=checkbox],'
-    '[role=switch],[role=link],[onclick],.el-button,.ant-btn,[class*=btn]'
+    '[role=switch],[role=link],[role=combobox],[role=option],[role=radio],'
+    '[contenteditable=true],[onclick],.el-button,.ant-btn,.arco-btn,.semi-button,'
+    '.MuiButtonBase-root,[class*=btn]'
 )
 
 # 页面快照使用组件根，MutationObserver 使用最早挂载的内容节点；二者用途不同，不能合并。

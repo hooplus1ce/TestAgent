@@ -5,6 +5,7 @@ VTable 工具(内部 frame.run_js 注入 bundled JS)、会话维持、弹窗检�
 
 启动：uv run --package drissionpage-mcp -m drissionpage_mcp  (stdio 传输)
 """
+import asyncio
 import functools
 import importlib.metadata
 import threading
@@ -18,10 +19,19 @@ import sys
 import time
 import tempfile
 from datetime import datetime
+from pathlib import Path
 from typing import Literal
 
 from fastmcp import FastMCP
-from mcp.types import ToolAnnotations
+from fastmcp.dependencies import CurrentContext
+from fastmcp.server.context import Context
+from fastmcp.server.lifespan import lifespan
+from fastmcp.server.middleware.error_handling import ErrorHandlingMiddleware
+from fastmcp.server.middleware.logging import StructuredLoggingMiddleware
+from fastmcp.server.middleware.response_limiting import ResponseLimitingMiddleware
+from fastmcp.server.middleware.timing import DetailedTimingMiddleware
+from fastmcp.server.providers import FileSystemProvider
+from fastmcp.server.transforms.search import RegexSearchTransform
 from DrissionPage.common import Keys
 
 from . import __version__
@@ -57,17 +67,96 @@ logging.basicConfig(
 )
 logger = logging.getLogger("drissionpage-mcp")
 
-# FastMCP 3.x：version 为公开构造参数；不再写私有 _mcp_server.version
-mcp = FastMCP("drissionpage-mcp", version=__version__)
-_fastmcp_tool = mcp.tool
 
-# ==================== 服务启动预热 ====================
-# 预加载 OCR 模型，避免首次 refresh_session 调用时有模型加载延迟
-try:
-    session_auth.warmup_ocr()
-    logger.info("warmup_ocr: OCR model loaded")
-except Exception as exc:
-    logger.warning("warmup_ocr skipped (%s); first refresh_session may load model lazily", exc)
+@lifespan
+async def app_lifespan(server: FastMCP):
+    """Initialize optional heavyweight services when the MCP process starts."""
+    ocr_warmed = False
+    if config.WARMUP_OCR:
+        try:
+            session_auth.warmup_ocr()
+            ocr_warmed = True
+            logger.info("warmup_ocr: OCR model loaded")
+        except Exception as exc:
+            logger.warning(
+                "warmup_ocr skipped (%s); first refresh_session may load model lazily",
+                exc,
+            )
+    else:
+        logger.info("warmup_ocr disabled for this server process")
+    yield {"ocr_warmed": ocr_warmed}
+
+
+# FastMCP 3.x：按业务域挂载独立组件 Provider，保留部署级 capability 边界。
+core_component_provider = FileSystemProvider(
+    Path(__file__).parent / "components" / "core",
+    reload=config.COMPONENT_RELOAD,
+)
+roles_component_provider = FileSystemProvider(
+    Path(__file__).parent / "components" / "roles",
+    reload=config.COMPONENT_RELOAD,
+)
+component_providers = []
+if caps.is_tool_enabled("detect_page_family"):
+    component_providers.append(core_component_provider)
+if caps.is_tool_enabled("role_session_list"):
+    component_providers.append(roles_component_provider)
+_DISCOVERY_ALWAYS_VISIBLE = [
+    "connect",
+    "browser_tabs",
+    "check_session",
+    "refresh_session",
+    "get_active_frame",
+    "detect_page_family",
+    "capture_page_model",
+    "explore_action",
+    "activate_tool_groups",
+]
+server_transforms = []
+if config.DISCOVERY_MODE == "search":
+    server_transforms.append(
+        RegexSearchTransform(
+            max_results=config.SEARCH_MAX_RESULTS,
+            always_visible=_DISCOVERY_ALWAYS_VISIBLE,
+        )
+    )
+server_middleware = [
+    ErrorHandlingMiddleware(
+        logger=logger,
+        include_traceback=config.INCLUDE_ERROR_TRACEBACK,
+        transform_errors=True,
+    ),
+    ResponseLimitingMiddleware(
+        max_size=config.RESPONSE_MAX_BYTES,
+        tools=[
+            "capture_page_model",
+            "dom_tree",
+            "get_all_table_data",
+            "run_test_cases",
+            "scan_page_elements",
+            "scan_table",
+        ],
+    ),
+]
+if config.OBSERVABILITY:
+    server_middleware.extend([
+        StructuredLoggingMiddleware(
+            logger=logger,
+            include_payloads=False,
+            include_payload_length=True,
+            estimate_payload_tokens=True,
+        ),
+        DetailedTimingMiddleware(logger=logger),
+    ])
+mcp = FastMCP(
+    "drissionpage-mcp",
+    version=__version__,
+    lifespan=app_lifespan,
+    providers=component_providers,
+    transforms=server_transforms,
+    middleware=server_middleware,
+)
+_fastmcp_tool = mcp.tool
 
 
 _READ_ONLY_TOOLS = {
@@ -125,44 +214,50 @@ _IDEMPOTENT_WRITE_TOOLS = {
     "browser_list_caps",
 }
 
+_TOOL_TIMEOUTS = {
+    "listen_wait": config.WAIT_TOOL_TIMEOUT,
+    "listen_ws_wait": config.WAIT_TOOL_TIMEOUT,
+    "observe_wait": config.WAIT_TOOL_TIMEOUT,
+}
 
-def _tool_annotations_for(tool_name: str, fn) -> ToolAnnotations:
+
+def _tool_annotations_for(tool_name: str, fn) -> dict[str, bool]:
     """Infer MCP tool annotations from the local synchronization contract."""
     if tool_name in _READ_ONLY_TOOLS:
-        return ToolAnnotations(
-            readOnlyHint=True,
-            destructiveHint=False,
-            idempotentHint=True,
-            openWorldHint=True,
-        )
+        return {
+            "readOnlyHint": True,
+            "destructiveHint": False,
+            "idempotentHint": True,
+            "openWorldHint": True,
+        }
 
     if tool_name in _ADDITIVE_TOOLS:
-        return ToolAnnotations(
-            readOnlyHint=False,
-            destructiveHint=False,
-            idempotentHint=tool_name in _IDEMPOTENT_WRITE_TOOLS,
-            openWorldHint=True,
-        )
+        return {
+            "readOnlyHint": False,
+            "destructiveHint": False,
+            "idempotentHint": tool_name in _IDEMPOTENT_WRITE_TOOLS,
+            "openWorldHint": True,
+        }
 
     access = getattr(fn, "_du_access", "")
     if access == "read":
-        return ToolAnnotations(
-            readOnlyHint=True,
-            destructiveHint=False,
-            idempotentHint=True,
-            openWorldHint=True,
-        )
+        return {
+            "readOnlyHint": True,
+            "destructiveHint": False,
+            "idempotentHint": True,
+            "openWorldHint": True,
+        }
 
-    return ToolAnnotations(
-        readOnlyHint=False,
-        destructiveHint=True,
-        idempotentHint=tool_name in _IDEMPOTENT_WRITE_TOOLS,
-        openWorldHint=True,
-    )
+    return {
+        "readOnlyHint": False,
+        "destructiveHint": True,
+        "idempotentHint": tool_name in _IDEMPOTENT_WRITE_TOOLS,
+        "openWorldHint": True,
+    }
 
 
 def _cap_aware_tool(*args, **kwargs):
-    """Register tools allowed by the active profile and capability selection."""
+    """Register enabled tools with FastMCP discovery and risk tags."""
     def register(fn):
         explicit_name = kwargs.get("name")
         if args and isinstance(args[0], str):
@@ -170,8 +265,21 @@ def _cap_aware_tool(*args, **kwargs):
         tool_name = explicit_name or getattr(fn, "__name__", "")
         if caps.is_tool_enabled(tool_name):
             tool_kwargs = dict(kwargs)
+            if tool_kwargs.get("timeout") is None and tool_name in _TOOL_TIMEOUTS:
+                tool_kwargs["timeout"] = _TOOL_TIMEOUTS[tool_name]
             if tool_kwargs.get("annotations") is None:
                 tool_kwargs["annotations"] = _tool_annotations_for(tool_name, fn)
+            annotations = tool_kwargs["annotations"]
+            tags = set(tool_kwargs.get("tags") or ())
+            tags.update(caps.get_tool_tags(tool_name))
+            if isinstance(annotations, dict):
+                if annotations.get("readOnlyHint"):
+                    tags.add("risk:read")
+                elif annotations.get("destructiveHint"):
+                    tags.add("risk:destructive")
+                else:
+                    tags.add("risk:write")
+            tool_kwargs["tags"] = tags
             decorator = _fastmcp_tool(*args, **tool_kwargs)
             return decorator(fn)
         logger.debug("Skipping MCP tool %s; disabled by MCP profile/capabilities", tool_name)
@@ -211,6 +319,44 @@ def write_synchronized(fn):
     return wrapper
 
 
+def _role_operation(operation, role_id: str, **kwargs) -> dict:
+    """Run a role service operation for internal workflow dispatch."""
+    try:
+        return operation(role_id, **kwargs)
+    except ValueError as exc:
+        return {"ok": False, "reason": str(exc)}
+
+
+@write_synchronized
+def role_session_open(role_id: str, proxy: str = None) -> dict:
+    return _role_operation(role_sessions.open_role, role_id, proxy=proxy)
+
+
+@write_synchronized
+def role_session_login(role_id: str) -> dict:
+    return _role_operation(role_sessions.login_role, role_id)
+
+
+@write_synchronized
+def role_session_start(role_id: str) -> dict:
+    return _role_operation(role_sessions.start_role, role_id)
+
+
+@write_synchronized
+def role_session_activate(role_id: str) -> dict:
+    return _role_operation(role_sessions.activate_role, role_id)
+
+
+@read_synchronized
+def role_session_list() -> dict:
+    return {"ok": True, "roles": role_sessions.list_roles()}
+
+
+@write_synchronized
+def role_session_close(role_id: str) -> dict:
+    return _role_operation(role_sessions.close_role, role_id)
+
+
 @mcp.resource(
     "drissionpage-mcp://caps",
     name="drissionpage-mcp caps",
@@ -231,7 +377,7 @@ def caps_resource() -> str:
 )
 def context_resource() -> str:
     packages = {}
-    for package_name in ("fastmcp", "mcp", "DrissionPage"):
+    for package_name in ("fastmcp", "DrissionPage"):
         try:
             packages[package_name] = importlib.metadata.version(package_name)
         except importlib.metadata.PackageNotFoundError:
@@ -457,31 +603,6 @@ def scan_filter_fields() -> dict:
 
 @mcp.tool()
 @read_synchronized
-def detect_page_family(include_top: bool = True, include_frame: bool = True) -> dict:
-    """探测当前页面族（壳层 AntD SPA / 遗留 jQuery+Bootstrap / VTable 业务页）。
-
-    返回 family、confidence、preferred_table_kind、adapters，供 scan_table/observe
-    等 facade 路由；进入模块后建议先调用一次。
-    """
-    return page_family.detect_page_family(
-        include_top=include_top, include_frame=include_frame,
-    )
-
-
-@mcp.tool()
-@read_synchronized
-def scan_layer_content(layer_index: int = -1, timeout: float = 3.0) -> dict:
-    """扫描可见 layer.js 弹层内容（自动进入嵌套 iframe 表单）。
-
-    返回 title/fields/buttons/content_url。编辑账号、修改密码等遗留弹层用此工具
-    或 scan_form_fields(scope='layer')。
-    """
-    from .services import layer_modal as _layer_modal
-    return _layer_modal.scan_layer_content(layer_index=layer_index, timeout=timeout)
-
-
-@mcp.tool()
-@read_synchronized
 def get_active_frame() -> dict:
     """获取当前可见 tabpanel 内的业务 iframe。返回 {ok, url, tab_name}。"""
     fr = browser_session.get_active_frame()
@@ -685,6 +806,30 @@ def _element_text(ele) -> str:
     return " ".join(text.split())[:40]
 
 
+def _element_locator_candidates(ele) -> list[str]:
+    """Build framework-neutral locators ordered from stable attributes to text."""
+    tag = str(getattr(ele, "tag", "") or "*").lower()
+    candidates = []
+    for attr_name in ("data-testid", "data-test", "id", "name", "aria-label"):
+        value = _attr(ele, attr_name)
+        if value:
+            candidates.append(
+                "xpath://%s[@%s=%s]" % (tag, attr_name, _xpath_literal(value))
+            )
+    placeholder = _attr(ele, "placeholder")
+    if placeholder and tag in {"input", "textarea"}:
+        candidates.append(
+            "xpath://%s[@placeholder=%s]" % (tag, _xpath_literal(placeholder))
+        )
+    text = _element_text(ele)
+    if text and (
+        tag in {"button", "a", "option"}
+        or _attr(ele, "role") in {"button", "link", "menuitem", "tab", "option"}
+    ):
+        candidates.extend(_clickable_text_locators(text))
+    return list(dict.fromkeys(candidates))
+
+
 def _scan_controls_in_context(target, frame_label: str, start_seq: int, max_items: int):
     """Scan visible controls and return top-viewport center coordinates.
 
@@ -714,7 +859,8 @@ def _scan_controls_in_context(target, frame_label: str, start_seq: int, max_item
         role = _attr(ele, "role") or ""
         typ = _attr(ele, "type") or role
         disabled = bool(_attr(ele, "disabled") or _attr(ele, "aria-disabled") == "true")
-        out.append({
+        locator_candidates = _element_locator_candidates(ele)
+        item = {
             "ref": f"e{seq}",
             "frame": frame_label,
             "tag": ele.tag,
@@ -729,7 +875,11 @@ def _scan_controls_in_context(target, frame_label: str, start_seq: int, max_item
             "viewportY": round(float(vy), 1),
             "coordinate_space": "top-viewport",
             "coord_source": "DrissionPage.Element.rect.viewport_midpoint",
-        })
+        }
+        if locator_candidates:
+            item["locator"] = locator_candidates[0]
+            item["locatorCandidates"] = locator_candidates
+        out.append(item)
     return out, seq
 
 
@@ -890,7 +1040,8 @@ def _click_text_by_js(locator: str, in_frame: bool = True) -> dict | None:
 @read_synchronized
 def scan_page_elements(include_iframe: bool = True, max_items: int = 200, filename: str = None) -> dict:
     """扫描页面所有可见交互控件(button/a/input/role=*/canvas)，递归穿透同源 iframe，
-    按 frame 分组返回，含可直接传给 click_xy 的顶层视口坐标和稳定引用 ref ID（e1/e2/...）。
+    按 frame 分组返回，含可直接传给 click/input 的 locatorCandidates、顶层视口坐标和扫描 ref。
+    locatorCandidates 优先 data-testid/data-test/id/name/ARIA，再回退可点击文本，适配常见组件框架。
     进入模块后第一件事。
     max_items 限制返回元素数（超出截断并标 _truncated），避免吃尽上下文。
     filename 提供时保存到文件，不返回大 JSON。"""
@@ -1395,8 +1546,13 @@ def _semantic_field_candidates(target, field_name: str, area: str, timeout: floa
         "[contains(normalize-space(.), %s)]" % label_lit
     )
     form_item = (
-        "//div[contains(concat(' ', normalize-space(@class), ' '), ' ant-form-item ')]"
-        "[%s]" % label_predicate
+        "//*[contains(concat(' ', normalize-space(@class), ' '), ' ant-form-item ') or "
+        "contains(concat(' ', normalize-space(@class), ' '), ' el-form-item ') or "
+        "contains(concat(' ', normalize-space(@class), ' '), ' arco-form-item ') or "
+        "contains(concat(' ', normalize-space(@class), ' '), ' ivu-form-item ') or "
+        "contains(concat(' ', normalize-space(@class), ' '), ' semi-form-field ') or "
+        "contains(concat(' ', normalize-space(@class), ' '), ' form-group ') or "
+        "contains(@class, 'MuiFormControl-root')][%s]" % label_predicate
     )
     if area == "modal":
         locator = (
@@ -1420,6 +1576,45 @@ def _semantic_field_candidates(target, field_name: str, area: str, timeout: floa
         return [item for item in target.eles(locator, timeout=min(timeout, 2.0)) if _element_is_visible(item)]
     except Exception:
         return []
+
+
+def _generic_field_controls(target, field_name: str, area: str, timeout: float) -> list:
+    """Resolve native/ARIA fields when no component-specific form item matched."""
+    literal = _xpath_literal(field_name)
+    control = (
+        "self::input[not(@type='hidden')] or self::textarea or "
+        "@contenteditable='true' or @role='textbox' or @role='combobox'"
+    )
+    roots = {
+        "modal": "//*[@role='dialog' or contains(@class,'modal') or contains(@class,'dialog')]",
+        "drawer": "//*[contains(@class,'drawer')]",
+        "filter": "//*[contains(@class,'filter') or contains(@class,'query') or contains(@class,'search')]",
+    }
+    root = roots.get(area, "")
+    prefix = root + "//" if root else "//"
+    label_match = "normalize-space(.)=%s" % literal
+    expressions = [
+        "%s*[(%s) and (@aria-label=%s or @placeholder=%s or @name=%s)]"
+        % (prefix, control, literal, literal, literal),
+        "%s*[(%s) and @id=//label[%s]/@for]"
+        % (prefix, control, label_match),
+        "%slabel[%s]//*[%s]" % (prefix, label_match, control),
+    ]
+    try:
+        found = target.eles(
+            "xpath:" + " | ".join(expressions), timeout=min(timeout, 1.0)
+        ) or []
+    except Exception:
+        return []
+    visible = []
+    seen = set()
+    for item in found:
+        identity = id(item)
+        if identity in seen or not _element_is_visible(item):
+            continue
+        seen.add(identity)
+        visible.append(item)
+    return visible
 
 
 def _native_element_input(control, value: str, clear: bool, timeout: float) -> None:
@@ -1565,6 +1760,15 @@ def set_field_value(field_name: str, value: str, in_frame: bool = True,
                     continue
                 index = min(select_index, len(controls) - 1)
                 return apply_control(controls[index], scope_name, area, index)
+            controls = _generic_field_controls(
+                context, field_name, area, remaining(1.0)
+            )
+            if controls:
+                index = min(select_index, len(controls) - 1)
+                result = apply_control(controls[index], scope_name, area, index)
+                if result.get("ok"):
+                    result["adapter"] = "generic-dom"
+                return result
 
     if "filter" in areas:
         for scope_name, context in contexts:
@@ -3798,7 +4002,6 @@ def _browser_ready_gate(module_text: str) -> dict:
         return {"ok": False, "reason": "%s: %s" % (type(exc).__name__, exc)}
 
 
-@mcp.tool()
 @write_synchronized
 def run_test_cases(case_file: str, filename: str = None) -> dict:
     """回放 automation_recipe；支持 role_session_* 步骤进行顺序式审批回归。"""
@@ -4102,6 +4305,29 @@ def run_test_cases(case_file: str, filename: str = None) -> dict:
     counts = {state: sum(1 for item in execution["results"] if item.get("status") == state)
               for state in ("passed", "failed", "xfailed", "skipped")}
     return {"ok": True, "saved_to": path, "counts": counts, "execution": sanitized_execution}
+
+
+@mcp.tool(name="run_test_cases")
+async def _run_test_cases_tool(
+    case_file: str,
+    filename: str = None,
+    ctx: Context = CurrentContext(),
+) -> dict:
+    """回放 automation_recipe，并在批量执行期间向 Agent 报告进度。"""
+    await ctx.report_progress(0, 100, "正在校验测试用例并准备浏览器回放")
+    await ctx.info("run_test_cases started", logger_name="drissionpage-mcp.workflow")
+    result = await asyncio.to_thread(run_test_cases, case_file, filename)
+    if result.get("ok"):
+        counts = result.get("counts", {})
+        message = "回放完成：通过 %s，失败 %s" % (
+            counts.get("passed", 0),
+            counts.get("failed", 0),
+        )
+    else:
+        message = "回放未完成：%s" % result.get("reason", "未知原因")
+    await ctx.report_progress(100, 100, message)
+    await ctx.info(message, logger_name="drissionpage-mcp.workflow")
+    return result
 
 
 @mcp.tool()
@@ -6240,60 +6466,6 @@ def close_context(context_id: int) -> dict:
 def list_contexts() -> dict:
     """列出所有已注册的浏览器上下文（配合 new_context）。"""
     return {"ok": True, "contexts": browser_session.list_contexts()}
-
-
-def _role_tool(operation, role_id: str, **kwargs) -> dict:
-    """把角色标识校验失败转为 MCP 可读的结构化响应。"""
-    try:
-        return operation(role_id, **kwargs)
-    except ValueError as exc:
-        return {"ok": False, "reason": str(exc)}
-
-
-@mcp.tool()
-@write_synchronized
-def role_session_open(role_id: str, proxy: str = None) -> dict:
-    """为逻辑角色创建独立 BrowserContext，隔离 Cookie、localStorage 与登录态。
-
-    role_id 使用英文逻辑名，例如 requester、dept_manager、finance_approver；创建后调用
-    role_session_login 注入该角色的环境变量凭据。
-    """
-    return _role_tool(role_sessions.open_role, role_id, proxy=proxy)
-
-
-@mcp.tool()
-@write_synchronized
-def role_session_login(role_id: str) -> dict:
-    """在角色独立 Context 内登录，只读取该角色的环境变量账号密码。"""
-    return _role_tool(role_sessions.login_role, role_id)
-
-
-@mcp.tool()
-@write_synchronized
-def role_session_start(role_id: str) -> dict:
-    """创建并登录角色独立 Context；失败时自动清理，避免残留半初始化会话。"""
-    return _role_tool(role_sessions.start_role, role_id)
-
-
-@mcp.tool()
-@write_synchronized
-def role_session_activate(role_id: str) -> dict:
-    """切换通用浏览器工具到指定角色，供顺序式审批回归流程使用。"""
-    return _role_tool(role_sessions.activate_role, role_id)
-
-
-@mcp.tool()
-@read_synchronized
-def role_session_list() -> dict:
-    """列出各角色 Context 与登录配置状态；不会返回账号密码、Cookie 或令牌。"""
-    return {"ok": True, "roles": role_sessions.list_roles()}
-
-
-@mcp.tool()
-@write_synchronized
-def role_session_close(role_id: str) -> dict:
-    """关闭角色专属 Context，清除该角色的内存映射和浏览器登录态。"""
-    return _role_tool(role_sessions.close_role, role_id)
 
 
 @mcp.tool()

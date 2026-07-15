@@ -58,6 +58,12 @@ class FakeTab:
 
 
 def _patch_login(monkeypatch, session_auth, tab):
+    monkeypatch.setattr(
+        session_auth.config,
+        "SCM_ADMIN_URL",
+        "https://scm.example.com/scm-static/scm-admin/scm-admin/#/",
+    )
+    monkeypatch.setattr(session_auth.config, "SCM_ACCESS_DOMAIN", ".example.com")
     monkeypatch.setattr(session_auth.browser_session, "get_tab", lambda: tab)
     monkeypatch.setattr(
         session_auth,
@@ -93,7 +99,7 @@ def test_login_ocr_uses_single_bounded_navigation_from_other_host(monkeypatch):
     assert result["ok"] is True
     assert result["navigation"]["skipped"] is False
     assert len(tab.get_calls) == 1
-    assert tab.get_calls[0]["args"] == (session_auth.SCM_ADMIN_URL,)
+    assert tab.get_calls[0]["args"] == (session_auth.config.SCM_ADMIN_URL,)
     assert tab.get_calls[0]["kwargs"]["retry"] == 0
     assert tab.get_calls[0]["kwargs"]["interval"] == 0
     assert tab.get_calls[0]["kwargs"]["timeout"] == session_auth.config.REFRESH_NAV_TIMEOUT

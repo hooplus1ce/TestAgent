@@ -76,6 +76,26 @@ def test_score_shell_markers_without_business_table():
     assert page_family._preferred_table_kind(family, probe) == "auto"
 
 
+def test_score_modern_component_library_uses_generic_dom_adapter():
+    probe = {
+        "signals": {
+            "modern_components": True,
+            "generic_table": True,
+            "vtable": False,
+            "bootstrap_table": False,
+            "ant_table": False,
+        },
+        "counts": {"element_ui": 4, "mui": 0, "arco": 0, "semi": 0},
+        "globals": {},
+    }
+    family, confidence, reasons = page_family._score_family(probe)
+    assert family == page_family.FAMILY_MODERN
+    assert confidence >= 0.65
+    assert "modern component library" in reasons
+    assert page_family._preferred_table_kind(family, probe) == "html"
+    assert "generic_dom" in page_family._adapters_for(family, probe)
+
+
 def test_weak_probe_returns_unknown():
     family, confidence, _ = page_family._score_family(
         {"signals": {}, "counts": {}, "globals": {}}

@@ -1241,6 +1241,103 @@ return JSON.stringify({ok:true, count:pages.length, paginations:pages});
     return _run_json(target, js, {"ok": False, "reason": "scan failed"})
 
 
+def _select_generic_combobox_option(
+    candidates,
+    field_name: str,
+    option_text: str,
+    select_index: int,
+    timeout: float,
+) -> dict:
+    """Select an ARIA/Element/Arco/Semi/MUI option with native element clicks."""
+    deadline = time.monotonic() + max(float(timeout or 0), 0.0)
+
+    def remaining(cap=None):
+        value = max(deadline - time.monotonic(), 0.0)
+        return min(value, cap) if cap is not None else value
+
+    label = str(field_name or "").strip()
+    expected = str(option_text or "").strip()
+    literal = _xpath_literal(label)
+    direct = (
+        "xpath://*[@role='combobox' and "
+        "(@aria-label=%s or @placeholder=%s or @name=%s or @id=//label[normalize-space(.)=%s]/@for)]"
+        % (literal, literal, literal, literal)
+    )
+    form_item = (
+        "xpath://*[contains(@class,'el-form-item') or contains(@class,'arco-form-item') "
+        "or contains(@class,'semi-form-field') or contains(@class,'MuiFormControl-root')]"
+        "[.//label[contains(normalize-space(.),%s)]]"
+        "//*[@role='combobox' or contains(@class,'el-select') or "
+        "contains(@class,'arco-select') or contains(@class,'semi-select')]" % literal
+    )
+    option_locator = (
+        "css:[role='option'],.el-select-dropdown__item,.arco-select-option,"
+        ".semi-select-option,.MuiMenuItem-root"
+    )
+    last_reason = "generic combobox not found"
+    for scope_name, target in candidates:
+        triggers = []
+        for locator in (direct, form_item):
+            try:
+                triggers.extend(target.eles(locator, timeout=remaining(0.4)) or [])
+            except Exception:
+                continue
+        triggers = [
+            item for item in triggers
+            if getattr(getattr(item, "states", None), "is_displayed", True)
+        ]
+        if not triggers:
+            continue
+        trigger = triggers[min(select_index, len(triggers) - 1)]
+        try:
+            opener = trigger.ele(
+                "css:[role='combobox'],input,.el-select__wrapper,.arco-select-view,"
+                ".semi-select-selection,.MuiSelect-select",
+                timeout=remaining(0.2),
+            ) or trigger
+            opener.click(by_js=False, timeout=remaining(2.0), wait_stop=False)
+        except Exception as exc:
+            last_reason = "generic combobox click failed: %s" % exc
+            continue
+
+        options = []
+        while remaining() > 0:
+            try:
+                options = [
+                    item for item in (target.eles(option_locator, timeout=remaining(0.3)) or [])
+                    if getattr(getattr(item, "states", None), "is_displayed", True)
+                    and getattr(getattr(item, "states", None), "is_enabled", True)
+                ]
+            except Exception:
+                options = []
+            if options:
+                break
+            time.sleep(min(0.05, remaining()))
+        texts = [(str(getattr(item, "text", "") or "").strip(), item) for item in options]
+        exact = [item for text, item in texts if text == expected]
+        partial = [item for text, item in texts if expected and expected in text]
+        matches = exact or partial
+        if len(matches) != 1:
+            last_reason = (
+                "generic option is ambiguous: %s" if len(matches) > 1
+                else "generic option not found: %s"
+            ) % expected
+            continue
+        try:
+            matches[0].click(by_js=False, timeout=remaining(2.0), wait_stop=False)
+            return {
+                "ok": True,
+                "scope": scope_name,
+                "adapter": "generic-aria-select",
+                "field_name": label,
+                "option_text": expected,
+                "available": [text for text, _ in texts[:50]],
+            }
+        except Exception as exc:
+            last_reason = "generic option click failed: %s" % exc
+    return {"ok": False, "reason": last_reason}
+
+
 def select_option(
     field_name: str,
     option_text: str,
@@ -1362,6 +1459,16 @@ def select_option(
             container_anchor = column
 
     if select_element is None or target is None:
+        generic = _select_generic_combobox_option(
+            candidates,
+            field_name=field_name,
+            option_text=option_text,
+            select_index=select_index,
+            timeout=remaining(),
+        )
+        if generic.get("ok"):
+            generic["fallback_from"] = "ant-select"
+            return generic
         # Ant Select 未命中时回退遗留 bootstrap-select / 原生 select（含 layer）
         legacy = bootstrap_select.select_bootstrap_option(
             field_name=field_name,
@@ -1377,6 +1484,7 @@ def select_option(
             "ok": False,
             "reason": "select not found for field: %s" % field_name,
             "ant_reason": "select not found for field: %s" % field_name,
+            "generic_reason": generic.get("reason"),
             "legacy_reason": legacy.get("reason"),
             "legacy_available": legacy.get("available"),
         }

@@ -1,4 +1,4 @@
-"""Console entry point for the stdio MCP server."""
+"""Module entry point for the stdio MCP server."""
 
 import os
 from pathlib import Path

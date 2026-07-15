@@ -37,7 +37,7 @@ MCP client 配置示例：
   "mcpServers": {
     "drissionpage-mcp": {
       "command": "uv",
-      "args": ["run", "--package", "drissionpage-mcp", "drissionpage-mcp"],
+      "args": ["run", "--package", "drissionpage-mcp", "-m", "drissionpage_mcp"],
       "env": {
         "DRISSIONPAGE_MCP_PROFILE": "full",
         "DRISSIONPAGE_MCP_CAPS": "all"
