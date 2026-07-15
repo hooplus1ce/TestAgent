@@ -149,11 +149,11 @@ def test_ui_contract_includes_layer_roots():
     assert "layer" in ui_contract.OVERLAY_CLOSE or "layui-layer-close" in ui_contract.OVERLAY_CLOSE
 
 
-def test_dual_stack_tools_registered_in_caps():
-    from drissionpage_mcp.core import caps
+def test_dual_stack_tools_registered_in_metadata():
+    from drissionpage_mcp.core import tool_metadata
 
     exposed = set()
-    for tools in caps.CAP_GROUPS.values():
+    for tools in tool_metadata.CAP_GROUPS.values():
         exposed.update(tools)
     for name in (
         "detect_page_family",
@@ -170,10 +170,10 @@ def test_dual_stack_tools_registered_in_caps():
         "query_table",
     ):
         assert name in exposed
-    assert "detect_page_family" in caps.ENTERPRISE_TOOLS
-    assert "scan_layer_content" in caps.ENTERPRISE_TOOLS
-    assert "set_field_value" in caps.ENTERPRISE_TOOLS
-    assert "legacy" in caps.CAP_GROUPS
+    assert "detect_page_family" in tool_metadata.ENTERPRISE_TOOLS
+    assert "scan_layer_content" in tool_metadata.ENTERPRISE_TOOLS
+    assert "set_field_value" in tool_metadata.ENTERPRISE_TOOLS
+    assert "legacy" in tool_metadata.CAP_GROUPS
 
 
 def test_public_table_facades_use_dual_stack_helpers():

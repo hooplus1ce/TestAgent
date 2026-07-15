@@ -556,7 +556,10 @@ return (function(){
 
 
 def click_bootstrap_row_selection(row: int = 0, table_index: int = 0) -> dict:
-    """勾选 Bootstrap Table 行复选框（btSelectItem）。"""
+    """勾选 Bootstrap Table 行复选框（btSelectItem）。
+    
+    检测到 layer 遮罩时返回错误，避免弹窗干扰行选择。
+    """
     row, reason = _nonnegative(row, "row")
     if reason:
         return {"ok": False, "reason": reason}
@@ -566,6 +569,12 @@ def click_bootstrap_row_selection(row: int = 0, table_index: int = 0) -> dict:
     fr = _get_frame()
     if fr is None:
         return {"ok": False, "reason": "未找到活动 iframe"}
+    # 遮罩层检测：layer 弹窗遮挡表格时拒绝操作
+    try:
+        if fr.wait.eles_loaded("t:div@@class:layui-layer-shade", timeout=0.5, raise_err=False):
+            return {"ok": False, "reason": "检测到 layer 弹窗遮罩层，请先关闭弹窗后再选择行"}
+    except Exception:
+        pass
     js = _HELPER_JS + r"""
 return (function(){
     var TI = %d, ROW = %d;
@@ -586,10 +595,17 @@ return (function(){
             return {"ok": False, "reason": (meta or {}).get("error", "定位复选框失败")}
         cb = fr.ele("css:input[data-du-bt-select='1']", timeout=1)
         if not cb:
+            # 回退：用 data-index 直接定位勾选框
+            data_index = meta.get("dataIndex")
+            if data_index is not None:
+                try:
+                    cb = fr.ele("css:tr[data-index='%s'] input[name='btSelectItem'], tr[data-index='%s'] input[type='checkbox']" % (data_index, data_index), timeout=0.5)
+                except Exception:
+                    cb = None
+        if not cb:
             return {"ok": False, "reason": "row checkbox element not found"}
         try:
             if not cb.wait.clickable(timeout=1.0, raise_err=False):
-                # bootstrap-table 有时要点父级
                 parent = fr.ele("css:td.bs-checkbox input[data-du-bt-select='1']", timeout=0.2)
                 (parent or cb).click(by_js=True, timeout=2)
             else:

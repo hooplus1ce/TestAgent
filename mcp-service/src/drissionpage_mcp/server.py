@@ -35,7 +35,7 @@ from fastmcp.server.transforms.search import RegexSearchTransform
 from DrissionPage.common import Keys
 
 from . import __version__
-from .core import caps, config, ui_contract
+from .core import tool_metadata, config, ui_contract
 from .core.lock import _rwlock
 from .resources import resource_store
 from .core import page_family
@@ -97,9 +97,9 @@ roles_component_provider = FileSystemProvider(
     reload=config.COMPONENT_RELOAD,
 )
 component_providers = []
-if caps.is_tool_enabled("detect_page_family"):
+if tool_metadata.is_component_needed("detect_page_family"):
     component_providers.append(core_component_provider)
-if caps.is_tool_enabled("role_session_list"):
+if tool_metadata.is_component_needed("role_session_list"):
     component_providers.append(roles_component_provider)
 _DISCOVERY_ALWAYS_VISIBLE = [
     "connect",
@@ -112,7 +112,7 @@ _DISCOVERY_ALWAYS_VISIBLE = [
     "explore_action",
     "activate_tool_groups",
 ]
-server_transforms = []
+server_transforms = [tool_metadata.ToolMetadataTransform()]
 if config.DISCOVERY_MODE == "search":
     server_transforms.append(
         RegexSearchTransform(
@@ -156,139 +156,10 @@ mcp = FastMCP(
     transforms=server_transforms,
     middleware=server_middleware,
 )
-_fastmcp_tool = mcp.tool
+# 应用环境变量驱动的可见性过滤（替代旧 _cap_aware_tool 注册时过滤）
+tool_metadata.configure_visibility(mcp)
 
 
-_READ_ONLY_TOOLS = {
-    "browser_get_element_state",
-    "browser_list_caps",
-    "check_session",
-    "detect_page_family",
-    "scan_layer_content",
-    "find_batch",
-    "find_elements",
-    "get_active_frame",
-    "get_element_coords",
-    "list_contexts",
-    "observe_snapshot",
-    "query_table",
-    "inspect_table_cell",
-    "role_session_list",
-    "scan_drawer",
-    "scan_floats",
-    "scan_form_fields",
-    "scan_modal",
-    "scan_pagination",
-    "scan_toolbar_actions",
-    "flow_status",
-}
-
-_ADDITIVE_TOOLS = {
-    "browser_console_messages",
-    "browser_save_pdf",
-    "capture_page_model",
-    "connect",
-    "dom_tree",
-    "network_record_export",
-    "network_trace_start",
-    "network_trace_stop",
-    "role_session_activate",
-    "role_session_login",
-    "role_session_open",
-    "role_session_start",
-    "listen_wait",
-    "listen_ws_wait",
-    "scan_page_elements",
-    "scan_table",
-    "screenshot",
-    "generate_test_cases_from_flow",
-    "generate_test_report",
-    "compare_regression_report",
-}
-
-_IDEMPOTENT_WRITE_TOOLS = {
-    "check_session",
-    "connect",
-    "get_active_frame",
-    "role_session_activate",
-    "browser_list_caps",
-}
-
-_TOOL_TIMEOUTS = {
-    "listen_wait": config.WAIT_TOOL_TIMEOUT,
-    "listen_ws_wait": config.WAIT_TOOL_TIMEOUT,
-    "observe_wait": config.WAIT_TOOL_TIMEOUT,
-}
-
-
-def _tool_annotations_for(tool_name: str, fn) -> dict[str, bool]:
-    """Infer MCP tool annotations from the local synchronization contract."""
-    if tool_name in _READ_ONLY_TOOLS:
-        return {
-            "readOnlyHint": True,
-            "destructiveHint": False,
-            "idempotentHint": True,
-            "openWorldHint": True,
-        }
-
-    if tool_name in _ADDITIVE_TOOLS:
-        return {
-            "readOnlyHint": False,
-            "destructiveHint": False,
-            "idempotentHint": tool_name in _IDEMPOTENT_WRITE_TOOLS,
-            "openWorldHint": True,
-        }
-
-    access = getattr(fn, "_du_access", "")
-    if access == "read":
-        return {
-            "readOnlyHint": True,
-            "destructiveHint": False,
-            "idempotentHint": True,
-            "openWorldHint": True,
-        }
-
-    return {
-        "readOnlyHint": False,
-        "destructiveHint": True,
-        "idempotentHint": tool_name in _IDEMPOTENT_WRITE_TOOLS,
-        "openWorldHint": True,
-    }
-
-
-def _cap_aware_tool(*args, **kwargs):
-    """Register enabled tools with FastMCP discovery and risk tags."""
-    def register(fn):
-        explicit_name = kwargs.get("name")
-        if args and isinstance(args[0], str):
-            explicit_name = args[0]
-        tool_name = explicit_name or getattr(fn, "__name__", "")
-        if caps.is_tool_enabled(tool_name):
-            tool_kwargs = dict(kwargs)
-            if tool_kwargs.get("timeout") is None and tool_name in _TOOL_TIMEOUTS:
-                tool_kwargs["timeout"] = _TOOL_TIMEOUTS[tool_name]
-            if tool_kwargs.get("annotations") is None:
-                tool_kwargs["annotations"] = _tool_annotations_for(tool_name, fn)
-            annotations = tool_kwargs["annotations"]
-            tags = set(tool_kwargs.get("tags") or ())
-            tags.update(caps.get_tool_tags(tool_name))
-            if isinstance(annotations, dict):
-                if annotations.get("readOnlyHint"):
-                    tags.add("risk:read")
-                elif annotations.get("destructiveHint"):
-                    tags.add("risk:destructive")
-                else:
-                    tags.add("risk:write")
-            tool_kwargs["tags"] = tags
-            decorator = _fastmcp_tool(*args, **tool_kwargs)
-            return decorator(fn)
-        logger.debug("Skipping MCP tool %s; disabled by MCP profile/capabilities", tool_name)
-        return fn
-
-    return register
-
-
-mcp.tool = _cap_aware_tool
 
 
 
@@ -365,7 +236,7 @@ def role_session_close(role_id: str) -> dict:
     mime_type="application/json",
 )
 def caps_resource() -> str:
-    return json.dumps(caps.list_caps(), ensure_ascii=False, indent=2)
+    return json.dumps(tool_metadata.list_caps(), ensure_ascii=False, indent=2)
 
 
 @mcp.resource(
@@ -386,8 +257,8 @@ def context_resource() -> str:
         "ok": True,
         "server_version": __version__,
         "resource_context": resource_store.get_context(),
-        "enabled_caps": sorted(caps.ENABLED_CAPS),
-        "tool_profile": caps.ENABLED_PROFILE,
+        "enabled_caps": sorted(tool_metadata.ENABLED_CAPS),
+        "tool_profile": tool_metadata.ENABLED_PROFILE,
         "remote_port": config.DEFAULT_PORT,
         "target_hint": config.DEFAULT_TARGET_HINT,
         "roles": role_sessions.list_roles(),
@@ -1131,7 +1002,6 @@ def scan_form_fields(scope: str = "page", include_hidden: bool = False,
 
 
 
-@mcp.tool()
 @read_synchronized
 def scan_floats(only_visible: bool = True, include_table_data: bool = True) -> dict:
     """扫描所有可见浮窗（modal/drawer/popover/tooltip/dropdown/calendar/message/notification/VTable 浮层）。
@@ -1142,14 +1012,12 @@ def scan_floats(only_visible: bool = True, include_table_data: bool = True) -> d
                                   include_table_data=include_table_data)
 
 
-@mcp.tool()
 @read_synchronized
 def scan_modal(max_items: int = 20) -> dict:
     """扫描当前可见 Ant Design 弹窗，返回标题、正文摘要、字段、按钮和表格数量。"""
     return page_model.scan_modal(max_items=max_items)
 
 
-@mcp.tool()
 @read_synchronized
 def scan_drawer(max_items: int = 20) -> dict:
     """扫描当前可见 Ant Design 抽屉，返回标题、正文摘要、字段、按钮和表格数量。"""
@@ -1212,7 +1080,10 @@ def _click_table_cell_raw(row: int, col: int = None, column_title: str = None,
 
     def _click_bootstrap():
         if not column_title:
-            return {"ok": False, "kind": "bootstrap", "reason": "Bootstrap Table 点击需要 column_title"}
+            return _tag_table_result(
+                "bootstrap",
+                bootstrap_table.click_bootstrap_row_selection(row, table_index),
+            )
         return _tag_table_result(
             "bootstrap",
             bootstrap_table.click_bootstrap_table_cell(column_title, row, table_index),
@@ -1692,11 +1563,27 @@ def set_field_value(field_name: str, value: str, in_frame: bool = True,
     else:
         areas = ["modal", "drawer", "filter", "page"]
 
+    text_value = "" if value is None else str(value)
+
+    # auto 路径：快速检测可见 layer 字段，避免无 layer 感知的穷举搜索浪费超时
+    if scope in {"auto"} and remaining() > 1.0 \
+            and any(name == "iframe" for name, _ in contexts):
+        from .services import layer_modal as _layer_modal
+        _layer_quick = _layer_modal.set_layer_field_value(
+            field_name=field_name,
+            value=text_value,
+            clear=clear,
+            select_index=select_index,
+            timeout=min(remaining(), 1.5),
+        )
+        if _layer_quick.get("ok"):
+            _layer_quick["fallback_from"] = "layer-pre-check"
+            return _layer_quick
+
     control_locator = (
         "css:input:not([type='hidden']),textarea,.ant-input-number-input,"
         "[contenteditable='true']"
     )
-    text_value = "" if value is None else str(value)
 
     def apply_control(control, scope_name, area, index):
         states = getattr(control, "states", None)
@@ -2797,7 +2684,7 @@ def explore_action(action: Literal["click", "input", "set_date",
         str(target.get("type") or "").strip().lower()
         if isinstance(target, dict) else ""
     )
-    if caps.ENABLED_PROFILE == "enterprise":
+    if tool_metadata.ENABLED_PROFILE == "enterprise":
         violations = []
         if action_name == "click_xy" or requested_target_type == "xy" or x is not None or y is not None:
             violations.append("显式坐标动作")
@@ -2809,7 +2696,7 @@ def explore_action(action: Literal["click", "input", "set_date",
             return {
                 "ok": False,
                 "reason": "enterprise profile 禁止%s；请使用语义 target 并保留业务反馈观察" % "、".join(violations),
-                "profile": caps.ENABLED_PROFILE,
+                "profile": tool_metadata.ENABLED_PROFILE,
             }
     resolved = _resolve_target_action(
         target, action_name, locator, x, y, field_name, row, col, column_title,
@@ -6559,10 +6446,10 @@ def browser_list_caps() -> dict:
     """
     return {
         "ok": True,
-        "profile": caps.ENABLED_PROFILE,
-        "enabled_caps": sorted(caps.ENABLED_CAPS),
+        "profile": tool_metadata.ENABLED_PROFILE,
+        "enabled_caps": sorted(tool_metadata.ENABLED_CAPS),
         "available_caps": {
-            cap: tools for cap, tools in caps.CAP_GROUPS.items()
+            cap: tools for cap, tools in tool_metadata.CAP_GROUPS.items()
         },
         "env_hint": "The default full profile exposes every grouped tool. Use DRISSIONPAGE_MCP_PROFILE=enterprise only for explicit context reduction; DRISSIONPAGE_MCP_CAPS further narrows groups.",
     }
@@ -6932,8 +6819,8 @@ def main():
     logger.info(
         "Starting drissionpage-mcp server version=%s profile=%s enabled_caps=%s",
         __version__,
-        caps.ENABLED_PROFILE,
-        sorted(caps.ENABLED_CAPS),
+        tool_metadata.ENABLED_PROFILE,
+        sorted(tool_metadata.ENABLED_CAPS),
     )
     # FastMCP 3：stdio 为默认传输；host/port 等若将来需要 HTTP 应传给 run()
     mcp.run()

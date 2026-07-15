@@ -9,6 +9,7 @@
                 "-m",
                 "drissionpage_mcp"
             ],
+            "cwd": "${workspaceFolder}",
             "env": {
                 "DRISSIONPAGE_MCP_PROFILE": "full",
                 "DRISSIONPAGE_MCP_CAPS": "all",

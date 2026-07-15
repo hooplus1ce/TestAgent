@@ -3,8 +3,12 @@ import importlib
 import os
 
 
-def test_defaults():
+def test_defaults(monkeypatch, tmp_path):
+    monkeypatch.setenv("DRISSIONPAGE_MCP_ENV_FILE", str(tmp_path / "missing.env"))
+    for name in ("HL_HOST_PREFIX", "HL_URL", "HL_COOKIE_DOMAIN", "HL_ACCESS_DOMAIN"):
+        monkeypatch.delenv(name, raising=False)
     from drissionpage_mcp.core import config
+    importlib.reload(config)
     assert config.SCM_ADMIN_URL == ""
     assert config.COOKIE_DOMAIN == ""
     assert config.SCM_ACCESS_DOMAIN == ""

@@ -49,22 +49,24 @@ def _tool_names():
 
 def test_public_tool_surface():
     """默认 full profile 必须公开所有 capability 分组中的工具。"""
-    from drissionpage_mcp.core import caps
+    from drissionpage_mcp.core import tool_metadata
 
     names = _tool_names()
-    grouped_tools = {tool for tools in caps.CAP_GROUPS.values() for tool in tools}
+    grouped_tools = {
+        tool for tools in tool_metadata.CAP_GROUPS.values() for tool in tools
+    }
     assert len(names) == len(grouped_tools)
     assert names == grouped_tools
     assert {"run_js", "click_xy", "role_session_open", "role_session_login"} <= names
     assert {"detect_page_family", "scan_layer_content"} <= names
 
 
-def test_public_tools_are_grouped_in_caps():
+def test_public_tools_are_grouped_in_metadata():
     """公开工具必须进入 capability 分组，避免 tools/list 与能力说明不一致。"""
-    from drissionpage_mcp.core import caps
+    from drissionpage_mcp.core import tool_metadata
     grouped_tools = {
         tool
-        for tools in caps.CAP_GROUPS.values()
+        for tools in tool_metadata.CAP_GROUPS.values()
         for tool in tools
     }
     assert _tool_names() == grouped_tools
@@ -116,11 +118,11 @@ def test_caps_resource_returns_json():
     contents = asyncio.run(server.mcp.read_resource("drissionpage-mcp://caps"))
     data = json.loads(contents.contents[0].content)
 
-    from drissionpage_mcp.core import caps
+    from drissionpage_mcp.core import tool_metadata
 
     assert data["profile"] == "full"
     assert set(data["exposed_tools"]) == {
-        tool for tools in caps.CAP_GROUPS.values() for tool in tools
+        tool for tools in tool_metadata.CAP_GROUPS.values() for tool in tools
     }
     assert data["enabled"]
     assert "core" in data["available"]
@@ -173,7 +175,7 @@ asyncio.run(main())
 
 def test_full_profile_exposes_every_capability_group_exactly():
     """full profile 保留完整调试工具面，并继续受 capability 裁剪。"""
-    from drissionpage_mcp.core import caps
+    from drissionpage_mcp.core import tool_metadata
     script = """
 import asyncio, json, sys
 from drissionpage_mcp import server
@@ -184,7 +186,7 @@ async def main():
 asyncio.run(main())
 """
     root = os.path.dirname(os.path.dirname(__file__))
-    for capability, grouped_tools in caps.CAP_GROUPS.items():
+    for capability, grouped_tools in tool_metadata.CAP_GROUPS.items():
         env = os.environ.copy()
         env["DRISSIONPAGE_MCP_PROFILE"] = "full"
         env["DRISSIONPAGE_MCP_CAPS"] = capability
@@ -357,7 +359,7 @@ def test_explore_action_observe_mode_none_skips_observer():
 
     with patch.object(server.observe, "observe_start", side_effect=AssertionError("observe_start should be skipped")), \
          patch.object(server.observe, "observe_wait", side_effect=AssertionError("observe_wait should be skipped")), \
-         patch.object(server.caps, "ENABLED_PROFILE", "full"), \
+         patch.object(server.tool_metadata, "ENABLED_PROFILE", "full"), \
          patch.object(server, "_pre_click_cleanup", return_value=None), \
          patch.object(server, "_attach_cleanup", side_effect=lambda result, cleanup: result), \
          patch.object(server.browser_session, "get_tab", return_value=fake_tab):
@@ -377,7 +379,7 @@ def test_explore_action_observe_mode_none_skips_observer():
 def test_enterprise_explore_action_rejects_low_level_or_unobserved_requests():
     from drissionpage_mcp import server
 
-    with patch.object(server.caps, "ENABLED_PROFILE", "enterprise"):
+    with patch.object(server.tool_metadata, "ENABLED_PROFILE", "enterprise"):
         coordinate = server.explore_action(action="click_xy", x=10, y=20)
         javascript = server.explore_action(action="click", locator="text:保存", by_js=True)
         unobserved = server.explore_action(
@@ -407,7 +409,7 @@ def test_explore_action_capture_after_disables_snapshot_by_default():
 
     with patch.object(server.observe, "observe_start", return_value={"ok": True}), \
          patch.object(server.observe, "observe_wait", side_effect=lambda **kwargs: calls.setdefault("observe_wait", kwargs) or {"type": "modal"}), \
-         patch.object(server.caps, "ENABLED_PROFILE", "full"), \
+         patch.object(server.tool_metadata, "ENABLED_PROFILE", "full"), \
          patch.object(server.page_model, "capture_page_model", return_value={"ok": True, "modals": {"count": 1}}), \
          patch.object(server, "_pre_click_cleanup", return_value=None), \
          patch.object(server, "_attach_cleanup", side_effect=lambda result, cleanup: result), \
@@ -428,7 +430,7 @@ def test_explore_action_capture_after_disables_snapshot_by_default():
 def test_explore_action_routes_text_input_to_standard_input_tool():
     from drissionpage_mcp import server
     fake_tab = SimpleNamespace()
-    with patch.object(server.caps, "ENABLED_PROFILE", "full"), \
+    with patch.object(server.tool_metadata, "ENABLED_PROFILE", "full"), \
          patch.object(server.modal, "clear_transient_overlays", return_value={"ok": True, "closed": [], "errors": []}), \
          patch.object(server.browser_session, "get_tab", return_value=fake_tab), \
          patch.object(server, "input", return_value={"ok": True, "locator": "#order"}) as input_tool:
@@ -668,7 +670,7 @@ import sys
 from types import SimpleNamespace
 from unittest.mock import patch
 from drissionpage_mcp import server
-server.caps.ENABLED_PROFILE = "full"
+server.tool_metadata.ENABLED_PROFILE = "full"
 class FakeElement:
     def __init__(self):
         self.click_calls = []
@@ -888,7 +890,10 @@ def test_html_table_facade_rejects_missing_index_and_raw_mode():
 
 def test_get_all_table_data_auto_prefers_vtable_backend():
     from drissionpage_mcp import server
-    with patch.object(server.page_model.vtable, "scan_vtable_columns", return_value={
+    with patch.object(server.page_model.page_family, "detect_page_family", return_value={
+        "ok": True, "preferred_table_kind": "vtable",
+    }), \
+         patch.object(server.page_model.vtable, "scan_vtable_columns", return_value={
         "ok": True,
         "columns": [{"title": "订单号", "col": 1, "bodyBehavior": "none"}],
     }), patch.object(server.page_model.vtable, "get_columns_values", return_value={
@@ -1494,7 +1499,7 @@ def test_enterprise_table_facades_are_public_and_grouped():
 import asyncio
 import json
 import sys
-from drissionpage_mcp.core import caps
+from drissionpage_mcp.core import tool_metadata
 from drissionpage_mcp import server
 async def main():
     tools = await server.mcp.list_tools()
@@ -1505,7 +1510,7 @@ async def main():
             "inspect_table_cell",
             "table_action",
         ]),
-        "grouped": all(name in caps.CAP_GROUPS["vtable"] for name in [
+        "grouped": all(name in tool_metadata.CAP_GROUPS["vtable"] for name in [
             "query_table",
             "inspect_table_cell",
             "table_action",

@@ -176,6 +176,7 @@ logger = logging.getLogger("drissionpage-mcp")
 _SEL_MODAL = ui_contract.MODAL_CONTENT
 _SEL_NOTIFICATION = ui_contract.NOTIFICATION
 _SEL_MESSAGE = ui_contract.MESSAGE
+_SEL_LAYER_MSG = ui_contract.LAYER_MSG
 _ALL_SELS = list(ui_contract.OBSERVABLE_OVERLAYS)
 
 # ---- MutationObserver 注入脚本（在 target.document 内安装）----
@@ -1056,6 +1057,12 @@ def detect_message(timeout: float = 2.0) -> dict:
     """原子工具：检测 .ant-message-notice（含 success/info/warning/error/loading，iframe+top）。
     事件驱动 ele() 等待。专门捕获「保存订单成功」这类短寿命 toast。"""
     return _detect_toast(_SEL_MESSAGE, ".ant-message-notice-content", timeout, "message")
+
+
+def detect_layer_msg(timeout: float = 2.0) -> dict:
+    """原子工具：检测 .layui-layer-msg / .layui-layer-dialog.layui-layer-msg。
+    事件驱动 ele() 等待。捕获遗留 jQuery 页面 3 秒自动关闭的短寿命消息提示。"""
+    return _detect_toast(_SEL_LAYER_MSG, ".layui-layer-content", timeout, "layer_msg")
 
 
 def detect_url_change(old_url: str, timeout: float = 5.0) -> dict:

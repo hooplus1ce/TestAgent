@@ -1,13 +1,11 @@
 # ty:ignore type
 import random
 import uuid
-
 import ddddocr
 import httpx
 from DrissionPage import Chromium, ChromiumOptions
 from DrissionPage.items import ChromiumElement, ChromiumFrame, ChromiumTab
 from fast_vtable_helper import FastVTableHelper
-from loguru import logger
 from rich import print
 from drissionpage_mcp.core import config
 
@@ -47,7 +45,11 @@ def get_login_auth():
     print(f"纯数字识别结果: {result}")
 
     headers["Accept"] = "*/*"
-    data = {"username": config.SCM_USERNAME, "userpwd": config.SCM_USERPWD, "vcode": result}
+    data = {
+        "username": config.SCM_USERNAME,
+        "userpwd": config.SCM_USERPWD,
+        "vcode": result,
+    }
     response = client.post("/signin.html", headers=headers, cookies=cookies, data=data)
     print(response.json())
     client.close()
@@ -150,7 +152,7 @@ def get_active_iframe(tab: ChromiumTab) -> ChromiumFrame:
     if not is_tabpanel_displayed:
         return None
     active_tabpanel = tab.ele("t:div@@role=tabpanel@@aria-hidden=false", timeout=3)
-    logger.info("tabpanel已加载")
+    print("tabpanel已加载")
 
     iframe = active_tabpanel.get_frame("t:iframe", timeout=3)
     return iframe
@@ -166,23 +168,23 @@ def get_loaded_vtable(
     """
 
     if not iframe:
-        logger.warning("iframe 加载失败")
+        print("iframe 加载失败")
         return None
 
-    logger.info("VTable正在加载中...")
+    print("VTable正在加载中...")
     is_vtable_displayed = iframe.wait.eles_loaded(
         ".vtable", timeout=20, raise_err=False
     )
 
     if is_vtable_displayed:
-        logger.info("VTable已成功加载！")
+        print("VTable已成功加载！")
         result = vtable.vtable_connection(iframe)
-        logger.info("VTable已挂载进【window._vtable】中") if result else logger.info(
+        print("VTable已挂载进【window._vtable】中") if result else print(
             "VTable挂载失败，请检查"
         )
         return vtable
     else:
-        logger.warning("未找到 vtable 元素")
+        print("未找到 vtable 元素")
         return None
 
 
@@ -195,12 +197,12 @@ def load_vtable_data(vtable: FastVTableHelper, is_loading_hidden: bool) -> bool:
 
     if is_loading_hidden:
         ret = vtable.get_vtable_overview()
-        logger.info(
+        print(
             f"VTable 极速连接成功！当前表格行数: {ret['rowCount']}, 列数: {ret['colCount']}, 数据条数: {ret['dataCount']}"
         )
         return True
     else:
-        logger.warning("表格数据加载超时，请检查网络连接或表格数据量太大")
+        print("表格数据加载超时，请检查网络连接或表格数据量太大")
         return False
 
 
@@ -225,10 +227,10 @@ def is_loading_complete(iframe: ChromiumFrame) -> bool:
 
 
 def get_active_tab() -> ChromiumTab:
-    logger.info("正在进行浏览器初始化...")
+    print("正在进行浏览器初始化...")
     co = ChromiumOptions(ini_path="./mcp-service/configs/dp_configs.ini")
     browser = Chromium(addr_or_opts=co)
-    logger.info("浏览器初始化完成！")
+    print("浏览器初始化完成！")
     return browser.latest_tab
 
 
@@ -293,33 +295,165 @@ def querry_filter_date(iframe: ChromiumFrame, filter_name: str, date_str: str):
         print("未找到筛选条件行")
 
 
+def detect_layer_msg(iframe: ChromiumFrame, timeout: int = 3) -> list:
+    """
+    检测弹窗消息
+    :param iframe: ChromiumFrame 实例
+    :param timeout: 超时时间，单位为秒
+    :return: 弹窗消息文本，如果未找到弹窗则返回空列表
+    """
+    if iframe.wait.eles_loaded(
+        "t:div@@class:layui-layer-msg", timeout=timeout, raise_err=False
+    ):
+        layer_msg_ele = iframe.ele("t:div@@class=layui-layer-content", timeout=timeout)
+        print(layer_msg_ele.texts())
+        return layer_msg_ele.texts()
+    else:
+        return []
+
+
+def detect_layer_iframe(
+    iframe: ChromiumFrame, timeout: int = 3
+) -> ChromiumFrame | None:
+    """
+    检测弹窗iframe
+    :param iframe: ChromiumFrame 实例
+    :param timeout: 超时时间，单位为秒
+    :return: 弹窗iframe，如果未找到弹窗则返回空列表
+    """
+    if iframe.wait.eles_loaded(
+        "t:div@@class:layui-layer-iframe", timeout=timeout, raise_err=False
+    ):
+        layer_iframe = iframe.get_frame("t:iframe")
+        layer_iframe.set.show_trail()
+        return layer_iframe
+    else:
+        print("弹窗iframe未加载完成")
+
+        return None
+
+
+def bootstrap_table_selectrow(
+    iframe: ChromiumFrame, row_index: int, select_all=False
+) -> ChromiumElement | None:
+    """
+    选择Bootstrap表格的行
+    :param iframe: ChromiumFrame 实例
+    :param row_index: 要选择的行索引（从0开始）
+    """
+    if iframe.wait.eles_loaded(
+        "t:div@@class:layui-layer-shade", timeout=1, raise_err=False
+    ):
+        print("检测到弹窗遮罩层，可能存在弹窗未关闭，请检查")
+        iframe.ele("t:a@@class:layui-layer-close").click()
+    if iframe.wait.eles_loaded(
+        "xpath://table[contains(@class, 'table-striped')]", timeout=3, raise_err=False
+    ):
+        table = iframe.ele("xpath://table[contains(@class, 'table-striped')]")
+        if select_all:
+            iframe.actions.move_to(
+                table("t:input@@name=btSelectAll"), duration=0.3
+            ).click()
+            return table("t:input@@name=btSelectAll")
+        else:
+            if (current_row := table(f"t:input@@data-index={row_index}")).parent(
+                "t:tr", index=1
+            ).attr("class") == "selected":
+                print(f"行 {row_index} 已经被选中")
+                return current_row
+            iframe.actions.move_to(
+                table(f"t:input@@data-index={row_index}"), duration=0.3
+            ).click().wait(0.1)
+    else:
+        print("未找到Bootstrap表格")
+        return None
+
+
+def set_dialog_value(
+    iframe: ChromiumFrame,
+    name: str,
+    value: str,
+):
+    try:
+        value_zone = (
+            iframe.ele(f"t:label@text()={name}", timeout=1, index=1)
+            .after("t:div", timeout=1, index=1)
+            .child("t:button", timeout=1, index=1)
+        )
+        if "open" not in value_zone.parent("t:div", index=1).attr("class"):
+            iframe.actions.move_to(value_zone, duration=0.3).wait(0.2).click()
+        iframe.actions.move_to(
+            value_zone.after(".:dropdown-menu open").ele(
+                f"t:li@@tx()={value}",
+                timeout=1,
+            ),
+            duration=0.3,
+        ).wait(0.2).click()
+    except Exception:
+        value_zone = (
+            iframe.ele(f"t:label@text()={name}", timeout=1, index=1)
+            .after("t:div", timeout=1, index=1)
+            .child("t:input", timeout=1, index=1)
+        )
+        value_zone.clear()
+        iframe.actions.move_to(value_zone, duration=0.3).wait(0.2).click().type(
+            value, 0.2
+        )
+    return
+
+
 def main():
     tab = get_active_tab()
-    vtable = FastVTableHelper()
 
     # tab = set_tab_cookies(tab)
-    go_to_tab(tab, "销货统计表")
+
+    # go_to_tab(tab, "销货统计表")
     # tab.set.window.full()
-    exit()
-    iframe = get_active_iframe(tab)
-    iframe.set.show_trail(True)
 
-    iframe.actions.move_to((182.0, 173.0), duration=0.3).click(times=1).wait(0.15).click(times=1)
+    tabpanel_iframe = get_active_iframe(tab)
+    tabpanel_iframe.set.show_trail(True)
+
+    current_row = bootstrap_table_selectrow(
+        tabpanel_iframe, row_index=0, select_all=False
+    )
+    print(f"当前选中行: {current_row}")
+    tabpanel_iframe.actions.move_to("t:button@@tx():编辑", duration=0.3).wait(
+        0.2
+    ).click()
+    detect_layer_msg(tabpanel_iframe, timeout=1)
+    layer_iframe = detect_layer_iframe(tabpanel_iframe, timeout=3)
+    if layer_iframe:
+        print(f"检测到弹窗iframe: {layer_iframe}")
+
+        set_dialog_value(layer_iframe, "用户名称", "消息通知角色")
+        layer_iframe.actions.move_to(
+            layer_iframe.ele("t:button@@tx():保存"), duration=0.3
+        ).click()
+
+        detect_layer_msg(tabpanel_iframe, timeout=1)
+    else:
+        print("未检测到弹窗iframe")
 
 
-    iframe.set.show_trail(False)
-    exit()
-    expand_operation(iframe)
-    querry_filter_date(iframe, "销货时间", "2026-03-01~2026-06-15")
-    click_search_button(iframe)
-    is_loading_hidden = is_loading_complete(iframe)
+    # tabpanel_iframe.actions.move_to((182.0, 173.0), duration=0.3).click(times=1).wait(
+    #     0.15
+    # ).click(times=1)
+
+    tabpanel_iframe.set.show_trail(False)
+    return
+    expand_operation(tabpanel_iframe)
+    querry_filter_date(tabpanel_iframe, "销货时间", "2026-03-01~2026-06-15")
+    click_search_button(tabpanel_iframe)
+    is_loading_hidden = is_loading_complete(tabpanel_iframe)
     if is_loading_hidden:
-        vtable = get_loaded_vtable(vtable, iframe)
+        vtable = FastVTableHelper()
+
+        vtable = get_loaded_vtable(vtable, tabpanel_iframe)
         load_vtable_data(vtable, is_loading_hidden)
         vtable.drag_cells(1, 1, 10, 10)
 
     else:
-        logger.warning("表格数据加载超时，请检查网络连接或表格数据量太大")
+        print("表格数据加载超时，请检查网络连接或表格数据量太大")
 
     tab.set.window.max()
 

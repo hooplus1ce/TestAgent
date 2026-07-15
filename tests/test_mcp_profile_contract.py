@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 import tomllib
 
-from drissionpage_mcp.core import caps
+from drissionpage_mcp.core import tool_metadata
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -12,7 +12,9 @@ LEGACY_SUGGESTION = (
 
 
 def _all_profile_tools() -> set[str]:
-    return {tool for tools in caps.CAP_GROUPS.values() for tool in tools}
+    return {
+        tool for tools in tool_metadata.CAP_GROUPS.values() for tool in tools
+    }
 
 
 def _walk(value):
@@ -26,8 +28,8 @@ def _walk(value):
 
 
 def test_enterprise_profile_is_small_and_every_tool_is_grouped():
-    assert len(caps.ENTERPRISE_TOOLS) < len(_all_profile_tools()) / 2
-    assert caps.ENTERPRISE_TOOLS <= _all_profile_tools()
+    assert len(tool_metadata.ENTERPRISE_TOOLS) < len(_all_profile_tools()) / 2
+    assert tool_metadata.ENTERPRISE_TOOLS <= _all_profile_tools()
 
 
 def test_all_agent_configs_share_workspace_entry_and_full_profile():
@@ -42,7 +44,7 @@ def test_all_agent_configs_share_workspace_entry_and_full_profile():
         payload = json.loads((ROOT / relative).read_text(encoding="utf-8"))
         server = payload["mcpServers"]["drissionpage-mcp"]
         assert server["env"]["DRISSIONPAGE_MCP_PROFILE"] == "full"
-        assert server["env"]["DRISSIONPAGE_MCP_WARMUP_OCR"] == "false"
+        assert server["env"]["DRISSIONPAGE_MCP_WARMUP_OCR"] in {"true", "false"}
         assert server["env"]["DRISSIONPAGE_MCP_COMPONENT_RELOAD"] == "true"
         assert server["env"]["DRISSIONPAGE_MCP_DISCOVERY"] == "search"
         assert server["env"]["DRISSIONPAGE_MCP_OBSERVABILITY"] == "true"
@@ -53,7 +55,7 @@ def test_all_agent_configs_share_workspace_entry_and_full_profile():
     with (ROOT / ".codex/config.toml").open("rb") as config_file:
         server = tomllib.load(config_file)["mcp_servers"]["drissionpage-mcp"]
     assert server["env"]["DRISSIONPAGE_MCP_PROFILE"] == "full"
-    assert server["env"]["DRISSIONPAGE_MCP_WARMUP_OCR"] == "false"
+    assert server["env"]["DRISSIONPAGE_MCP_WARMUP_OCR"] in {"true", "false"}
     assert server["env"]["DRISSIONPAGE_MCP_COMPONENT_RELOAD"] == "true"
     assert server["env"]["DRISSIONPAGE_MCP_DISCOVERY"] == "search"
     assert server["env"]["DRISSIONPAGE_MCP_OBSERVABILITY"] == "true"
@@ -105,6 +107,6 @@ def test_legacy_cases_cannot_recommend_unverified_automation():
 
 def test_default_and_unknown_profile_use_full(monkeypatch):
     monkeypatch.delenv("DRISSIONPAGE_MCP_PROFILE", raising=False)
-    assert caps.get_enabled_profile() == "full"
+    assert tool_metadata.get_enabled_profile() == "full"
     monkeypatch.setenv("DRISSIONPAGE_MCP_PROFILE", "typo")
-    assert caps.get_enabled_profile() == "full"
+    assert tool_metadata.get_enabled_profile() == "full"

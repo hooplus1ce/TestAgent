@@ -4,7 +4,7 @@ from fastmcp.dependencies import CurrentContext
 from fastmcp.server.context import Context
 from fastmcp.tools import tool
 
-from drissionpage_mcp.core import caps
+from drissionpage_mcp.core import tool_metadata
 
 
 @tool(
@@ -32,20 +32,20 @@ async def activate_tool_groups(
         return {
             "ok": True,
             "reset": True,
-            "enabled_groups": sorted(caps.ENABLED_CAPS),
+            "enabled_groups": sorted(tool_metadata.ENABLED_CAPS),
         }
 
-    unknown = sorted(set(groups) - set(caps.CAP_GROUPS))
+    unknown = sorted(set(groups) - set(tool_metadata.CAP_GROUPS))
     if unknown:
         return {
             "ok": False,
             "reason": "unknown capability groups",
             "unknown": unknown,
-            "available": sorted(caps.CAP_GROUPS),
+            "available": sorted(tool_metadata.CAP_GROUPS),
         }
 
     selected = set(groups) | {"core"}
-    all_tags = {f"cap:{name}" for name in caps.CAP_GROUPS}
+    all_tags = {f"cap:{name}" for name in tool_metadata.CAP_GROUPS}
     selected_tags = {f"cap:{name}" for name in selected}
     await ctx.disable_components(tags=all_tags, components={"tool"})
     await ctx.enable_components(tags=selected_tags, components={"tool"})

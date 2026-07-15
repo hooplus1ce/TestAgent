@@ -13,14 +13,16 @@ def _template_uri(template) -> str:
 
 def test_registered_catalog_matches_the_source_service():
     from drissionpage_mcp import server
-    from drissionpage_mcp.core import caps
+    from drissionpage_mcp.core import tool_metadata
 
     tools = asyncio.run(server.mcp.list_tools())
     resources = asyncio.run(server.mcp.list_resources())
     templates = asyncio.run(server.mcp.list_resource_templates())
 
     tool_names = {tool.name for tool in tools}
-    grouped_tools = {tool for group in caps.CAP_GROUPS.values() for tool in group}
+    grouped_tools = {
+        tool for group in tool_metadata.CAP_GROUPS.values() for tool in group
+    }
     assert len(tools) == len(grouped_tools)
     assert tool_names == grouped_tools
     assert {"role_session_open", "role_session_login", "run_js", "click_xy"} <= tool_names
