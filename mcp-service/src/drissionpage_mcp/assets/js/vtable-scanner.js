@@ -247,17 +247,38 @@ function scanColumns(maxCol) {
       try { isHeader = !!(t.isHeader && t.isHeader(col, row)); } catch (e) {}
 
       var title = '';
+      var field = '';
+      var define = null;
       try { if (t.getCellValue) title = t.getCellValue(col, row) || ''; } catch (e) {}
-      if (!title) { try { var define = t.getHeaderDefine ? t.getHeaderDefine(col, row) : null; if (define) title = define.title || define.caption || ''; } catch (e) {} }
-      if (!title) { try { title = t.getHeaderField ? t.getHeaderField(col, row) || '' : ''; } catch (e) {} }
+      try { define = t.getHeaderDefine ? t.getHeaderDefine(col, row) : null; } catch (e) { define = null; }
+      if (define) {
+        if (!title) title = define.title || define.caption || '';
+        // Column identity: prefer explicit data field over display title.
+        field = define.field || define.key || define.dataIndex || define.fieldKey || '';
+        if (field && typeof field === 'object') {
+          field = field.field || field.key || field.dataIndex || '';
+        }
+      }
+      if (!field) {
+        try { field = t.getHeaderField ? (t.getHeaderField(col, row) || '') : ''; } catch (e) {}
+      }
+      if (!title && field) title = field;
 
       var icons = [];
       if (isHeader) { icons = getCellIconBounds(t, col, row); }
 
-      var titleText = typeof title === 'string' ? title : String(title);
+      var titleText = typeof title === 'string' ? title : String(title == null ? '' : title);
+      var fieldText = typeof field === 'string' ? field : String(field == null ? '' : field);
       var entry = {
         col: col, row: row, isHeader: isHeader,
         title: titleText,
+        field: fieldText,
+        // Stable identity hint for agents/tools: col + field + title
+        identity: {
+          col: col,
+          field: fieldText || null,
+          title: titleText || null
+        },
         titlePreview: titleText.length > 80 ? titleText.substring(0, 80) + '…' : titleText,
         bodyBehavior: bodyInfo.behavior, bodyDetail: bodyInfo.detail,
         bodyType: bodyInfo.bodyType, bodyEditable: bodyInfo.editable,

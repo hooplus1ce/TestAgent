@@ -57,9 +57,12 @@ def _click_table_cell_raw(row: int, col: int = None, column_title: str = None,
 
     def _click_bootstrap():
         if not column_title:
+            # Legacy path: row checkbox select; clear leftover layer shade first.
             return _tag_table_result(
                 "bootstrap",
-                bootstrap_table.click_bootstrap_row_selection(row, table_index),
+                bootstrap_table.click_bootstrap_row_selection(
+                    row, table_index, close_shade=True,
+                ),
             )
         return _tag_table_result(
             "bootstrap",
@@ -134,21 +137,24 @@ def _auto_table_scan_order() -> list[str]:
     return page_family.auto_table_scan_order(preferred)
 
 
-def _find_vtable_col(column_title: str, max_col: int = 100):
-    scan = vtable.scan_vtable_columns(max_col)
-    if not scan.get("ok"):
-        return None, scan.get("reason", "VTable 扫描失败")
-    expected = str(column_title or "").strip()
-    matches = {
-        info.get("col") for info in scan.get("columns", [])
-        if str(info.get("title") or info.get("field") or "").strip() == expected
-    }
-    matches.discard(None)
-    if len(matches) == 1:
-        return next(iter(matches)), None
-    if matches:
-        return None, "VTable 列标题匹配不唯一: %s（匹配列 %s）" % (expected, sorted(matches))
-    return None, "VTable 列未找到: %s" % expected
+def _find_vtable_col(
+    column_title: str = None,
+    max_col: int = 100,
+    field: str = None,
+    col: int = None,
+):
+    """Resolve VTable col by title / field / col (title+field+col identity).
+
+    Backward compatible: ``_find_vtable_col("操作")`` still works.
+    On ambiguity, reason lists matching col indexes; use
+    ``vtable.resolve_column`` for structured ``candidates`` with field.
+    """
+    return vtable.resolve_column_index(
+        column_title=column_title,
+        field=field,
+        col=col,
+        max_col=max_col,
+    )
 
 
 def _build_vtable_drag_to(drag_to_x=None, drag_to_y=None, drag_by_x=None, drag_by_y=None):
@@ -173,15 +179,50 @@ def _build_vtable_drag_to(drag_to_x=None, drag_to_y=None, drag_by_x=None, drag_b
     return None, None
 
 
-def _resolve_vtable_action_col(col: int = None, column_title: str = None):
-    target_col = col
-    if target_col is None and column_title:
-        target_col, reason = _find_vtable_col(column_title)
-        if target_col is None:
+def _resolve_vtable_action_col(
+    col: int = None,
+    column_title: str = None,
+    field: str = None,
+):
+    """Resolve action column via col / field / title combination.
+
+    Routes through ``_find_vtable_col`` so existing monkeypatches keep working.
+    """
+    if col is not None and not column_title and not field:
+        target_col, reason = vtable._index(col, "col")
+        if reason:
             return None, reason
-    if target_col is None:
-        return None, "VTable 动作需要 col 或 column_title"
-    return target_col, None
+        return target_col, None
+
+    if col is None and not column_title and not field:
+        return None, "VTable 动作需要 col、column_title 或 field"
+
+    # Prefer positional title for backward-compatible monkeypatches:
+    # ``_find_vtable_col("操作")``.
+    if field is None and col is None:
+        target_col, reason = _find_vtable_col(column_title)
+    else:
+        target_col, reason = _find_vtable_col(
+            column_title, field=field, col=col,
+        )
+    if target_col is not None:
+        return target_col, None
+
+    # Enrich ambiguous errors with field hints when scan data is available.
+    if reason and "匹配不唯一" in reason:
+        resolved = vtable.resolve_column(
+            column_title=column_title, field=field, col=col,
+        )
+        candidates = resolved.get("candidates") or []
+        if candidates:
+            hint = ", ".join(
+                "col=%s title=%s field=%s" % (
+                    c.get("col"), c.get("title") or "", c.get("field") or "",
+                )
+                for c in candidates[:8]
+            )
+            reason = "%s；候选: %s" % (reason, hint)
+    return None, reason or "VTable 列未找到"
 
 
 def _scan_table_vtable(max_col: int) -> dict:
@@ -964,7 +1005,9 @@ def scan_action_availability_by_selection(row: int = 0, col: int = 0,
         elif table_kind == "bootstrap":
             select_result = _tag_table_result(
                 "bootstrap",
-                bootstrap_table.click_bootstrap_row_selection(row=row, table_index=table_index),
+                bootstrap_table.click_bootstrap_row_selection(
+                    row=row, table_index=table_index, close_shade=True,
+                ),
             )
         elif table_kind == "html":
             select_result = _tag_table_result(
@@ -981,7 +1024,7 @@ def scan_action_availability_by_selection(row: int = 0, col: int = 0,
                     candidate = _tag_table_result(
                         "bootstrap",
                         bootstrap_table.click_bootstrap_row_selection(
-                            row=row, table_index=table_index,
+                            row=row, table_index=table_index, close_shade=True,
                         ),
                     )
                 else:

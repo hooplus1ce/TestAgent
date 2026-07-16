@@ -3,26 +3,65 @@
 
 // ---- 按中文列标题获取该列所有单元格值 ----
 // raw=false：场景图视觉文本（与界面一致）；raw=true：原始字段值（如数字码）
-function getColumnValuesByTitle(vtable, title, raw) {
-  if (!vtable || !title) return null;
+function _duHeaderField(vtable, col, row) {
+  var field = '';
+  try {
+    var define = vtable.getHeaderDefine ? vtable.getHeaderDefine(col, row) : null;
+    if (define) {
+      field = define.field || define.key || define.dataIndex || define.fieldKey || '';
+      if (field && typeof field === 'object') {
+        field = field.field || field.key || field.dataIndex || '';
+      }
+    }
+  } catch (e) {}
+  if (!field) {
+    try { field = vtable.getHeaderField ? (vtable.getHeaderField(col, row) || '') : ''; } catch (e2) {}
+  }
+  return String(field == null ? '' : field).trim();
+}
+
+function _duResolveColumnByIdentity(vtable, title) {
+  // title may be display title OR field name; prefer exact title, then exact field, then partial title.
+  if (!vtable || title === undefined || title === null || title === '') return null;
+  var needle = String(title).trim();
+  if (!needle) return null;
   var headerLevelCount = vtable.columnHeaderLevelCount || vtable.frozenRowCount || 1;
-  var exactCols = [];
-  var partialCols = [];
+  var exactTitleCols = [];
+  var exactFieldCols = [];
+  var partialTitleCols = [];
   for (var col = 0; col < vtable.colCount; col++) {
-    var exact = false;
-    var partial = false;
+    var exactTitle = false;
+    var exactField = false;
+    var partialTitle = false;
     for (var row = 0; row < headerLevelCount; row++) {
       var headerValue = '';
       try { headerValue = String(vtable.getCellValue(col, row) || '').trim(); } catch (e) {}
-      if (headerValue === title) exact = true;
-      else if (headerValue.indexOf(title) !== -1) partial = true;
+      var fieldValue = _duHeaderField(vtable, col, row);
+      if (headerValue === needle) exactTitle = true;
+      else if (headerValue && headerValue.indexOf(needle) !== -1) partialTitle = true;
+      if (fieldValue && fieldValue === needle) exactField = true;
     }
-    if (exact) exactCols.push(col);
-    else if (partial) partialCols.push(col);
+    if (exactTitle) exactTitleCols.push(col);
+    else if (exactField) exactFieldCols.push(col);
+    else if (partialTitle) partialTitleCols.push(col);
   }
-  var matches = exactCols.length ? exactCols : partialCols;
-  if (matches.length !== 1) return null;
-  var targetCol = matches[0];
+  // Prefer unique exact title; if title is ambiguous but field is unique, use field.
+  if (exactTitleCols.length === 1) return exactTitleCols[0];
+  if (exactTitleCols.length > 1) {
+    // Ambiguous titles: cannot safely choose by partial/field alone without field disambiguation.
+    return null;
+  }
+  if (exactFieldCols.length === 1) return exactFieldCols[0];
+  if (exactFieldCols.length > 1) return null;
+  if (partialTitleCols.length === 1) return partialTitleCols[0];
+  return null;
+}
+
+function getColumnValuesByTitle(vtable, title, raw) {
+  if (!vtable || !title) return null;
+  var headerLevelCount = vtable.columnHeaderLevelCount || vtable.frozenRowCount || 1;
+  var targetCol = _duResolveColumnByIdentity(vtable, title);
+  if (targetCol === null || targetCol === undefined) return null;
 
   var values = [];
   for (var r = headerLevelCount; r < vtable.rowCount; r++) {

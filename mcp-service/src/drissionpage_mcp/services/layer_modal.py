@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
 
 from ..core import ui_contract_legacy as legacy
 from . import browser_session
@@ -261,6 +262,134 @@ def _layer_meta_from_element(layer) -> dict:
         "nestedIframes": nested,
         "hasClose": has_close,
         "className": cls,
+    }
+
+
+def detect_layer_shade(parent=None, timeout: float = 0.5) -> dict:
+    """Detect a blocking ``.layui-layer-shade`` in business iframe (then top)."""
+    timeout = max(float(timeout or 0), 0.0)
+    _, contexts = _parent_contexts()
+    if parent is not None:
+        contexts = [("custom", parent)] + [
+            item for item in contexts if item[1] is not parent
+        ]
+    for scope, ctx in contexts:
+        try:
+            has_shade = ctx.wait.eles_loaded(
+                "c:" + legacy.LAYER_SHADE,
+                timeout=min(timeout, 1.0) if timeout else 0.3,
+                raise_err=False,
+            )
+        except Exception:
+            try:
+                has_shade = bool(ctx.ele("c:" + legacy.LAYER_SHADE, timeout=0.2))
+            except Exception:
+                has_shade = False
+        if has_shade:
+            return {"ok": True, "has_shade": True, "scope": scope}
+    return {"ok": True, "has_shade": False, "scope": None}
+
+
+def clear_layer_shade(parent=None, timeout: float = 2.0) -> dict:
+    """Close layer shade if present (click ``.layui-layer-close``), wait until gone.
+
+    Used before Bootstrap row selection so leftover edit dialogs do not block the table.
+    """
+    timeout = max(float(timeout or 0), 0.0)
+    detected = detect_layer_shade(parent=parent, timeout=min(timeout, 0.6))
+    if not detected.get("has_shade"):
+        return {
+            "ok": True,
+            "had_shade": False,
+            "closed": False,
+            "scope": detected.get("scope"),
+        }
+
+    _, contexts = _parent_contexts()
+    if parent is not None:
+        contexts = [("custom", parent)] + [
+            item for item in contexts if item[1] is not parent
+        ]
+    errors = []
+    for scope, ctx in contexts:
+        try:
+            close_el = (
+                ctx.ele("c:" + legacy.LAYER_CLOSE, timeout=0.5)
+                or ctx.ele("t:a@@class:layui-layer-close", timeout=0.3)
+            )
+            if close_el is None:
+                continue
+            try:
+                close_el.click(by_js=False, timeout=2)
+            except Exception:
+                close_el.click(by_js=True, timeout=2)
+            try:
+                ctx.wait.ele_deleted(
+                    "c:" + legacy.LAYER_SHADE,
+                    timeout=max(timeout, 0.5),
+                    raise_err=False,
+                )
+            except Exception:
+                pass
+            still = detect_layer_shade(parent=ctx, timeout=0.3)
+            if not still.get("has_shade"):
+                return {
+                    "ok": True,
+                    "had_shade": True,
+                    "closed": True,
+                    "scope": scope,
+                }
+            errors.append("%s: shade still present after close" % scope)
+        except Exception as exc:
+            errors.append("%s: %s" % (scope, exc))
+    return {
+        "ok": False,
+        "had_shade": True,
+        "closed": False,
+        "reason": "关闭 layer 遮罩失败",
+        "errors": errors,
+    }
+
+
+def wait_layer_shell(timeout: float = 3.0, parent=None) -> dict:
+    """Wait until a non-shade layer shell is present (iframe/dialog/page)."""
+    timeout = max(float(timeout or 0), 0.0)
+    tab, contexts = _parent_contexts()
+    if parent is not None:
+        contexts = [("custom", parent)] + [
+            item for item in contexts if item[1] is not parent
+        ]
+    deadline = time.perf_counter() + timeout
+    last_errors = []
+    while True:
+        for scope, ctx in contexts:
+            try:
+                remaining = max(deadline - time.perf_counter(), 0.0)
+                if remaining <= 0:
+                    break
+                ctx.wait.eles_loaded(
+                    "css:.layui-layer.layui-layer-iframe, "
+                    "css:.layui-layer:not(.layui-layer-shade)",
+                    timeout=min(remaining, 0.4),
+                    raise_err=False,
+                )
+                layers = _visible_layer_elements(ctx)
+                if layers:
+                    meta = _layer_meta_from_element(layers[-1])
+                    return {
+                        "ok": True,
+                        "scope": scope,
+                        "count": len(layers),
+                        "meta": meta,
+                    }
+            except Exception as exc:
+                last_errors.append("%s: %s" % (scope, exc))
+        if time.perf_counter() >= deadline:
+            break
+    return {
+        "ok": False,
+        "reason": "等待 layer 壳超时",
+        "errors": last_errors,
     }
 
 

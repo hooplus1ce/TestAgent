@@ -602,45 +602,23 @@ def click_bootstrap_row_selection(
         return {"ok": False, "reason": "未找到活动 iframe"}
 
     shade_closed = False
-    try:
-        has_shade = fr.wait.eles_loaded(
-            "t:div@@class:layui-layer-shade",
-            timeout=0.5,
-            raise_err=False,
-        )
-    except Exception:
-        has_shade = False
-    if has_shade:
+    from . import layer_modal
+
+    shade = layer_modal.detect_layer_shade(parent=fr, timeout=0.5)
+    if shade.get("has_shade"):
         if not close_shade:
             return {
                 "ok": False,
                 "reason": "检测到 layer 弹窗遮罩层，请先关闭弹窗后再选择行",
             }
-        try:
-            close_el = (
-                fr.ele("c:.layui-layer-close", timeout=0.5)
-                or fr.ele("t:a@@class:layui-layer-close", timeout=0.3)
-            )
-            if close_el is None:
-                return {
-                    "ok": False,
-                    "reason": "检测到 layer 遮罩但未找到关闭按钮",
-                }
-            close_el.click(by_js=False, timeout=2)
-            shade_closed = True
-            try:
-                fr.wait.ele_deleted(
-                    "c:.layui-layer-shade",
-                    timeout=1.5,
-                    raise_err=False,
-                )
-            except Exception:
-                pass
-        except Exception as exc:
+        cleared = layer_modal.clear_layer_shade(parent=fr, timeout=2.0)
+        if not cleared.get("ok"):
             return {
                 "ok": False,
-                "reason": "关闭 layer 遮罩失败: %s" % exc,
+                "reason": cleared.get("reason") or "关闭 layer 遮罩失败",
+                "shade": cleared,
             }
+        shade_closed = bool(cleared.get("closed") or cleared.get("had_shade"))
 
     if select_all:
         js = _HELPER_JS + r"""

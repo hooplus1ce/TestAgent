@@ -335,7 +335,10 @@ def mount_vtable(force: bool = False):
 
 
 def scan_vtable_columns(max_col: int = 50):
-    """扫描列定义与表头图标，限制返回规模。"""
+    """扫描列定义与表头图标，限制返回规模。
+
+    每列包含 col / title / field / identity，便于同名列消歧。
+    """
     max_col, reason = _index(max_col, "max_col")
     if reason:
         return {"ok": False, "reason": reason}
@@ -357,6 +360,276 @@ def scan_vtable_columns(max_col: int = 50):
             "reason": "scanColumns 返回空，可能未挂载可见 VTable 或无列",
         }
     return {"ok": True, "columns": cols}
+
+
+def _norm_identity_text(value) -> str:
+    return str(value or "").strip()
+
+
+def _column_identity_summary(info: dict) -> dict:
+    return {
+        "col": info.get("col"),
+        "title": _norm_identity_text(info.get("title")),
+        "field": _norm_identity_text(info.get("field")) or None,
+        "row": info.get("row"),
+        "isHeader": info.get("isHeader"),
+    }
+
+
+def resolve_column(
+    column_title: str = None,
+    field: str = None,
+    col: int = None,
+    max_col: int = 100,
+    columns: list = None,
+) -> dict:
+    """Resolve a VTable column by col / field / title (or combination).
+
+    Priority:
+      1. explicit ``col`` (validated against scan when available)
+      2. unique exact ``field`` match
+      3. unique exact ``title`` match
+      4. unique exact ``title`` among rows that also match ``field`` when both given
+      5. unique exact field/title cross-match (title string equals field name)
+
+    Returns ``{ok, col, match, candidates?, reason?}``.
+    """
+    title = _norm_identity_text(column_title)
+    field_name = _norm_identity_text(field)
+    explicit_col = None
+    if col is not None:
+        explicit_col, reason = _index(col, "col")
+        if reason:
+            return {"ok": False, "reason": reason, "candidates": []}
+
+    if explicit_col is None and not title and not field_name:
+        return {
+            "ok": False,
+            "reason": "需要提供 col、column_title 或 field 之一",
+            "candidates": [],
+        }
+
+    if columns is None:
+        scan = scan_vtable_columns(max_col=max_col)
+        if not scan.get("ok"):
+            return {
+                "ok": False,
+                "reason": scan.get("reason", "VTable 扫描失败"),
+                "candidates": [],
+            }
+        columns = scan.get("columns") or []
+
+    # Prefer leaf header rows when multiple header levels share the same col.
+    by_col: dict[int, list] = {}
+    for info in columns:
+        if not isinstance(info, dict):
+            continue
+        c = info.get("col")
+        if c is None:
+            continue
+        try:
+            c = int(c)
+        except (TypeError, ValueError):
+            continue
+        by_col.setdefault(c, []).append(info)
+
+    def pick_representative(infos: list) -> dict:
+        headers = [i for i in infos if i.get("isHeader")]
+        pool = headers or infos
+        # Prefer last header row (usually leaf title).
+        return max(pool, key=lambda i: int(i.get("row") or 0))
+
+    representatives = {
+        c: pick_representative(infos) for c, infos in by_col.items()
+    }
+
+    if explicit_col is not None:
+        if explicit_col not in representatives and columns:
+            return {
+                "ok": False,
+                "reason": "col 越界或不存在: %s" % explicit_col,
+                "candidates": [
+                    _column_identity_summary(i) for i in representatives.values()
+                ][:30],
+            }
+        info = representatives.get(explicit_col) or {"col": explicit_col}
+        # Optional consistency checks when title/field also provided.
+        if title and _norm_identity_text(info.get("title")) and _norm_identity_text(info.get("title")) != title:
+            return {
+                "ok": False,
+                "reason": "col=%s 的 title 与请求不一致（实际 title=%s）" % (
+                    explicit_col, info.get("title"),
+                ),
+                "col": explicit_col,
+                "match": "col",
+                "column": _column_identity_summary(info),
+                "candidates": [],
+            }
+        if field_name and _norm_identity_text(info.get("field")) and _norm_identity_text(info.get("field")) != field_name:
+            return {
+                "ok": False,
+                "reason": "col=%s 的 field 与请求不一致（实际 field=%s）" % (
+                    explicit_col, info.get("field"),
+                ),
+                "col": explicit_col,
+                "match": "col",
+                "column": _column_identity_summary(info),
+                "candidates": [],
+            }
+        return {
+            "ok": True,
+            "col": explicit_col,
+            "match": "col",
+            "column": _column_identity_summary(info),
+            "candidates": [],
+        }
+
+    def match_field(info: dict) -> bool:
+        return bool(field_name) and _norm_identity_text(info.get("field")) == field_name
+
+    def match_title(info: dict) -> bool:
+        return bool(title) and _norm_identity_text(info.get("title")) == title
+
+    def match_title_or_field_as_title(info: dict) -> bool:
+        # Allow agents to pass field name via column_title (legacy path).
+        if not title:
+            return False
+        return (
+            _norm_identity_text(info.get("title")) == title
+            or _norm_identity_text(info.get("field")) == title
+        )
+
+    candidates_info = list(representatives.values())
+
+    if title and field_name:
+        both = [i for i in candidates_info if match_title(i) and match_field(i)]
+        if len(both) == 1:
+            info = both[0]
+            return {
+                "ok": True,
+                "col": int(info["col"]),
+                "match": "title+field",
+                "column": _column_identity_summary(info),
+                "candidates": [],
+            }
+        if len(both) > 1:
+            return {
+                "ok": False,
+                "reason": "title+field 匹配不唯一: title=%s field=%s（匹配列 %s）" % (
+                    title, field_name, sorted({int(i["col"]) for i in both}),
+                ),
+                "candidates": [_column_identity_summary(i) for i in both],
+            }
+        # Fall through: maybe only one of them is unique enough.
+
+    if field_name:
+        field_hits = [i for i in candidates_info if match_field(i)]
+        if len(field_hits) == 1:
+            info = field_hits[0]
+            return {
+                "ok": True,
+                "col": int(info["col"]),
+                "match": "field",
+                "column": _column_identity_summary(info),
+                "candidates": [],
+            }
+        if len(field_hits) > 1:
+            return {
+                "ok": False,
+                "reason": "field 匹配不唯一: %s（匹配列 %s）" % (
+                    field_name, sorted({int(i["col"]) for i in field_hits}),
+                ),
+                "candidates": [_column_identity_summary(i) for i in field_hits],
+            }
+        if not title:
+            return {
+                "ok": False,
+                "reason": "VTable 列 field 未找到: %s" % field_name,
+                "candidates": [],
+            }
+
+    if title:
+        title_hits = [i for i in candidates_info if match_title(i)]
+        if len(title_hits) == 1:
+            info = title_hits[0]
+            return {
+                "ok": True,
+                "col": int(info["col"]),
+                "match": "title",
+                "column": _column_identity_summary(info),
+                "candidates": [],
+            }
+        if len(title_hits) > 1:
+            # Same display title on multiple cols — surface field so caller can disambiguate.
+            return {
+                "ok": False,
+                "reason": "VTable 列标题匹配不唯一: %s（匹配列 %s）" % (
+                    title, sorted({int(i["col"]) for i in title_hits}),
+                ),
+                "candidates": [_column_identity_summary(i) for i in title_hits],
+            }
+
+        # Legacy: column_title may actually be a field name.
+        cross = [i for i in candidates_info if match_title_or_field_as_title(i)]
+        # Exclude pure title misses already handled; keep field-as-title only.
+        field_as_title = [
+            i for i in candidates_info
+            if _norm_identity_text(i.get("field")) == title
+            and _norm_identity_text(i.get("title")) != title
+        ]
+        if len(field_as_title) == 1:
+            info = field_as_title[0]
+            return {
+                "ok": True,
+                "col": int(info["col"]),
+                "match": "field-via-title",
+                "column": _column_identity_summary(info),
+                "candidates": [],
+            }
+        if len(field_as_title) > 1:
+            return {
+                "ok": False,
+                "reason": "VTable 列 field 匹配不唯一: %s（匹配列 %s）" % (
+                    title, sorted({int(i["col"]) for i in field_as_title}),
+                ),
+                "candidates": [_column_identity_summary(i) for i in field_as_title],
+            }
+        return {
+            "ok": False,
+            "reason": "VTable 列未找到: %s" % title,
+            "candidates": [],
+        }
+
+    return {
+        "ok": False,
+        "reason": "VTable 列未找到",
+        "candidates": [],
+    }
+
+
+def resolve_column_index(
+    column_title: str = None,
+    field: str = None,
+    col: int = None,
+    max_col: int = 100,
+    columns: list = None,
+) -> tuple:
+    """Compatibility helper: ``(col_index_or_None, reason_or_None)``."""
+    resolved = resolve_column(
+        column_title=column_title,
+        field=field,
+        col=col,
+        max_col=max_col,
+        columns=columns,
+    )
+    if resolved.get("ok"):
+        return resolved.get("col"), None
+    reason = resolved.get("reason") or "VTable 列未找到"
+    candidates = resolved.get("candidates") or []
+    if candidates:
+        # Keep reason human-readable; callers may also read candidates via resolve_column.
+        return None, reason
+    return None, reason
 
 
 def get_column_values(title: str, raw: bool = False):

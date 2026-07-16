@@ -35,6 +35,7 @@ CAP_GROUPS = {
         "connect", "refresh_session", "check_session", "set_target_env",
         "enter_module", "get_active_frame", "detect_page_family", "activate_tool_groups",
         "scan_layer_content",
+        "select_row_open_layer",
         "click", "click_xy", "input", "set_field_value", "insert_text", "hover", "set_date",
         "scan_page_elements", "find_elements", "find_batch", "dom_tree",
         "capture_page_model", "scan_toolbar_actions", "scan_form_fields",
@@ -59,6 +60,7 @@ CAP_GROUPS = {
     "legacy": [
         "detect_page_family", "activate_tool_groups",
         "scan_layer_content", "scan_form_fields", "select_option", "set_field_value",
+        "select_row_open_layer",
         "scan_table", "get_table_values", "get_table_data", "get_all_table_data",
         "click_table_cell", "query_table", "table_action",
         "observe_snapshot", "close_modal", "capture_page_model",
@@ -106,6 +108,7 @@ ENTERPRISE_TOOLS = {
     "enter_module", "get_active_frame", "detect_page_family", "activate_tool_groups",
     "capture_page_model", "scan_filter_fields", "scan_form_fields",
     "scan_layer_content", "select_option", "set_field_value",
+    "select_row_open_layer",
     "find_elements",
     "observe_snapshot", "explore_action", "close_modal", "screenshot",
     "query_table", "inspect_table_cell", "table_action",

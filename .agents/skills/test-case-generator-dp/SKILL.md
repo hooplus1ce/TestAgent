@@ -74,9 +74,11 @@ Read only the references needed for the requested area when the task is narrow.
    the complete tool catalog is available when a specialized interaction or
    service diagnosis requires it.
    For legacy jQuery/Bootstrap modules (`detect_page_family` → `legacy_jq_bootstrap`):
-   use `scan_table(kind="bootstrap"|"auto")`, open dialogs via toolbar buttons, then
-   `scan_form_fields(scope="layer")` / `scan_layer_content` for layer.js iframe forms,
-   and `select_option(..., scope="layer")` for bootstrap-select fields.
+   use `scan_table(kind="bootstrap"|"auto")`. Preferred edit path:
+   `select_row_open_layer(row=..., toolbar_text="编辑")` which clears layer shade,
+   selects the Bootstrap row, clicks the toolbar, and enters the layer iframe
+   (then `set_field_value` / `select_option(..., scope="layer")` / `scan_layer_content`).
+   You may still open dialogs via toolbar + `scan_layer_content` manually when needed.
 5. Build a coverage model before generating cases: asset inventory, testable
    functions, scenario matrix, and coverage statuses (`已验证`, `待验证`,
    `需用户确认`, `工具缺口`).
