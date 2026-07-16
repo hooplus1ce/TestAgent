@@ -284,6 +284,16 @@ def get_layer_content_frame(parent=None, layer_index: int = -1, timeout: float =
     errors = []
     for scope, ctx in contexts:
         try:
+            # 事件驱动等待 layer 壳出现（iframe 型优先，兼容 dialog/msg）。
+            try:
+                ctx.wait.eles_loaded(
+                    "css:.layui-layer.layui-layer-iframe, "
+                    "css:.layui-layer:not(.layui-layer-shade)",
+                    timeout=min(timeout, 3.0) if timeout else 0.5,
+                    raise_err=False,
+                )
+            except Exception:
+                pass
             layers = _visible_layer_elements(ctx)
             if not layers:
                 continue
@@ -497,9 +507,10 @@ def set_layer_field_value(
     timeout: float = 5.0,
     layer_index: int = -1,
 ) -> dict:
-    """按中文标签/name 在可见 layer 内容 frame 内写入文本字段。
+    """按中文标签/name 在可见 layer 内容 frame 内写入字段。
 
-    不处理 select（请用 bootstrap_select.select_bootstrap_option）。
+    优先尝试 bootstrap-select / 原生 select（与遗留「编辑弹窗」交互一致），
+    未命中再写 input/textarea。
     """
     field_name = str(field_name or "").strip()
     if not field_name:
@@ -511,6 +522,33 @@ def set_layer_field_value(
     resolved = get_layer_content_frame(layer_index=layer_index, timeout=min(timeout, 3.0))
     if not resolved.get("ok"):
         return resolved
+
+    # 下拉优先：遗留账号/角色弹窗多为 label + bootstrap-select 按钮。
+    if text_value:
+        try:
+            from . import bootstrap_select
+
+            select_budget = min(max(timeout * 0.45, 0.8), 2.5)
+            selected = bootstrap_select.select_bootstrap_option(
+                field_name=field_name,
+                option_text=text_value,
+                select_index=select_index,
+                prefer_layer=True,
+                timeout=select_budget,
+            )
+            if selected.get("ok"):
+                selected = dict(selected)
+                selected.setdefault("action", "set_field_value")
+                selected["field_name"] = field_name
+                selected["value"] = text_value
+                selected["via"] = selected.get("adapter") or "bootstrap-select"
+                selected["content_kind"] = resolved.get("content_kind")
+                selected["content_url"] = resolved.get("content_url")
+                selected["title"] = (resolved.get("meta") or {}).get("title")
+                return selected
+        except Exception as exc:
+            logger.debug("layer bootstrap-select path skipped: %s", exc)
+
     content = resolved["content_frame"]
     lit = _xpath_literal(field_name)
     compact = _compact(field_name)

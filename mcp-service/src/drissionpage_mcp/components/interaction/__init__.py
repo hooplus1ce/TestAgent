@@ -1,0 +1,1 @@
+"""DOM interaction FastMCP components."""

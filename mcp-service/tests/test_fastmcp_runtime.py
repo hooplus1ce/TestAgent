@@ -21,6 +21,12 @@ def test_public_tools_have_capability_risk_and_level_tags():
     assert {"cap:core", "risk:read", "level:facade"} <= tools[
         "check_session"
     ].tags
+    assert {"cap:core", "risk:write", "level:facade"} <= tools["connect"].tags
+    assert {"cap:core", "risk:read"} <= tools["detect_layer_msg"].tags
+    assert {"cap:filter", "risk:write"} <= tools["select_option"].tags
+    assert {"cap:network", "risk:write"} <= tools["network_trace_start"].tags
+    assert {"cap:observe", "risk:write"} <= tools["observe_start"].tags
+    assert {"cap:storage", "risk:read"} <= tools["list_contexts"].tags
     assert {"cap:devtools", "level:primitive"} <= tools["run_js"].tags
     assert {"cap:legacy", "domain:page-model"} <= tools[
         "detect_page_family"
@@ -48,11 +54,14 @@ def test_runtime_governance_uses_safe_middleware_and_wait_timeouts():
 
 def test_run_test_cases_reports_progress_without_changing_sync_api(monkeypatch):
     from drissionpage_mcp import server
+    from drissionpage_mcp.workflows import recipe_execution
 
     expected = {
         "ok": True,
         "counts": {"passed": 2, "failed": 0, "xfailed": 0, "skipped": 0},
     }
+    # Public MCP tool dispatches into recipe_execution; patch the shipped implementation.
+    monkeypatch.setattr(recipe_execution, "run_test_cases", lambda *_args: expected)
     monkeypatch.setattr(server, "run_test_cases", lambda *_args: expected)
     progress = []
 

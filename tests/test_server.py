@@ -8,6 +8,7 @@ import urllib.parse
 from types import SimpleNamespace
 import threading
 import time
+from drissionpage_mcp.services import interaction  # used by explore/set_date tests after extract
 from unittest.mock import MagicMock, patch
 
 REMOVED_DUPLICATE_TOOLS = {
@@ -245,11 +246,11 @@ def test_explore_action_uses_default_observe_signals_without_listen_targets():
     from drissionpage_mcp import server
     calls = {}
 
-    with patch.object(server.observe, "observe_start", side_effect=lambda **kwargs: calls.setdefault("observe_start", kwargs) or {"ok": True}), \
-         patch.object(server.observe, "observe_wait", return_value={"type": "none"}), \
-         patch.object(server, "_pre_click_cleanup", return_value=None), \
+    with patch.object(interaction.observe, "observe_start", side_effect=lambda **kwargs: calls.setdefault("observe_start", kwargs) or {"ok": True}), \
+         patch.object(interaction.observe, "observe_wait", return_value={"type": "none"}), \
+         patch.object(interaction.table_facade, "pre_click_cleanup", return_value=None), \
          patch.object(server, "_attach_cleanup", side_effect=lambda result, cleanup: result), \
-         patch.object(server.browser_session, "get_tab", return_value=SimpleNamespace()):
+         patch.object(interaction.browser_session, "get_tab", return_value=SimpleNamespace()):
         result = server.explore_action(action="noop", timeout=0.01)
 
     assert result["ok"] is False
@@ -262,11 +263,11 @@ def test_explore_action_adds_network_signal_when_listen_targets_present():
     from drissionpage_mcp import server
     calls = {}
 
-    with patch.object(server.observe, "observe_start", side_effect=lambda **kwargs: calls.setdefault("observe_start", kwargs) or {"ok": True}), \
-         patch.object(server.observe, "observe_wait", return_value={"type": "none"}), \
-         patch.object(server, "_pre_click_cleanup", return_value=None), \
+    with patch.object(interaction.observe, "observe_start", side_effect=lambda **kwargs: calls.setdefault("observe_start", kwargs) or {"ok": True}), \
+         patch.object(interaction.observe, "observe_wait", return_value={"type": "none"}), \
+         patch.object(interaction.table_facade, "pre_click_cleanup", return_value=None), \
          patch.object(server, "_attach_cleanup", side_effect=lambda result, cleanup: result), \
-         patch.object(server.browser_session, "get_tab", return_value=SimpleNamespace()):
+         patch.object(interaction.browser_session, "get_tab", return_value=SimpleNamespace()):
         result = server.explore_action(action="noop", listen_targets="gateway", timeout=0.01)
 
     assert result["ok"] is False
@@ -294,15 +295,15 @@ def test_explore_action_button_target_resolves_visible_toolbar_action():
     fake_tab = SimpleNamespace(actions=actions)
     calls = {}
 
-    with patch.object(server.page_model, "scan_toolbar_actions", return_value={
+    with patch.object(interaction.page_model, "scan_toolbar_actions", return_value={
             "ok": True,
             "actions": [{"text": "添 加", "cx": 356.6, "cy": 117.0}],
          }) as scan, \
-         patch.object(server.observe, "observe_start", side_effect=lambda **kwargs: calls.setdefault("observe_start", kwargs) or {"ok": True}), \
-         patch.object(server.observe, "observe_wait", side_effect=lambda **kwargs: calls.setdefault("observe_wait", kwargs) or {"type": "modal"}), \
-         patch.object(server, "_pre_click_cleanup", return_value=None), \
+         patch.object(interaction.observe, "observe_start", side_effect=lambda **kwargs: calls.setdefault("observe_start", kwargs) or {"ok": True}), \
+         patch.object(interaction.observe, "observe_wait", side_effect=lambda **kwargs: calls.setdefault("observe_wait", kwargs) or {"type": "modal"}), \
+         patch.object(interaction.table_facade, "pre_click_cleanup", return_value=None), \
          patch.object(server, "_attach_cleanup", side_effect=lambda result, cleanup: result), \
-         patch.object(server.browser_session, "get_tab", return_value=fake_tab):
+         patch.object(interaction.browser_session, "get_tab", return_value=fake_tab):
         result = server.explore_action(target={"type": "button", "text": "添加"}, timeout=8)
 
     scan.assert_called_once_with(scope="toolbar", in_frame=True, max_items=160)
@@ -320,12 +321,12 @@ def test_explore_action_field_target_infers_calendar_fast_mode():
     from drissionpage_mcp import server
     calls = {}
 
-    with patch.object(server.observe, "observe_start", side_effect=lambda **kwargs: calls.setdefault("observe_start", kwargs) or {"ok": True}), \
-         patch.object(server.observe, "observe_wait", side_effect=lambda **kwargs: calls.setdefault("observe_wait", kwargs) or {"type": "calendar"}), \
-         patch.object(server, "_pre_click_cleanup", return_value=None), \
+    with patch.object(interaction.observe, "observe_start", side_effect=lambda **kwargs: calls.setdefault("observe_start", kwargs) or {"ok": True}), \
+         patch.object(interaction.observe, "observe_wait", side_effect=lambda **kwargs: calls.setdefault("observe_wait", kwargs) or {"type": "calendar"}), \
+         patch.object(interaction.table_facade, "pre_click_cleanup", return_value=None), \
          patch.object(server, "_attach_cleanup", side_effect=lambda result, cleanup: result), \
-         patch.object(server.browser_session, "get_tab", return_value=SimpleNamespace()), \
-         patch.object(server, "_click_field_raw", return_value={"ok": True, "action": "field_click", "control_type": "date-picker"}) as click_field:
+         patch.object(interaction.browser_session, "get_tab", return_value=SimpleNamespace()), \
+         patch.object(interaction, "_click_field_raw", return_value={"ok": True, "action": "field_click", "control_type": "date-picker"}) as click_field:
         result = server.explore_action(
             target={"type": "field", "name": "工作日期"},
             observe_mode="fast",
@@ -357,12 +358,12 @@ def test_explore_action_observe_mode_none_skips_observer():
     actions = FakeActions()
     fake_tab = SimpleNamespace(actions=actions)
 
-    with patch.object(server.observe, "observe_start", side_effect=AssertionError("observe_start should be skipped")), \
-         patch.object(server.observe, "observe_wait", side_effect=AssertionError("observe_wait should be skipped")), \
+    with patch.object(interaction.observe, "observe_start", side_effect=AssertionError("observe_start should be skipped")), \
+         patch.object(interaction.observe, "observe_wait", side_effect=AssertionError("observe_wait should be skipped")), \
          patch.object(server.tool_metadata, "ENABLED_PROFILE", "full"), \
-         patch.object(server, "_pre_click_cleanup", return_value=None), \
+         patch.object(interaction.table_facade, "pre_click_cleanup", return_value=None), \
          patch.object(server, "_attach_cleanup", side_effect=lambda result, cleanup: result), \
-         patch.object(server.browser_session, "get_tab", return_value=fake_tab):
+         patch.object(interaction.browser_session, "get_tab", return_value=fake_tab):
         result = server.explore_action(
             action="click_xy",
             x=10,
@@ -407,13 +408,13 @@ def test_explore_action_capture_after_disables_snapshot_by_default():
     calls = {}
     fake_tab = SimpleNamespace(actions=FakeActions())
 
-    with patch.object(server.observe, "observe_start", return_value={"ok": True}), \
-         patch.object(server.observe, "observe_wait", side_effect=lambda **kwargs: calls.setdefault("observe_wait", kwargs) or {"type": "modal"}), \
+    with patch.object(interaction.observe, "observe_start", return_value={"ok": True}), \
+         patch.object(interaction.observe, "observe_wait", side_effect=lambda **kwargs: calls.setdefault("observe_wait", kwargs) or {"type": "modal"}), \
          patch.object(server.tool_metadata, "ENABLED_PROFILE", "full"), \
-         patch.object(server.page_model, "capture_page_model", return_value={"ok": True, "modals": {"count": 1}}), \
-         patch.object(server, "_pre_click_cleanup", return_value=None), \
+         patch.object(interaction.page_model, "capture_page_model", return_value={"ok": True, "modals": {"count": 1}}), \
+         patch.object(interaction.table_facade, "pre_click_cleanup", return_value=None), \
          patch.object(server, "_attach_cleanup", side_effect=lambda result, cleanup: result), \
-         patch.object(server.browser_session, "get_tab", return_value=fake_tab):
+         patch.object(interaction.browser_session, "get_tab", return_value=fake_tab):
         result = server.explore_action(
             action="click_xy",
             x=10,
@@ -429,11 +430,12 @@ def test_explore_action_capture_after_disables_snapshot_by_default():
 
 def test_explore_action_routes_text_input_to_standard_input_tool():
     from drissionpage_mcp import server
+    from drissionpage_mcp.services import interaction
     fake_tab = SimpleNamespace()
     with patch.object(server.tool_metadata, "ENABLED_PROFILE", "full"), \
-         patch.object(server.modal, "clear_transient_overlays", return_value={"ok": True, "closed": [], "errors": []}), \
-         patch.object(server.browser_session, "get_tab", return_value=fake_tab), \
-         patch.object(server, "input", return_value={"ok": True, "locator": "#order"}) as input_tool:
+         patch.object(interaction.table_facade.modal, "clear_transient_overlays", return_value={"ok": True, "closed": [], "errors": []}), \
+         patch.object(interaction.browser_session, "get_tab", return_value=fake_tab), \
+         patch.object(interaction, "input", return_value={"ok": True, "locator": "#order"}) as input_tool:
         result = server.explore_action(
             action="input", locator="#order", text="PO20260711", observe_mode="none",
         )
@@ -582,8 +584,8 @@ def test_resolve_date_picker_targets_quick_filter_value_control():
 
     frame = object()
     tab = object()
-    with patch.object(server, "_date_field_contexts", return_value=(tab, [("iframe", frame)], ["filter"])), \
-         patch.object(server.filter_area, "_quick_filter_field_column", return_value=(Column(), [object(), object()])):
+    with patch.object(interaction, "_date_field_contexts", return_value=(tab, [("iframe", frame)], ["filter"])), \
+         patch.object(interaction.filter_area, "_quick_filter_field_column", return_value=(Column(), [object(), object()])):
         result = server._resolve_date_picker("创建时间", scope="filter")
 
     assert result["ok"] is True
@@ -595,6 +597,7 @@ def test_resolve_date_picker_targets_quick_filter_value_control():
 
 def test_set_date_handles_single_and_range_through_one_entry():
     from drissionpage_mcp import server
+    from drissionpage_mcp.services import interaction
 
     target = SimpleNamespace(wait=MagicMock())
     calendar = object()
@@ -610,11 +613,11 @@ def test_set_date_handles_single_and_range_through_one_entry():
             "area": "page",
         }
 
-    with patch.object(server, "_resolve_date_picker", side_effect=[resolved("single"), resolved("single")]), \
-         patch.object(server, "_date_picker_values", side_effect=[[""], ["2026-07-13"]]), \
-         patch.object(server, "_open_date_calendar", return_value=(target, calendar)), \
-         patch.object(server, "_calendar_snapshot", return_value={"ok": True, "title": "2026年7月"}), \
-         patch.object(server, "_select_calendar_date", return_value={"ok": True, "navigations": []}) as select:
+    with patch.object(interaction, "_resolve_date_picker", side_effect=[resolved("single"), resolved("single")]), \
+         patch.object(interaction, "_date_picker_values", side_effect=[[""], ["2026-07-13"]]), \
+         patch.object(interaction, "_open_date_calendar", return_value=(target, calendar)), \
+         patch.object(interaction, "_calendar_snapshot", return_value={"ok": True, "title": "2026年7月"}), \
+         patch.object(interaction, "_select_calendar_date", return_value={"ok": True, "navigations": []}) as select:
         single = server.set_date("工作日期", date="2026-07-13")
 
     assert single["ok"] is True
@@ -622,12 +625,12 @@ def test_set_date_handles_single_and_range_through_one_entry():
     assert single["date"] == "2026-07-13"
     assert select.call_count == 1
 
-    with patch.object(server, "_resolve_date_picker", side_effect=[resolved("range"), resolved("range")]), \
-         patch.object(server, "_date_picker_values", side_effect=[["", ""], ["2026-07-01", "2026-07-13"]]), \
-         patch.object(server, "_open_date_calendar", return_value=(target, calendar)), \
-         patch.object(server, "_find_calendar_root", return_value=calendar), \
-         patch.object(server, "_calendar_snapshot", return_value={"ok": True, "title": "2026年7月"}), \
-         patch.object(server, "_select_calendar_date", return_value={"ok": True, "navigations": []}) as select:
+    with patch.object(interaction, "_resolve_date_picker", side_effect=[resolved("range"), resolved("range")]), \
+         patch.object(interaction, "_date_picker_values", side_effect=[["", ""], ["2026-07-01", "2026-07-13"]]), \
+         patch.object(interaction, "_open_date_calendar", return_value=(target, calendar)), \
+         patch.object(interaction, "_find_calendar_root", return_value=calendar), \
+         patch.object(interaction, "_calendar_snapshot", return_value={"ok": True, "title": "2026年7月"}), \
+         patch.object(interaction, "_select_calendar_date", return_value={"ok": True, "navigations": []}) as select:
         date_range = server.set_date(
             "创建时间", start_date="2026/07/01", end_date="2026/07/13",
         )
@@ -641,6 +644,7 @@ def test_set_date_handles_single_and_range_through_one_entry():
 
 def test_set_date_rejects_distinct_range_for_quick_filter_single_boundary():
     from drissionpage_mcp import server
+    from drissionpage_mcp.services import interaction
 
     resolved = {
         "ok": True,
@@ -650,8 +654,8 @@ def test_set_date_rejects_distinct_range_for_quick_filter_single_boundary():
         "scope": "iframe",
         "area": "filter",
     }
-    with patch.object(server, "_resolve_date_picker", return_value=resolved), \
-         patch.object(server, "_open_date_calendar") as open_calendar:
+    with patch.object(interaction, "_resolve_date_picker", return_value=resolved), \
+         patch.object(interaction, "_open_date_calendar") as open_calendar:
         result = server.set_date(
             "创建时间", start_date="2026-07-01", end_date="2026-07-13",
             scope="filter",
@@ -670,6 +674,7 @@ import sys
 from types import SimpleNamespace
 from unittest.mock import patch
 from drissionpage_mcp import server
+from drissionpage_mcp.services import interaction
 server.tool_metadata.ENABLED_PROFILE = "full"
 class FakeElement:
     def __init__(self):
@@ -687,10 +692,10 @@ class FakeTarget:
         return json.dumps({"ok": True, "tag": "BUTTON", "text": "搜索"})
 
 ele = FakeElement()
-with patch.object(server.browser_session, "get_tab", return_value=SimpleNamespace()), \
-     patch.object(server.browser_session, "find", return_value=ele) as find, \
-     patch.object(server.browser_session, "get_active_frame", return_value=FakeTarget()), \
-     patch.object(server, "_pre_click_cleanup", return_value=None):
+with patch.object(interaction.browser_session, "get_tab", return_value=SimpleNamespace()), \
+     patch.object(interaction.browser_session, "find", return_value=ele) as find, \
+     patch.object(interaction.browser_session, "get_active_frame", return_value=FakeTarget()), \
+     patch.object(interaction.table_facade, "pre_click_cleanup", return_value=None):
     result = server.explore_action(
         action="click",
         locator="text:搜索",
@@ -740,8 +745,9 @@ def test_table_facade_registered():
 
 def test_query_table_routes_by_operation():
     from drissionpage_mcp import server
+    from drissionpage_mcp.services import table_facade
 
-    with patch.object(server, "get_table_values", return_value={"ok": True, "values": ["A"]}) as values:
+    with patch.object(table_facade, "get_table_values", return_value={"ok": True, "values": ["A"]}) as values:
         result = server.query_table(operation="values", column_title="单号", kind="auto")
 
     assert result == {"ok": True, "values": ["A"], "operation": "values"}
@@ -756,9 +762,10 @@ def test_query_table_routes_by_operation():
 
 def test_inspect_table_cell_combines_render_and_icons():
     from drissionpage_mcp import server
+    from drissionpage_mcp.services import table_facade
 
-    with patch.object(server, "get_vtable_cell_render_info", return_value={"ok": True, "text": "已审核"}), \
-         patch.object(server, "get_vtable_cell_icons", return_value={"ok": True, "icons": []}):
+    with patch.object(table_facade, "get_vtable_cell_render_info", return_value={"ok": True, "text": "已审核"}), \
+         patch.object(table_facade, "get_vtable_cell_icons", return_value={"ok": True, "icons": []}):
         result = server.inspect_table_cell(row=2, column_title="状态")
 
     assert result["ok"] is True
@@ -768,14 +775,15 @@ def test_inspect_table_cell_combines_render_and_icons():
 
 def test_table_action_routes_common_and_advanced_actions():
     from drissionpage_mcp import server
+    from drissionpage_mcp.services import table_facade
 
     observation = {
-        "observe_start": patch.object(server.observe, "observe_start", return_value={"ok": True}),
-        "observe_wait": patch.object(server.observe, "observe_wait", return_value={"type": "none"}),
-        "cleanup": patch.object(server, "_pre_click_cleanup", return_value=None),
+        "observe_start": patch.object(table_facade.observe, "observe_start", return_value={"ok": True}),
+        "observe_wait": patch.object(table_facade.observe, "observe_wait", return_value={"type": "none"}),
+        "cleanup": patch.object(table_facade, "pre_click_cleanup", return_value=None),
     }
     with observation["observe_start"], observation["observe_wait"], observation["cleanup"], \
-         patch.object(server, "click_table_cell", return_value={"ok": True, "kind": "html"}) as click_cell:
+         patch.object(table_facade, "click_table_cell", return_value={"ok": True, "kind": "html"}) as click_cell:
         clicked = server.table_action(
             action="double_click", row=1, column_title="单号", kind="html",
         )
@@ -788,10 +796,10 @@ def test_table_action_routes_common_and_advanced_actions():
         clean_overlays=False,
     )
 
-    with patch.object(server.observe, "observe_start", return_value={"ok": True}), \
-         patch.object(server.observe, "observe_wait", return_value={"type": "none"}), \
-         patch.object(server, "_pre_click_cleanup", return_value=None), \
-         patch.object(server, "vtable_action", return_value={"ok": True, "kind": "vtable"}) as action:
+    with patch.object(table_facade.observe, "observe_start", return_value={"ok": True}), \
+         patch.object(table_facade.observe, "observe_wait", return_value={"type": "none"}), \
+         patch.object(table_facade, "pre_click_cleanup", return_value=None), \
+         patch.object(table_facade, "vtable_action", return_value={"ok": True, "kind": "vtable"}) as action:
         result = server.table_action(
             action="click", row=0, column_title="操作", target="header-icon",
             icon_name="filter",
@@ -802,11 +810,12 @@ def test_table_action_routes_common_and_advanced_actions():
 
 def test_table_action_adds_network_signal_for_interface_assertion():
     from drissionpage_mcp import server
+    from drissionpage_mcp.services import table_facade
 
-    with patch.object(server, "_pre_click_cleanup", return_value=None), \
-         patch.object(server.observe, "observe_start", return_value={"ok": True}) as start, \
-         patch.object(server.observe, "observe_wait", return_value={"type": "network"}), \
-         patch.object(server, "click_table_cell", return_value={"ok": True}):
+    with patch.object(table_facade, "pre_click_cleanup", return_value=None), \
+         patch.object(table_facade.observe, "observe_start", return_value={"ok": True}) as start, \
+         patch.object(table_facade.observe, "observe_wait", return_value={"type": "network"}), \
+         patch.object(table_facade, "click_table_cell", return_value={"ok": True}):
         result = server.table_action(
             action="click", row=0, column_title="单号", listen_targets="gateway",
         )
@@ -819,11 +828,11 @@ def test_table_action_adds_network_signal_for_interface_assertion():
 def test_network_trace_facade_reuses_timeline_recorder():
     from drissionpage_mcp import server
 
-    with patch.object(server, "network_record_start", return_value={"ok": True}) as start:
+    with patch.object(server.network_record, "start", return_value={"ok": True}) as start:
         assert server.network_trace_start(targets="gateway", method="POST")["ok"] is True
     start.assert_called_once_with(targets="gateway", method="POST")
 
-    with patch.object(server, "network_record_stop", return_value={"ok": True, "packets": []}) as stop:
+    with patch.object(server.network_record, "stop", return_value={"ok": True, "packets": []}) as stop:
         assert server.network_trace_stop(timeout=1, max_packets=5)["ok"] is True
     stop.assert_called_once_with(
         timeout=1, max_packets=5, fit_count=False, max_body_chars=12000,
@@ -890,13 +899,13 @@ def test_html_table_facade_rejects_missing_index_and_raw_mode():
 
 def test_get_all_table_data_auto_prefers_vtable_backend():
     from drissionpage_mcp import server
-    with patch.object(server.page_model.page_family, "detect_page_family", return_value={
+    with patch.object(interaction.page_model.page_family, "detect_page_family", return_value={
         "ok": True, "preferred_table_kind": "vtable",
     }), \
-         patch.object(server.page_model.vtable, "scan_vtable_columns", return_value={
+         patch.object(interaction.page_model.vtable, "scan_vtable_columns", return_value={
         "ok": True,
         "columns": [{"title": "订单号", "col": 1, "bodyBehavior": "none"}],
-    }), patch.object(server.page_model.vtable, "get_columns_values", return_value={
+    }), patch.object(interaction.page_model.vtable, "get_columns_values", return_value={
         "ok": True,
         "values": {"订单号": ["SO001"]},
     }) as get_values:
@@ -962,7 +971,7 @@ def test_get_all_table_data_rejects_html_raw_mode():
 
 def test_selection_scan_rejects_negative_row_without_mutating_page():
     from drissionpage_mcp import server
-    with patch.object(server.page_model, "scan_toolbar_actions") as scan_actions, \
+    with patch.object(interaction.page_model, "scan_toolbar_actions") as scan_actions, \
          patch.object(server.vtable, "click_cell") as click_cell:
         result = server.scan_action_availability_by_selection(row=-1)
 
@@ -974,7 +983,7 @@ def test_selection_scan_rejects_negative_row_without_mutating_page():
 
 def test_selection_scan_does_not_click_when_before_snapshot_fails():
     from drissionpage_mcp import server
-    with patch.object(server.page_model, "scan_toolbar_actions", return_value={
+    with patch.object(interaction.page_model, "scan_toolbar_actions", return_value={
         "ok": False, "reason": "scan failed",
     }), patch.object(server.vtable, "click_cell") as click_cell:
         result = server.scan_action_availability_by_selection()
@@ -1393,16 +1402,20 @@ def test_observe_wait_attaches_snapshot_after_signal():
 
 def test_click_table_cell_routes_to_vtable_backend_by_col():
     from drissionpage_mcp import server
-    with patch.object(server.modal, "clear_transient_overlays", return_value={"ok": True, "closed": [], "errors": []}), \
-         patch.object(server.vtable, "click_cell", return_value={"ok": True, "col": 2, "row": 1}) as click_cell:
+    from drissionpage_mcp.services import table_facade
+
+    with patch.object(table_facade.modal, "clear_transient_overlays", return_value={"ok": True, "closed": [], "errors": []}), \
+         patch.object(table_facade.vtable, "click_cell", return_value={"ok": True, "col": 2, "row": 1}) as click_cell:
         assert server.click_table_cell(row=1, col=2, kind="vtable") == {"ok": True, "col": 2, "row": 1, "kind": "vtable"}
         click_cell.assert_called_once_with(2, 1, None, True, 0.3, False)
 
 
 def test_vtable_action_routes_to_backend_by_column_title():
     from drissionpage_mcp import server
-    with patch.object(server, "_find_vtable_col", return_value=(5, None)) as find_col, \
-         patch.object(server.vtable, "vtable_action", return_value={"ok": True, "action": "drag", "col": 5, "row": 2}) as action:
+    from drissionpage_mcp.services import table_facade
+
+    with patch.object(table_facade, "_find_vtable_col", return_value=(5, None)) as find_col, \
+         patch.object(table_facade.vtable, "vtable_action", return_value={"ok": True, "action": "drag", "col": 5, "row": 2}) as action:
         result = server.vtable_action(action="drag", row=2, column_title="计划开始",
                                       drag_by_x=16, clean_overlays=False)
 
@@ -1425,8 +1438,10 @@ def test_vtable_action_routes_to_backend_by_column_title():
 
 def test_get_vtable_cell_render_info_routes_to_backend_by_column_title():
     from drissionpage_mcp import server
-    with patch.object(server, "_find_vtable_col", return_value=(24, None)) as find_col, \
-         patch.object(server.vtable, "get_cell_render_info", return_value={
+    from drissionpage_mcp.services import table_facade
+
+    with patch.object(table_facade, "_find_vtable_col", return_value=(24, None)) as find_col, \
+         patch.object(table_facade.vtable, "get_cell_render_info", return_value={
              "ok": True,
              "text": "生产中",
              "fontColor": "#000000",
@@ -1668,7 +1683,7 @@ def test_listen_start_sets_http_listener_state_for_drissionpage_42():
     fake_listen = _FakeListen()
     fake_tab = SimpleNamespace(listen=fake_listen)
 
-    with patch.object(server.browser_session, "get_tab", return_value=fake_tab):
+    with patch.object(interaction.browser_session, "get_tab", return_value=fake_tab):
         result = server.listen_start("gateway, scmpsm", method="POST")
 
     assert result == {
@@ -1687,7 +1702,7 @@ def test_listen_start_falls_back_to_get_post_for_unknown_method():
     fake_listen = _FakeListen()
     fake_tab = SimpleNamespace(listen=fake_listen)
 
-    with patch.object(server.browser_session, "get_tab", return_value=fake_tab):
+    with patch.object(interaction.browser_session, "get_tab", return_value=fake_tab):
         result = server.listen_start("gateway", method="BREW")
 
     assert result["method"] == "GET,POST"
@@ -1700,7 +1715,7 @@ def test_listen_wait_passes_fit_count_to_drissionpage():
     fake_listen = _FakeListen(wait_return=None)
     fake_tab = SimpleNamespace(listen=fake_listen)
 
-    with patch.object(server.browser_session, "get_tab", return_value=fake_tab):
+    with patch.object(interaction.browser_session, "get_tab", return_value=fake_tab):
         result = server.listen_wait(count=3, timeout=1, fit_count=False)
 
     assert result["ok"] is False
@@ -1712,7 +1727,7 @@ def test_listen_ws_start_sets_websocket_listener_state_for_drissionpage_42():
     fake_listen = _FakeListen()
     fake_tab = SimpleNamespace(listen=fake_listen)
 
-    with patch.object(server.browser_session, "get_tab", return_value=fake_tab):
+    with patch.object(interaction.browser_session, "get_tab", return_value=fake_tab):
         result = server.listen_ws_start("socket")
 
     assert result == {
@@ -1731,7 +1746,7 @@ def test_network_record_start_sets_http_listener_state():
     fake_listen = _FakeListen()
     fake_tab = SimpleNamespace(listen=fake_listen)
 
-    with patch.object(server.browser_session, "get_tab", return_value=fake_tab):
+    with patch.object(interaction.browser_session, "get_tab", return_value=fake_tab):
         result = server.network_record_start("gateway", method="POST")
 
     assert result == {
@@ -1758,7 +1773,7 @@ def test_network_record_stop_returns_packet_timeline():
     fake_listen = _FakeListen(wait_return=[packet])
     fake_tab = SimpleNamespace(listen=fake_listen)
 
-    with patch.object(server.browser_session, "get_tab", return_value=fake_tab):
+    with patch.object(interaction.browser_session, "get_tab", return_value=fake_tab):
         server.network_record_start("gateway", method="POST")
         result = server.network_record_stop(timeout=1, max_packets=5)
 
@@ -1790,7 +1805,7 @@ def test_network_capture_ignores_account_json_before_business_packet():
     fake_listen = _FakeListen(wait_return=[noise, business])
     fake_tab = SimpleNamespace(listen=fake_listen)
 
-    with patch.object(server.browser_session, "get_tab", return_value=fake_tab):
+    with patch.object(interaction.browser_session, "get_tab", return_value=fake_tab):
         server.network_record_start("gateway", method="POST")
         timeline = server.network_record_stop(timeout=1, max_packets=5)
 
@@ -1822,7 +1837,7 @@ def test_listen_wait_skips_account_json_and_returns_next_business_packet():
             return self.responses.pop(0) if self.responses else None
 
     fake_tab = SimpleNamespace(listen=SequenceListen())
-    with patch.object(server.browser_session, "get_tab", return_value=fake_tab):
+    with patch.object(interaction.browser_session, "get_tab", return_value=fake_tab):
         result = server.listen_wait(count=1, timeout=1)
 
     assert result["ok"] is True
@@ -1892,7 +1907,7 @@ def test_browser_console_messages_collects_and_filters():
     fake_console = FakeConsole()
     fake_tab = SimpleNamespace(console=fake_console)
 
-    with patch.object(server.browser_session, "get_tab", return_value=fake_tab):
+    with patch.object(interaction.browser_session, "get_tab", return_value=fake_tab):
         result = server.browser_console_messages(level="error")
 
     assert result["ok"] is True
@@ -1904,7 +1919,7 @@ def test_browser_console_messages_collects_and_filters():
 def test_browser_get_element_state_reads_only_requested_drission_property():
     from drissionpage_mcp import server
     element = SimpleNamespace(states=SimpleNamespace(is_displayed=True))
-    with patch.object(server.browser_session, "find", return_value=element):
+    with patch.object(interaction.browser_session, "find", return_value=element):
         result = server.browser_get_element_state("tag:body", state="displayed")
 
     assert result == {
@@ -1926,7 +1941,7 @@ def test_browser_get_element_state_derives_and_normalizes_all_states():
         is_whole_in_viewport=False,
         has_rect=((0, 0), (1, 1)),
     )
-    with patch.object(server.browser_session, "find", return_value=SimpleNamespace(states=states)):
+    with patch.object(interaction.browser_session, "find", return_value=SimpleNamespace(states=states)):
         result = server.browser_get_element_state("#target")
 
     assert result["ok"] is True
@@ -1957,8 +1972,8 @@ def test_click_xy_cleans_transient_overlays_before_click():
     fake_tab = SimpleNamespace(actions=actions)
     cleanup = {"ok": True, "closed": [{"scope": "iframe", "type": "notification"}], "errors": []}
 
-    with patch.object(server.modal, "clear_transient_overlays", return_value=cleanup) as clear, \
-         patch.object(server.browser_session, "get_tab", return_value=fake_tab):
+    with patch.object(interaction.table_facade.modal, "clear_transient_overlays", return_value=cleanup) as clear, \
+         patch.object(interaction.browser_session, "get_tab", return_value=fake_tab):
         result = server.click_xy(12.5, 20.5)
 
     clear.assert_called_once_with()
@@ -1984,9 +1999,9 @@ def test_click_text_locator_falls_back_to_js_after_fast_native_failure():
 
     ele = FakeElement()
 
-    with patch.object(server.modal, "clear_transient_overlays", return_value={"ok": True, "closed": [], "errors": []}), \
-         patch.object(server.browser_session, "find", return_value=ele) as find, \
-         patch.object(server.browser_session, "get_active_frame", return_value=FakeTarget()):
+    with patch.object(interaction.table_facade.modal, "clear_transient_overlays", return_value={"ok": True, "closed": [], "errors": []}), \
+         patch.object(interaction.browser_session, "find", return_value=ele) as find, \
+         patch.object(interaction.browser_session, "get_active_frame", return_value=FakeTarget()):
         result = server.click("text:搜索", timeout=5)
 
     find.assert_called_once()
@@ -2006,8 +2021,8 @@ def test_click_text_locator_prefers_clickable_xpath_before_inner_text():
 
     ele = FakeElement()
 
-    with patch.object(server.modal, "clear_transient_overlays", return_value={"ok": True, "closed": [], "errors": []}), \
-         patch.object(server.browser_session, "find", return_value=ele) as find:
+    with patch.object(interaction.table_facade.modal, "clear_transient_overlays", return_value={"ok": True, "closed": [], "errors": []}), \
+         patch.object(interaction.browser_session, "find", return_value=ele) as find:
         result = server.click("text:重置", timeout=5)
 
     find.assert_called_once()
@@ -2018,7 +2033,7 @@ def test_click_text_locator_prefers_clickable_xpath_before_inner_text():
 
 def test_click_xy_rejects_invalid_repeat_without_browser_side_effects():
     from drissionpage_mcp import server
-    with patch.object(server.browser_session, "get_tab") as get_tab:
+    with patch.object(interaction.browser_session, "get_tab") as get_tab:
         result = server.click_xy(10, 20, times=0)
 
     assert result["ok"] is False and "times" in result["reason"]
@@ -2029,8 +2044,8 @@ def test_click_xy_returns_structured_action_failure():
     from drissionpage_mcp import server
     actions = MagicMock()
     actions.move_to.side_effect = RuntimeError("detached")
-    with patch.object(server.modal, "clear_transient_overlays", return_value={"ok": True, "closed": [], "errors": []}), \
-         patch.object(server.browser_session, "get_tab", return_value=SimpleNamespace(actions=actions)):
+    with patch.object(interaction.table_facade.modal, "clear_transient_overlays", return_value={"ok": True, "closed": [], "errors": []}), \
+         patch.object(interaction.browser_session, "get_tab", return_value=SimpleNamespace(actions=actions)):
         result = server.click_xy(10, 20)
 
     assert result["ok"] is False and "detached" in result["reason"]
@@ -2041,8 +2056,8 @@ def test_browser_scroll_falls_back_to_top_with_matching_scroll_scope():
     element = SimpleNamespace()
     top = SimpleNamespace(scroll=MagicMock(), ele=MagicMock(return_value=element))
     frame = SimpleNamespace(scroll=MagicMock(), ele=MagicMock(return_value=None))
-    with patch.object(server.browser_session, "get_tab", return_value=top), \
-         patch.object(server.browser_session, "get_active_frame", return_value=frame):
+    with patch.object(interaction.browser_session, "get_tab", return_value=top), \
+         patch.object(interaction.browser_session, "get_active_frame", return_value=frame):
         result = server.browser_scroll(direction="see", locator="#top-target")
 
     frame.ele.assert_called_once()
@@ -2061,7 +2076,7 @@ def test_browser_save_pdf_handles_drission_bytes_return_without_leaking_payload(
             stream.write(payload)
         return payload
 
-    with patch.object(server.browser_session, "get_tab", return_value=SimpleNamespace(save=save)):
+    with patch.object(interaction.browser_session, "get_tab", return_value=SimpleNamespace(save=save)):
         result = server.browser_save_pdf(path=str(tmp_path), filename="bytes.pdf")
 
     assert result["ok"] is True
@@ -2072,7 +2087,7 @@ def test_browser_save_pdf_handles_drission_bytes_return_without_leaking_payload(
 
 def test_browser_scroll_rejects_invalid_arguments_before_connecting():
     from drissionpage_mcp import server
-    with patch.object(server.browser_session, "get_tab") as get_tab:
+    with patch.object(interaction.browser_session, "get_tab") as get_tab:
         invalid_pixel = server.browser_scroll(direction="down", pixel=-1)
         missing_location = server.browser_scroll(direction="location", x=None, y=0)
 
@@ -2085,7 +2100,7 @@ def test_set_permission_passes_explicit_allow_value_and_rejects_attributes():
     from drissionpage_mcp import server
     permission = MagicMock()
     browser = SimpleNamespace(set=SimpleNamespace(perm=SimpleNamespace(notifications=permission)))
-    with patch.object(server.browser_session, "get_browser", return_value=browser) as get_browser:
+    with patch.object(interaction.browser_session, "get_browser", return_value=browser) as get_browser:
         denied = server.set_permission("notifications", allow=False)
         invalid = server.set_permission("__class__", allow=True)
 
@@ -2106,7 +2121,7 @@ def test_browser_save_pdf_verifies_created_file_and_sanitizes_name(tmp_path):
             stream.write(b"%PDF-1.7")
         return output
 
-    with patch.object(server.browser_session, "get_tab", return_value=SimpleNamespace(save=save)):
+    with patch.object(interaction.browser_session, "get_tab", return_value=SimpleNamespace(save=save)):
         result = server.browser_save_pdf(path=str(tmp_path), filename="../proof")
 
     assert result["ok"] is True and result["size"] == 8
@@ -2117,7 +2132,7 @@ def test_browser_save_pdf_verifies_created_file_and_sanitizes_name(tmp_path):
 def test_browser_save_pdf_rejects_missing_output_file(tmp_path):
     from drissionpage_mcp import server
     fake = SimpleNamespace(save=lambda **_: str(tmp_path / "missing.pdf"))
-    with patch.object(server.browser_session, "get_tab", return_value=fake):
+    with patch.object(interaction.browser_session, "get_tab", return_value=fake):
         result = server.browser_save_pdf(path=str(tmp_path), filename="missing.pdf")
 
     assert result["ok"] is False and "未生成" in result["reason"]
@@ -2125,7 +2140,7 @@ def test_browser_save_pdf_rejects_missing_output_file(tmp_path):
 
 def test_browser_press_key_validates_before_accessing_browser():
     from drissionpage_mcp import server
-    with patch.object(server.browser_session, "get_tab") as get_tab:
+    with patch.object(interaction.browser_session, "get_tab") as get_tab:
         bad_modifier = server.browser_press_key("a", modifiers=["Enter"])
         bad_interval = server.browser_press_key("a", interval=-0.1)
 
@@ -2168,8 +2183,8 @@ def test_browser_press_key_types_plain_character_in_active_frame():
     actions = MagicMock()
     tab = SimpleNamespace(actions=MagicMock())
     frame = SimpleNamespace(actions=actions)
-    with patch.object(server.browser_session, "get_tab", return_value=tab), \
-         patch.object(server.browser_session, "get_active_frame", return_value=frame):
+    with patch.object(interaction.browser_session, "get_tab", return_value=tab), \
+         patch.object(interaction.browser_session, "get_active_frame", return_value=frame):
         result = server.browser_press_key("a", interval=0.02)
 
     actions.type.assert_called_once_with("a", interval=0.02)
@@ -2178,7 +2193,7 @@ def test_browser_press_key_types_plain_character_in_active_frame():
 
 def test_browser_tabs_rejects_invalid_action_before_connecting():
     from drissionpage_mcp import server
-    with patch.object(server.browser_session, "get_browser") as get_browser:
+    with patch.object(interaction.browser_session, "get_browser") as get_browser:
         result = server.browser_tabs(action="destroy")
 
     assert result["ok"] is False
@@ -2193,10 +2208,10 @@ def test_browser_tabs_closing_current_prefers_business_tab():
     )
     browser = MagicMock()
     browser.tab_ids = ["temporary", "business"]
-    with patch.object(server.browser_session, "get_browser", return_value=browser), \
-         patch.object(server.browser_session, "get_tab", return_value=current), \
-         patch.object(server.browser_session, "_pick_tab", return_value=business) as pick, \
-         patch.object(server.browser_session, "set_tab") as set_tab:
+    with patch.object(interaction.browser_session, "get_browser", return_value=browser), \
+         patch.object(interaction.browser_session, "get_tab", return_value=current), \
+         patch.object(interaction.browser_session, "_pick_tab", return_value=business) as pick, \
+         patch.object(interaction.browser_session, "set_tab") as set_tab:
         result = server.browser_tabs(action="close", index=0)
 
     browser.close_tabs.assert_called_once_with("temporary")
@@ -2210,8 +2225,8 @@ def test_browser_tabs_closing_current_prefers_business_tab():
 def test_browser_tabs_lists_stable_zero_based_indexes():
     from drissionpage_mcp import server
     tabs = [{"tab_id": "a"}, {"tab_id": "b"}]
-    with patch.object(server.browser_session, "get_browser", return_value=object()), \
-         patch.object(server.browser_session, "list_tabs", return_value=tabs):
+    with patch.object(interaction.browser_session, "get_browser", return_value=object()), \
+         patch.object(interaction.browser_session, "list_tabs", return_value=tabs):
         result = server.browser_tabs(action="list")
 
     assert [item["index"] for item in result["tabs"]] == [0, 1]
@@ -2231,7 +2246,7 @@ def test_download_by_browser_returns_json_safe_absolute_path(tmp_path):
     )
     by_browser = MagicMock(return_value=mission)
     tab = SimpleNamespace(download=SimpleNamespace(by_browser=by_browser))
-    with patch.object(server.browser_session, "get_tab", return_value=tab):
+    with patch.object(interaction.browser_session, "get_tab", return_value=tab):
         result = server.download_by_browser(
             "data:text/plain,proof", save_path=tmp_path,
             rename="proof", suffix="txt", timeout=2,
@@ -2249,7 +2264,7 @@ def test_download_by_browser_returns_json_safe_absolute_path(tmp_path):
 
 def test_download_by_browser_rejects_invalid_input_before_browser_access():
     from drissionpage_mcp import server
-    with patch.object(server.browser_session, "get_tab") as get_tab:
+    with patch.object(interaction.browser_session, "get_tab") as get_tab:
         empty_url = server.download_by_browser("")
         invalid_policy = server.download_by_browser("https://example.test/file", file_exists="replace")
         invalid_timeout = server.download_by_browser("https://example.test/file", timeout=-1)

@@ -20,6 +20,14 @@ _VTABLE_RETRY_REASON = (
 )
 _VTABLE_LOADING_LOCATOR = ui_contract.VTABLE_LOADING
 
+# Python-side lifecycle cache: binds mount to a business iframe identity so that
+# module switches force remount instead of reusing a stale window._vtable.
+_instance_state = {
+    "frame_key": None,
+    "mount_token": None,
+    "last_valid_at": 0.0,
+}
+
 
 def _index(value, name):
     try:
@@ -44,6 +52,35 @@ def _frame():
     return fr
 
 
+def _frame_key(fr=None) -> str:
+    """Stable identity for the active business iframe (module + URL)."""
+    try:
+        fr = fr or _frame()
+    except Exception:
+        return "no-frame"
+    tab_name = ""
+    try:
+        tab_name = str(browser_session.get_active_tab_name() or "")
+    except Exception:
+        tab_name = ""
+    url = str(getattr(fr, "url", "") or "")
+    return "%s|%s" % (tab_name.strip(), url.strip())
+
+
+def invalidate_vtable(reason: str = "") -> dict:
+    """Drop Python cache and page-side mount so the next call remounts cleanly."""
+    _instance_state["frame_key"] = None
+    _instance_state["mount_token"] = None
+    _instance_state["last_valid_at"] = 0.0
+    try:
+        fr = _frame()
+        script = browser_session.load_js("vtable-scanner.js") + "\nreturn JSON.stringify(invalidateMountedVTable());"
+        fr.run_js(script)
+    except Exception:
+        pass
+    return {"ok": True, "invalidated": True, "reason": reason or ""}
+
+
 def _run(js_file: str, call: str):
     """在 frame 上下文注入脚本并执行 call 段（末尾 return ...），解析 JSON。"""
     fr = _frame()
@@ -59,24 +96,42 @@ def _js_args(*args):
     return json.dumps(list(args), ensure_ascii=False)
 
 
-def _ensure_vtable():
-    """校验当前可见实例，失效或根元素隐藏时自动重新挂载。"""
+def _validate_mounted(fr=None) -> dict:
+    """JS-side structural validity of the current mount."""
+    try:
+        fr = fr or _frame()
+        script = (
+            browser_session.load_js("vtable-scanner.js")
+            + "\nreturn JSON.stringify(validateMountedVTable());"
+        )
+        res = fr.run_js(script)
+        data = json.loads(res) if isinstance(res, str) else (res or {})
+        return data if isinstance(data, dict) else {"valid": False, "reason": "bad_validate_payload"}
+    except Exception as exc:
+        return {"valid": False, "reason": "validate_error:%s" % exc}
+
+
+def _ensure_vtable(force: bool = False):
+    """校验当前可见实例；模块切换 / 根遮挡 / 失效时自动重新挂载。"""
     try:
         fr = _frame()
-        check = (
-            "var t=window._vtable,e=window._vtableElement,s=e&&window.getComputedStyle(e),"
-            "r=e&&e.getBoundingClientRect(),l=r&&Math.max(0,r.left),rr=r&&Math.min(window.innerWidth,r.right),"
-            "tp=r&&Math.max(0,r.top),b=r&&Math.min(window.innerHeight,r.bottom),"
-            "h=(r&&rr>l&&b>tp)?document.elementFromPoint((l+rr)/2,(tp+b)/2):null;"
-            "return JSON.stringify({valid:!!(t&&t.scenegraph&&e&&e.isConnected&&s&&"
-            "s.display!=='none'&&s.visibility!=='hidden'&&r.width>0&&r.height>0&&h&&"
-            "(h===e||e.contains(h)))});"
-        )
-        res = fr.run_js(check)
-        data = json.loads(res) if isinstance(res, str) else (res or {})
-        if isinstance(data, dict) and data.get("valid"):
+        key = _frame_key(fr)
+        if force or _instance_state.get("frame_key") != key:
+            mounted = mount_vtable(force=True)
+            if not (mounted and mounted.get("ok")):
+                return False
             return True
-        mounted = mount_vtable()
+
+        data = _validate_mounted(fr)
+        if data.get("valid"):
+            token = data.get("mountToken")
+            if token and _instance_state.get("mount_token") and token != _instance_state.get("mount_token"):
+                # Page remounted underneath us — refresh cache from page token.
+                _instance_state["mount_token"] = token
+            _instance_state["last_valid_at"] = time.perf_counter()
+            return True
+
+        mounted = mount_vtable(force=True)
         return bool(mounted and mounted.get("ok"))
     except Exception:
         return False
@@ -149,8 +204,63 @@ def _wait_cell_center_stable(col, row, timeout=3):
     return stable[1] if stable else None
 
 
+def _wait_root_geometry_stable(
+    timeout: float = 2.0,
+    samples: int = 3,
+    interval: float = 0.05,
+    tol: float = 0.5,
+) -> bool:
+    """Require consecutive identical (within tol) root geometry samples."""
+    try:
+        limit = min(max(float(timeout or 0), 0.05), 30.0)
+        need = max(int(samples or 0), 2)
+        pause = max(float(interval or 0), 0.01)
+        tolerance = max(float(tol or 0), 0.0)
+    except (TypeError, ValueError):
+        return False
+    deadline = time.perf_counter() + limit
+    prev = None
+    stable = 0
+    fr = _frame()
+    script = (
+        "var e=window._vtableElement;"
+        "if(!e||!e.isConnected)return null;"
+        "var r=e.getBoundingClientRect();"
+        "return JSON.stringify({x:Math.round(r.left*10)/10,y:Math.round(r.top*10)/10,"
+        "w:Math.round(r.width*10)/10,h:Math.round(r.height*10)/10});"
+    )
+    while time.perf_counter() < deadline:
+        try:
+            raw = fr.run_js(script)
+            geo = json.loads(raw) if isinstance(raw, str) else raw
+        except Exception:
+            geo = None
+        if not isinstance(geo, dict):
+            prev = None
+            stable = 0
+            time.sleep(pause)
+            continue
+        if prev is None:
+            prev = geo
+            stable = 1
+        else:
+            close = all(
+                abs(float(geo.get(k, 0)) - float(prev.get(k, 0))) <= tolerance
+                for k in ("x", "y", "w", "h")
+            )
+            if close:
+                stable += 1
+                if stable >= need:
+                    return True
+            else:
+                prev = geo
+                stable = 1
+        time.sleep(pause)
+    return False
+
+
 def wait_for_render_stable(timeout: float = 3) -> dict:
-    """通过加载遮罩与 canvas 被动等待器确认当前 VTable 已稳定。"""
+    """通过加载遮罩、canvas 静止与根几何连续采样确认当前 VTable 已稳定。"""
     if not _ensure_vtable():
         return {"ok": False, "reason": _VTABLE_RETRY_REASON}
     try:
@@ -159,7 +269,12 @@ def wait_for_render_stable(timeout: float = 3) -> dict:
         return {"ok": False, "reason": "timeout 必须为非负数"}
     if not is_loading_complete(timeout=limit):
         return {"ok": False, "reason": "VTable 在 %.1f 秒内未稳定完成" % limit}
-    return {"ok": True}
+    # Budget remainder for geometry sampling (at least 0.15s).
+    started = time.perf_counter()
+    remain = max(0.15, limit - (time.perf_counter() - started))
+    if not _wait_root_geometry_stable(timeout=min(remain, 2.0), samples=3, interval=0.05):
+        return {"ok": False, "reason": "VTable 根几何在超时内未稳定"}
+    return {"ok": True, "stable": True}
 
 
 def is_loading_complete(iframe=None, timeout: float = 20) -> bool:
@@ -193,16 +308,29 @@ def is_loading_complete(iframe=None, timeout: float = 20) -> bool:
         return False
 
 
-def mount_vtable():
-    """挂载 VTable 实例到 frame 的 window._vtable。"""
+def mount_vtable(force: bool = False):
+    """挂载 VTable 实例到 frame 的 window._vtable，并更新 Python 生命周期缓存。"""
     try:
-        res = _run("vtable-scanner.js", "return JSON.stringify(mountVTable());")
+        fr = _frame()
+        key = _frame_key(fr)
+        res = _run(
+            "vtable-scanner.js",
+            "return JSON.stringify(mountVTable(%s));" % ("true" if force else "false"),
+        )
     except Exception as exc:
         return {"ok": False, "reason": "mountVTable failed: %s" % exc}
     if not isinstance(res, dict):
         return {"ok": False, "reason": "mountVTable 返回非 dict: %r" % (res,)}
     if "ok" not in res:
         res["ok"] = True
+    if res.get("ok"):
+        _instance_state["frame_key"] = key
+        _instance_state["mount_token"] = res.get("mountToken")
+        _instance_state["last_valid_at"] = time.perf_counter()
+        res["frame_key"] = key
+    else:
+        _instance_state["frame_key"] = None
+        _instance_state["mount_token"] = None
     return res
 
 
@@ -754,6 +882,21 @@ def vtable_action(
     target_name, reason = _normalize_action_target(target, icon_name=icon_name)
     if reason:
         return {"ok": False, "reason": reason}
+
+    # Before resolving coordinates, require loading/canvas/root geometry stable.
+    settled = wait_for_render_stable(timeout=2.0)
+    if not settled.get("ok"):
+        # Soft-retry once after force remount — covers tab switch mid-action.
+        if not _ensure_vtable(force=True):
+            return {"ok": False, "reason": settled.get("reason") or _VTABLE_RETRY_REASON}
+        settled = wait_for_render_stable(timeout=2.0)
+        if not settled.get("ok"):
+            return {
+                "ok": False,
+                "reason": settled.get("reason") or "VTable 动作前渲染未稳定",
+                "col": col,
+                "row": row,
+            }
 
     point = _resolve_action_point(
         target_name, col, row, icon_name=icon_name, icon_index=icon_index, scroll=scroll

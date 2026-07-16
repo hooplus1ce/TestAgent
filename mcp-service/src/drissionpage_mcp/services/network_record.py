@@ -325,3 +325,109 @@ def export(filename: str = None) -> dict:
     with open(full_path, "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)
     return {"ok": True, "saved_to": os.path.abspath(full_path), "count": len(packets)}
+
+
+# ==================== MCP-facing listen helpers ====================
+
+def listen_start(targets=None, method: str = None) -> dict:
+    """Start one-shot HTTP listen (listen_start / listen_wait / listen_stop)."""
+    tab = browser_session.get_tab()
+    urls = _normalize_targets(targets)
+    try:
+        tab.listen.stop()
+    except Exception:
+        pass
+    try:
+        effective_method, resource_type = start_http_listener(tab.listen, urls, method)
+    except Exception as exc:
+        return {"ok": False, "reason": "监听启动失败: %s" % exc}
+    return {
+        "ok": True,
+        "targets": urls,
+        "method": effective_method,
+        "resource_type": resource_type,
+    }
+
+
+def listen_wait(count: int = 1, timeout: float = 10, fit_count: bool = False) -> dict:
+    """Wait for packets after listen_start."""
+    tab = browser_session.get_tab()
+    try:
+        packets = wait_for_business_packets(
+            tab.listen, count=count, timeout=timeout, fit_count=fit_count,
+        )
+    except Exception as exc:
+        return {"ok": False, "reason": "监听等待失败: %s" % exc}
+    if not packets:
+        return {
+            "ok": False,
+            "reason": "timeout",
+            "hint": "确认 listen_start 的 targets 是否正确，或增大 timeout",
+        }
+    if count > 1 or len(packets) > 1:
+        return {
+            "ok": True,
+            "packets": [packet_to_dict(item) for item in packets],
+        }
+    return {"ok": True, **packet_to_dict(packets[0])}
+
+
+def listen_stop() -> dict:
+    """Stop the active one-shot HTTP listener."""
+    tab = browser_session.get_tab()
+    try:
+        tab.listen.stop()
+    except Exception as exc:
+        return {"ok": False, "reason": "停止监听失败: %s" % exc}
+    return {"ok": True}
+
+
+def listen_ws_start(targets=None) -> dict:
+    """Start WebSocket-only listen."""
+    tab = browser_session.get_tab()
+    urls = _normalize_targets(targets)
+    try:
+        tab.listen.stop()
+    except Exception:
+        pass
+    try:
+        method, resource_type, hint = start_ws_listener(tab.listen, urls)
+    except Exception as exc:
+        return {"ok": False, "reason": "WebSocket 监听启动失败: %s" % exc}
+    result = {
+        "ok": True,
+        "targets": urls,
+        "method": method,
+        "resource_type": resource_type,
+    }
+    if hint:
+        result["hint"] = hint
+    return result
+
+
+def listen_ws_wait(count: int = 1, timeout: float = 10, fit_count: bool = False) -> dict:
+    """Wait for WebSocket packets after listen_ws_start."""
+    tab = browser_session.get_tab()
+    try:
+        try:
+            packet = tab.listen.wait(
+                count=count, timeout=timeout, fit_count=fit_count, raise_err=False,
+            )
+        except TypeError:
+            packet = tab.listen.wait(
+                count=count, timeout=timeout, fit_count=fit_count,
+            )
+    except Exception as exc:
+        return {"ok": False, "reason": "WebSocket 监听等待失败: %s" % exc}
+    if not packet:
+        return {
+            "ok": False,
+            "reason": "timeout",
+            "hint": "确认 listen_ws_start 的 targets 是否正确，或增大 timeout",
+        }
+    if isinstance(packet, list):
+        return {
+            "ok": True,
+            "packets": [ws_packet_to_dict(item) for item in packet],
+        }
+    return {"ok": True, **ws_packet_to_dict(packet)}

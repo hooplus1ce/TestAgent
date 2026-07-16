@@ -12,14 +12,17 @@ mcp-service/
 ├── docs/                            # 实现参考文档
 ├── scripts/                         # 本地验证脚本
 ├── src/drissionpage_mcp/
-│   ├── server.py                    # MCP tools/resources 注册与 stdio 启动
-│   ├── core/                        # 配置、能力分组、UI 契约
-│   ├── services/                    # 浏览器、会话、表格、观察、网络实现
+│   ├── server.py                    # FastMCP 装配 + 薄 re-export（stdio 入口）
+│   ├── components/                  # FileSystemProvider 按域注册的 @tool
+│   ├── core/                        # 配置、tool_metadata、UI 契约、recipe_context
+│   ├── services/                    # interaction / table_facade / network / devtools …
 │   ├── resources/                   # MCP evidence resources
-│   ├── workflows/                   # 证据、用例生成、执行、报告
+│   ├── workflows/                   # flow_ops / recipe_execution / report
 │   └── assets/js/                   # 随包发布的浏览器注入脚本
 └── tests/                           # 不连接浏览器的包级冒烟测试
 ```
+
+架构说明见仓库 `docs/drissionpage-test-automation-architecture.md`。
 
 ## Install And Run
 

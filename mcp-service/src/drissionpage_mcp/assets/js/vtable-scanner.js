@@ -38,37 +38,104 @@ function findVisibleVTableElement() {
   return null;
 }
 
-function mountVTable() {
-  var el = findVisibleVTableElement();
-  if (!el || !el.parentElement) return { ok: false, reason: 'visible .vtable not found' };
-
-  var parent = el.parentElement;
-  var fk = Object.keys(parent).find(
+function _duFiberKey(node) {
+  if (!node) return null;
+  return Object.keys(node).find(
     function (k) { return k.startsWith('__reactFiber') || k.startsWith('__reactInternalInstance'); }
-  );
-  if (!fk) {
-    var current = parent;
-    for (var i = 0; i < 5; i++) {
-      if (!current) break;
-      fk = Object.keys(current).find(
-        function (k) { return k.startsWith('__reactFiber') || k.startsWith('__reactInternalInstance'); }
-      );
-      if (fk) { parent = current; break; }
-      current = current.parentElement;
-    }
-  }
-  if (!fk) return { ok: false, reason: 'fiber key not found' };
+  ) || null;
+}
 
-  var fiber = parent[fk];
-  for (var count = 0; fiber && count < 30; count++) {
+function _duFindVTableFromFiber(startNode, maxLevels) {
+  var fk = _duFiberKey(startNode);
+  if (!fk) return null;
+  var fiber = startNode[fk];
+  for (var count = 0; fiber && count < maxLevels; count++) {
     if (fiber.stateNode && fiber.stateNode.vtableInstance) {
-      window._vtable = fiber.stateNode.vtableInstance;
-      window._vtableElement = el;
-      return { ok: true, levels: count };
+      return { instance: fiber.stateNode.vtableInstance, levels: count };
     }
     fiber = fiber.return;
   }
-  return { ok: false, reason: 'vtableInstance not found in ' + count + ' levels' };
+  return null;
+}
+
+function mountVTable(force) {
+  // Reuse cached instance when still valid for the same connected root.
+  if (!force && window._vtable && window._vtableElement && window._vtableElement.isConnected
+      && window._vtable.scenegraph && _duVisibleVTableElement(window._vtableElement)) {
+    return {
+      ok: true,
+      reused: true,
+      levels: 0,
+      mountToken: window._vtableMountToken || null
+    };
+  }
+
+  var el = findVisibleVTableElement();
+  if (!el || !el.parentElement) return { ok: false, reason: 'visible .vtable not found' };
+
+  // Walk up a few parents — fiber may sit on wrapper, not immediate parent.
+  var anchors = [];
+  var current = el;
+  for (var i = 0; i < 8 && current; i++) {
+    anchors.push(current);
+    current = current.parentElement;
+  }
+
+  var found = null;
+  for (var ai = 0; ai < anchors.length; ai++) {
+    found = _duFindVTableFromFiber(anchors[ai], 40);
+    if (found) break;
+  }
+  if (!found) {
+    return { ok: false, reason: 'vtableInstance not found in fiber walk' };
+  }
+
+  var token = String(Date.now()) + '-' + Math.random().toString(36).slice(2, 8);
+  window._vtable = found.instance;
+  window._vtableElement = el;
+  window._vtableMountToken = token;
+  try {
+    if (el && el.dataset) el.dataset.duVtableToken = token;
+  } catch (e) {}
+  return { ok: true, reused: false, levels: found.levels, mountToken: token };
+}
+
+function validateMountedVTable() {
+  var t = window._vtable;
+  var e = window._vtableElement;
+  if (!t || !t.scenegraph || !e || !e.isConnected) {
+    return { valid: false, reason: 'missing_instance_or_element' };
+  }
+  if (!_duVisibleVTableElement(e)) {
+    return { valid: false, reason: 'root_not_visible' };
+  }
+  var style = window.getComputedStyle(e);
+  var r = e.getBoundingClientRect();
+  var left = Math.max(0, r.left), right = Math.min(window.innerWidth, r.right);
+  var top = Math.max(0, r.top), bottom = Math.min(window.innerHeight, r.bottom);
+  var hit = null;
+  if (right > left && bottom > top) {
+    hit = document.elementFromPoint((left + right) / 2, (top + bottom) / 2);
+  }
+  var hitOk = !!(hit && (hit === e || e.contains(hit)));
+  if (!hitOk) {
+    return { valid: false, reason: 'root_obscured', mountToken: window._vtableMountToken || null };
+  }
+  return {
+    valid: true,
+    mountToken: window._vtableMountToken || null,
+    width: Math.round(r.width * 10) / 10,
+    height: Math.round(r.height * 10) / 10,
+    left: Math.round(r.left * 10) / 10,
+    top: Math.round(r.top * 10) / 10
+  };
+}
+
+function invalidateMountedVTable() {
+  window._vtable = null;
+  window._vtableElement = null;
+  window._vtableMountToken = null;
+  return { ok: true };
 }
 
 // ============ 2. 图标功能映射 ============

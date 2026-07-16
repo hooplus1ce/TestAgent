@@ -180,14 +180,17 @@ def test_public_table_facades_use_dual_stack_helpers():
     """click/hover public tools must route through dual-stack raw helpers (incl. bootstrap)."""
     import inspect
     from drissionpage_mcp import server
-    from drissionpage_mcp.services import bootstrap_table
+    from drissionpage_mcp.services import bootstrap_table, table_facade
 
-    click_src = inspect.getsource(server.click_table_cell)
-    hover_src = inspect.getsource(server.hover_table_cell)
-    click_raw = inspect.getsource(server._click_table_cell_raw)
-    hover_raw = inspect.getsource(server._hover_table_cell_raw)
-    table_action_src = inspect.getsource(server.table_action)
-    query_src = inspect.getsource(server.query_table)
+    # Implementation lives in services.table_facade; server keeps thin recipe wrappers.
+    click_src = inspect.getsource(table_facade.click_table_cell)
+    hover_src = inspect.getsource(table_facade.hover_table_cell)
+    click_raw = inspect.getsource(table_facade._click_table_cell_raw)
+    hover_raw = inspect.getsource(table_facade._hover_table_cell_raw)
+    table_action_src = inspect.getsource(table_facade.table_action)
+    query_src = inspect.getsource(table_facade.query_table)
+    server_click = inspect.getsource(server.click_table_cell)
+    server_query = inspect.getsource(server.query_table)
 
     assert "_click_table_cell_raw" in click_src
     assert "_hover_table_cell_raw" in hover_src
@@ -197,5 +200,14 @@ def test_public_table_facades_use_dual_stack_helpers():
     assert "_auto_table_scan_order" in hover_raw
     assert "bootstrap" in table_action_src
     assert "bootstrap" in query_src
+    assert "table_facade" in server_click
+    assert "table_facade" in server_query
+    assert callable(server.click_table_cell)
+    assert callable(server.query_table)
     assert callable(bootstrap_table.hover_bootstrap_table_cell)
     assert callable(bootstrap_table.click_bootstrap_table_cell)
+    assert callable(bootstrap_table.click_bootstrap_row_selection)
+
+    select_sig = inspect.signature(bootstrap_table.click_bootstrap_row_selection)
+    assert "select_all" in select_sig.parameters
+    assert "close_shade" in select_sig.parameters

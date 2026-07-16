@@ -33,6 +33,11 @@ Agent process take precedence. Every Agent adapter in this project uses the comp
 `full` profile. Capability filtering remains available through
 `DRISSIONPAGE_MCP_CAPS` only when a smaller tool surface is explicitly needed.
 
+Implementation layout (for debugging only — do not import these from the skill):
+`components/` registers tools, `services/` holds browser logic, `workflows/` holds
+evidence/recipe/report. Public tool **names and parameters stay stable**; see
+`docs/drissionpage-test-automation-architecture.md`.
+
 ## Reference Files
 
 Before running a full generation workflow, read the relevant upstream reference

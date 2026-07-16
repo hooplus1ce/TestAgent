@@ -555,27 +555,114 @@ return (function(){
         return {"ok": False, "reason": "悬停失败: %s" % e}
 
 
-def click_bootstrap_row_selection(row: int = 0, table_index: int = 0) -> dict:
-    """勾选 Bootstrap Table 行复选框（btSelectItem）。
-    
-    检测到 layer 遮罩时返回错误，避免弹窗干扰行选择。
+def _clear_bt_select_mark(fr) -> None:
+    try:
+        fr.run_js(
+            "document.querySelectorAll('[data-du-bt-select]')"
+            ".forEach(function(e){e.removeAttribute('data-du-bt-select');});"
+        )
+    except Exception:
+        pass
+
+
+def _click_marked_checkbox(fr, cb) -> None:
+    try:
+        if not cb.wait.clickable(timeout=1.0, raise_err=False):
+            parent = fr.ele(
+                "css:td.bs-checkbox input[data-du-bt-select='1']",
+                timeout=0.2,
+            )
+            (parent or cb).click(by_js=True, timeout=2)
+        else:
+            cb.click(by_js=False, timeout=2)
+    except Exception:
+        cb.click(by_js=True, timeout=2)
+
+
+def click_bootstrap_row_selection(
+    row: int = 0,
+    table_index: int = 0,
+    select_all: bool = False,
+    close_shade: bool = False,
+) -> dict:
+    """勾选 Bootstrap Table 行复选框（btSelectItem）或全选（btSelectAll）。
+
+    - 已选中行默认幂等返回 ``already_selected=True``，不重复点击。
+    - 默认遇到 layer 遮罩时失败；``close_shade=True`` 时尝试关闭遮罩后再选。
     """
-    row, reason = _nonnegative(row, "row")
-    if reason:
-        return {"ok": False, "reason": reason}
+    if not select_all:
+        row, reason = _nonnegative(row, "row")
+        if reason:
+            return {"ok": False, "reason": reason}
     table_index, reason = _nonnegative(table_index, "table_index")
     if reason:
         return {"ok": False, "reason": reason}
     fr = _get_frame()
     if fr is None:
         return {"ok": False, "reason": "未找到活动 iframe"}
-    # 遮罩层检测：layer 弹窗遮挡表格时拒绝操作
+
+    shade_closed = False
     try:
-        if fr.wait.eles_loaded("t:div@@class:layui-layer-shade", timeout=0.5, raise_err=False):
-            return {"ok": False, "reason": "检测到 layer 弹窗遮罩层，请先关闭弹窗后再选择行"}
+        has_shade = fr.wait.eles_loaded(
+            "t:div@@class:layui-layer-shade",
+            timeout=0.5,
+            raise_err=False,
+        )
     except Exception:
-        pass
-    js = _HELPER_JS + r"""
+        has_shade = False
+    if has_shade:
+        if not close_shade:
+            return {
+                "ok": False,
+                "reason": "检测到 layer 弹窗遮罩层，请先关闭弹窗后再选择行",
+            }
+        try:
+            close_el = (
+                fr.ele("c:.layui-layer-close", timeout=0.5)
+                or fr.ele("t:a@@class:layui-layer-close", timeout=0.3)
+            )
+            if close_el is None:
+                return {
+                    "ok": False,
+                    "reason": "检测到 layer 遮罩但未找到关闭按钮",
+                }
+            close_el.click(by_js=False, timeout=2)
+            shade_closed = True
+            try:
+                fr.wait.ele_deleted(
+                    "c:.layui-layer-shade",
+                    timeout=1.5,
+                    raise_err=False,
+                )
+            except Exception:
+                pass
+        except Exception as exc:
+            return {
+                "ok": False,
+                "reason": "关闭 layer 遮罩失败: %s" % exc,
+            }
+
+    if select_all:
+        js = _HELPER_JS + r"""
+return (function(){
+    var TI = %d;
+    var roots = duBtRoots();
+    var root = roots[TI];
+    if (!root) return JSON.stringify({error:'table not found'});
+    var cb = root.querySelector('input[name="btSelectAll"]');
+    if (!cb) return JSON.stringify({error:'select-all checkbox not found'});
+    cb.setAttribute('data-du-bt-select', '1');
+    var checked = !!cb.checked;
+    return JSON.stringify({
+        ok:true,
+        selectAll:true,
+        checked: checked,
+        alreadySelected: checked
+    });
+})();
+""" % table_index
+    else:
+        js = _HELPER_JS + r"""
 return (function(){
     var TI = %d, ROW = %d;
     var roots = duBtRoots();
@@ -583,42 +670,68 @@ return (function(){
     if (!root) return JSON.stringify({error:'table not found'});
     var rows = duBtBusinessRows(duBtBodyTable(root));
     if (ROW >= rows.length) return JSON.stringify({error:'row not found: ' + ROW});
-    var cb = rows[ROW].querySelector('input[name="btSelectItem"], input[type="checkbox"]');
+    var tr = rows[ROW];
+    var cb = tr.querySelector('input[name="btSelectItem"], input[type="checkbox"]');
     if (!cb) return JSON.stringify({error:'row checkbox not found'});
+    var selected = (tr.className || '').indexOf('selected') >= 0 || !!cb.checked;
     cb.setAttribute('data-du-bt-select', '1');
-    return JSON.stringify({ok:true, checked: !!cb.checked, dataIndex: rows[ROW].getAttribute('data-index')});
+    return JSON.stringify({
+        ok:true,
+        checked: !!cb.checked,
+        alreadySelected: selected,
+        dataIndex: tr.getAttribute('data-index')
+    });
 })();
 """ % (table_index, row)
+
     try:
         meta = _run_json(fr, js)
         if not isinstance(meta, dict) or meta.get("error"):
             return {"ok": False, "reason": (meta or {}).get("error", "定位复选框失败")}
+        if meta.get("alreadySelected"):
+            _clear_bt_select_mark(fr)
+            result = {
+                "ok": True,
+                "kind": "bootstrap",
+                "table_index": table_index,
+                "already_selected": True,
+                "select_all": bool(select_all),
+            }
+            if not select_all:
+                result["row"] = row
+            if shade_closed:
+                result["shade_closed"] = True
+            return result
+
         cb = fr.ele("css:input[data-du-bt-select='1']", timeout=1)
-        if not cb:
-            # 回退：用 data-index 直接定位勾选框
+        if not cb and not select_all:
             data_index = meta.get("dataIndex")
             if data_index is not None:
                 try:
-                    cb = fr.ele("css:tr[data-index='%s'] input[name='btSelectItem'], tr[data-index='%s'] input[type='checkbox']" % (data_index, data_index), timeout=0.5)
+                    cb = fr.ele(
+                        "css:tr[data-index='%s'] input[name='btSelectItem'], "
+                        "tr[data-index='%s'] input[type='checkbox']"
+                        % (data_index, data_index),
+                        timeout=0.5,
+                    )
                 except Exception:
                     cb = None
         if not cb:
             return {"ok": False, "reason": "row checkbox element not found"}
-        try:
-            if not cb.wait.clickable(timeout=1.0, raise_err=False):
-                parent = fr.ele("css:td.bs-checkbox input[data-du-bt-select='1']", timeout=0.2)
-                (parent or cb).click(by_js=True, timeout=2)
-            else:
-                cb.click(by_js=False, timeout=2)
-        except Exception:
-            cb.click(by_js=True, timeout=2)
-        try:
-            fr.run_js(
-                "document.querySelectorAll('[data-du-bt-select]')"
-                ".forEach(function(e){e.removeAttribute('data-du-bt-select');});"
-            )
-        except Exception:
-            pass
-        return {"ok": True, "kind": "bootstrap", "row": row, "table_index": table_index}
+        _click_marked_checkbox(fr, cb)
+        _clear_bt_select_mark(fr)
+        result = {
+            "ok": True,
+            "kind": "bootstrap",
+            "table_index": table_index,
+            "already_selected": False,
+            "select_all": bool(select_all),
+        }
+        if not select_all:
+            result["row"] = row
+        if shade_closed:
+            result["shade_closed"] = True
+        return result
     except Exception as e:
+        _clear_bt_select_mark(fr)
         return {"ok": False, "reason": "row checkbox click failed: %s" % e}

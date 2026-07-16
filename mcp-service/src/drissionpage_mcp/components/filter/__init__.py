@@ -1,0 +1,1 @@
+"""Filter-area FastMCP components."""
