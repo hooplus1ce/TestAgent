@@ -28,6 +28,7 @@ class FakeSetter:
 class FakeTab:
     def __init__(self, url, doc_loaded=True):
         self.url = url
+        self._browser_url = url
         self.title = "SCM"
         self.wait = FakeWait(doc_loaded=doc_loaded)
         self.set = FakeSetter()
@@ -41,6 +42,7 @@ class FakeTab:
     def get(self, *args, **kwargs):
         self.get_calls.append({"args": args, "kwargs": kwargs})
         self.url = args[0]
+        self._browser_url = args[0]
         return SimpleNamespace(ok=True)
 
     def clear_cache(self):
@@ -84,8 +86,8 @@ def test_login_ocr_skips_navigation_when_already_on_admin_host(monkeypatch):
     assert tab.get_calls == []
     assert tab.clear_cache_calls == 1
     assert tab.set.cookie_batches[0][0]["domain"] == session_auth.config.SCM_ACCESS_DOMAIN
-    assert tab.refresh_calls == [{"ignore_cache": False}]
-    assert tab.cdp_calls == []
+    assert tab.refresh_calls == []
+    assert tab.cdp_calls == [{"name": "Page.reload", "kwargs": {"ignoreCache": False}}]
     assert tab.wait.doc_loaded_calls[-1]["timeout"] == session_auth.config.REFRESH_LOAD_TIMEOUT
 
 
@@ -105,7 +107,7 @@ def test_login_ocr_uses_single_bounded_navigation_from_other_host(monkeypatch):
     assert tab.get_calls[0]["kwargs"]["timeout"] == session_auth.config.REFRESH_NAV_TIMEOUT
 
 
-def test_bounded_reload_uses_drissionpage_refresh_and_stops_loading_when_load_timeout():
+def test_bounded_reload_bypasses_unbounded_refresh_wait_and_stops_loading_when_load_timeout():
     from drissionpage_mcp.services import session_auth
     tab = FakeTab(
         "https://scm.example.com/scm-static/scm-admin/scm-admin/#/",
@@ -115,9 +117,71 @@ def test_bounded_reload_uses_drissionpage_refresh_and_stops_loading_when_load_ti
     loaded = session_auth._bounded_reload(tab)
 
     assert loaded is False
-    assert tab.refresh_calls == [{"ignore_cache": False}]
+    assert tab.refresh_calls == []
+    assert tab.cdp_calls == [{"name": "Page.reload", "kwargs": {"ignoreCache": False}}]
+    assert tab._is_loading is True
     assert tab.stop_loading_calls == 1
     assert tab.wait.load_start_calls == []
     assert tab.wait.doc_loaded_calls == [
         {"timeout": session_auth.config.REFRESH_LOAD_TIMEOUT, "raise_err": False}
     ]
+
+
+def test_login_ocr_returns_retryable_error_when_browser_lock_is_busy(monkeypatch):
+    from drissionpage_mcp.services import session_auth
+    tab = FakeTab("https://scm.example.com/scm-static/scm-admin/scm-admin/#/")
+    _patch_login(monkeypatch, session_auth, tab)
+
+    class BusyLock:
+        def acquire_write(self, timeout=None):
+            assert timeout == session_auth.config.REFRESH_LOCK_TIMEOUT
+            return False
+
+    monkeypatch.setattr(session_auth, "_rwlock", BusyLock())
+
+    result = session_auth.login_ocr()
+
+    assert result["ok"] is False
+    assert result["retryable"] is True
+    assert "写锁" in result["reason"]
+    assert tab.get_calls == []
+    assert tab.clear_cache_calls == 0
+
+
+def test_refresh_session_keeps_valid_session_cookies(monkeypatch):
+    from drissionpage_mcp.services import session_auth
+    tab = FakeTab("https://scm.example.com/scm-static/scm-admin/scm-admin/#/")
+    monkeypatch.setattr(session_auth.browser_session, "get_tab", lambda: tab)
+    monkeypatch.setattr(session_auth, "check_session", lambda: {"expired": False})
+
+    result = session_auth.refresh_session()
+
+    assert result["ok"] is True
+    assert result["skipped_ocr"] is True
+    assert tab.clear_cache_calls == 0
+    assert tab.cdp_calls == [{"name": "Page.reload", "kwargs": {"ignoreCache": False}}]
+
+
+def test_check_session_marks_auth_logout_url_as_expired(monkeypatch):
+    from drissionpage_mcp.services import session_auth
+    tab = FakeTab("https://scm.example.com/auth/authaccount/logout.do")
+    monkeypatch.setattr(session_auth.config, "SCM_LOGIN_PAGE", "https://scm.example.com/auth/authaccount/login.do")
+    monkeypatch.setattr(session_auth.browser_session, "get_tab", lambda: tab)
+
+    result = session_auth.check_session()
+
+    assert result["expired"] is True
+    assert result["source"] == "url"
+
+
+def test_login_ocr_does_not_read_loading_sensitive_url_or_title(monkeypatch):
+    from drissionpage_mcp.services import session_auth
+    tab = FakeTab("https://scm.example.com/scm-static/scm-admin/scm-admin/#/")
+    _patch_login(monkeypatch, session_auth, tab)
+    del tab.__dict__["url"]
+
+    result = session_auth.login_ocr()
+
+    assert result["ok"] is True
+    assert "url" not in result
+    assert "title" not in result

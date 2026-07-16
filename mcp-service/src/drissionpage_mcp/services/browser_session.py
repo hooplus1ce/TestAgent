@@ -164,7 +164,10 @@ def connect(
         else:
             options = ChromiumOptions(read_file=False)
             logger.info("DrissionPage ini not found; using runtime options: %s", _DP_INI)
-        options.set_address(f"127.0.0.1:{port}")
+        # 如果 ini 中已配置非 localhost 的远程 address（如局域网 Linux 设备），
+        # 则跳过默认的 127.0.0.1 覆盖，保持对远程设备的连接。
+        if not options.address or options.address.startswith("127.0.0.1:"):
+            options.set_address(f"127.0.0.1:{port}")
 
         if config.CHROME_PATH:
             options.set_browser_path(config.CHROME_PATH)

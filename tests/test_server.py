@@ -861,7 +861,7 @@ def test_scan_table_routes_to_selected_visible_html_backend():
 
 def test_scan_table_auto_falls_back_to_html_backend():
     from drissionpage_mcp import server
-    with patch.object(server, "_auto_table_scan_order", return_value=["vtable", "html", "bootstrap"]), \
+    with patch.object(server.table_facade, "_auto_table_scan_order", return_value=["vtable", "html", "bootstrap"]), \
          patch.object(server.vtable, "scan_vtable_columns", return_value={"ok": False, "reason": "no vtable"}), \
          patch.object(server.bootstrap_table, "scan_bootstrap_table", return_value={"ok": False, "reason": "no bootstrap"}), \
          patch.object(server.html_table, "scan_html_table", return_value={"ok": True, "tables": [{"index": 0}]}) as scan_html:

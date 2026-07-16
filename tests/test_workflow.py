@@ -145,6 +145,7 @@ def test_mcp_tools_chain_evidence_to_markdown_report(monkeypatch, tmp_path):
     from drissionpage_mcp.workflows import flow_evidence
     from drissionpage_mcp.resources import resource_store
     from drissionpage_mcp import server
+    from drissionpage_mcp.workflows import recipe_execution
     monkeypatch.setattr(config, "SHOT_DIR", str(tmp_path))
     resource_store.clear_module()
     monkeypatch.setattr(flow_evidence, "_active_flow", None)
@@ -179,15 +180,15 @@ def test_mcp_tools_chain_evidence_to_markdown_report(monkeypatch, tmp_path):
 
     network_result = {"type": "network", "status": 200,
                       "packet": {"status": 200, "body": {"ok": True}}}
-    with patch.object(server, "_browser_ready_gate", return_value={"ok": True}), \
-            patch.object(server, "_pre_click_cleanup", return_value={"errors": []}), \
+    with patch.object(recipe_execution, "_browser_ready_gate", return_value={"ok": True}), \
+            patch.object(recipe_execution.table_facade, "pre_click_cleanup", return_value={"errors": []}), \
             patch.object(server.filter_area, "reset_filter_area", return_value={"ok": True}), \
             patch.object(server.observe, "observe_start", return_value={"ok": True}), \
             patch.object(server.observe, "observe_wait", return_value=network_result), \
             patch.object(server.browser_session, "get_active_frame", return_value=object()), \
-            patch.object(server, "_wait_query_table", return_value=(True, "vtable")), \
-            patch.object(server, "get_active_frame", return_value={"ok": True}), \
-            patch.object(server, "explore_action", side_effect=replay_action):
+            patch.object(recipe_execution, "_wait_query_table", return_value=(True, "vtable")), \
+            patch.object(recipe_execution, "get_active_frame", return_value={"ok": True}), \
+            patch.object(recipe_execution.interaction, "explore_action", side_effect=replay_action):
         execution = server.run_test_cases(generated["saved_to"], "execution.json")
     assert execution["counts"] == {"passed": 1, "failed": 0, "xfailed": 0, "skipped": 0}
 

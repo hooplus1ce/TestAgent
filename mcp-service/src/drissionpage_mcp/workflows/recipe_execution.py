@@ -937,7 +937,7 @@ def _verify_filter_query(filters: list[dict], timeout: float = 10,
         comparison_started = time.perf_counter()
         field = str(condition.get("field") or "").strip()
         column_title = str(condition.get("column_title") or field).strip()
-        table_values = get_table_values(column_title, kind="auto", raw=raw)
+        table_values = table_facade.get_table_values(column_title, kind="auto", raw=raw)
         if not table_values.get("ok"):
             return {
                 "ok": False, "verified": False,
@@ -1217,7 +1217,7 @@ def run_test_cases(case_file: str, filename: str = None) -> dict:
             standard_ready = _browser_ready_gate(module_text)
             if not standard_ready.get("ok"):
                 return standard_ready
-        overlay_cleanup = _pre_click_cleanup(True)
+        overlay_cleanup = table_facade.pre_click_cleanup(True)
         if overlay_cleanup.get("errors"):
             return {"ok": False, "reason": "; ".join(
                 str(item) for item in overlay_cleanup["errors"]
@@ -1252,7 +1252,7 @@ def run_test_cases(case_file: str, filename: str = None) -> dict:
                 "skipped": True,
                 "reason": "role recipe owns cleanup; no default-page reset applied",
             }
-        overlay_cleanup = _pre_click_cleanup(True)
+        overlay_cleanup = table_facade.pre_click_cleanup(True)
         reset = fallback_case_reset(reset_case_filters(submit=True))
         errors = [str(item) for item in overlay_cleanup.get("errors", [])]
         if not reset.get("ok"):
@@ -1511,5 +1511,4 @@ def compare_regression_report(execution_file: str, baseline_file: str) -> dict:
     if error:
         return {"ok": False, "reason": error}
     return test_reporting.compare_regression(execution, baseline)
-
 

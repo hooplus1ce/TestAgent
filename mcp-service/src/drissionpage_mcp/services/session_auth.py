@@ -36,6 +36,27 @@ def _is_admin_app_url(url: str) -> bool:
     return current_path.startswith(target_path)
 
 
+def _is_auth_url(url: str) -> bool:
+    """认证页或登出页代表当前 tab 没有可用 SCM 会话。"""
+    try:
+        current = urlparse(url or "")
+        login = urlparse(config.SCM_LOGIN_PAGE)
+    except Exception:
+        return False
+    if not current.hostname or current.hostname != login.hostname:
+        return False
+    path = (current.path or "/").lower()
+    login_path = (login.path or "/").rstrip("/").lower()
+    return path.rstrip("/") == login_path or (
+        "/auth/" in path and ("login" in path or "logout" in path)
+    )
+
+
+def _cached_browser_url(tab) -> str:
+    """读取 DrissionPage 已缓存的地址，避免 url 属性隐式等待页面加载。"""
+    return str(getattr(tab, "_browser_url", "") or "")
+
+
 def _stage(timings: dict, name: str, func):
     started = perf_counter()
     try:
@@ -91,9 +112,12 @@ def get_login_auth(
 
     global _ocr_instance
     if _ocr_instance is None:
+        logger.info("get_login_auth: OCR 未预热，首次调用时延迟加载模型")
         import ddddocr
         _ocr_instance = ddddocr.DdddOcr(show_ad=False)
         _ocr_instance.set_ranges("0123456789")
+    else:
+        logger.debug("get_login_auth: OCR 已预热，直接复用实例")
     ocr = _ocr_instance
 
     cookies = {"SESSION": str(uuid.uuid4())}
@@ -130,16 +154,56 @@ def _inject_cookies(cookies: list, tab=None):
 
 
 def refresh_session():
-    """会话过期时触发 OCR 登录并刷新页面（login_ocr 已含清缓存 + 注入 + 刷新）。"""
-    logger.info("refresh_session → 触发 login_ocr 获取新 cookie")
+    """会话过期时触发 OCR 登录并刷新页面（login_ocr 已含清缓存 + 注入 + 刷新）。
+
+    优化：如果页面已有有效会话（无过期弹窗），跳过 OCR 登录直接刷新页面，
+    减少不必要的验证码请求与 OCR 识别耗时。
+    """
+    logger.info("refresh_session → 检查当前会话状态")
+    try:
+        status = check_session()
+    except Exception as exc:
+        logger.warning("refresh_session 预检失败，降级为完整 OCR 登录: %s", exc)
+        status = {"expired": True}
+
+    if not status.get("expired"):
+        logger.info("refresh_session → 当前会话有效，跳过 OCR 登录，直接刷新页面")
+        tab = browser_session.get_tab()
+        if not _rwlock.acquire_write(timeout=config.REFRESH_LOCK_TIMEOUT):
+            return _lock_timeout_result()
+        try:
+            navigation = _ensure_on_admin_host(tab)
+            reload_loaded = _bounded_reload(tab)
+        finally:
+            _rwlock.release_write()
+        return {
+            "ok": True,
+            "skipped_ocr": True,
+            "reason": "session_valid",
+            "navigation": navigation,
+            "reload_loaded": reload_loaded,
+        }
+
+    logger.info("refresh_session → 会话已过期，触发 login_ocr 获取新 cookie")
     return login_ocr()
+
+
+def _lock_timeout_result(timings: dict | None = None) -> dict:
+    result = {
+        "ok": False,
+        "reason": "浏览器正被其他操作占用，%.1f 秒内未获得会话刷新写锁" % config.REFRESH_LOCK_TIMEOUT,
+        "retryable": True,
+    }
+    if timings is not None:
+        result["timings"] = timings
+    return result
 
 
 def _ensure_on_admin_host(tab):
     """进入 SCM Admin 应用页；只有已经在应用页时才跳过导航。"""
     if not config.SCM_ADMIN_URL:
         raise RuntimeError("缺少目标系统入口 URL，请配置 HL_URL 环境变量")
-    current_url = getattr(tab, "url", "")
+    current_url = _cached_browser_url(tab)
     if _is_admin_app_url(current_url):
         return {"skipped": True, "reason": "already_on_admin_page", "url": current_url}
     result = tab.get(
@@ -157,7 +221,7 @@ def _ensure_on_admin_host(tab):
             tab.stop_loading()
         except Exception:
             pass
-    return {"skipped": False, "ok": ok, "url": getattr(tab, "url", "")}
+    return {"skipped": False, "ok": ok}
 
 
 def _clear_cache(tab):
@@ -171,8 +235,14 @@ def _clear_cache(tab):
 
 
 def _bounded_reload(tab):
-    """用 DrissionPage refresh() 刷新页面，再用短超时等待加载完成。"""
-    tab.refresh(ignore_cache=False)
+    """刷新页面，并且只使用显式配置的加载超时。
+
+    DrissionPage ``refresh()`` 会在 CDP ``Page.reload`` 后调用无超时参数的
+    ``wait.load_start()``，该调用可能按浏览器默认页面加载超时阻塞。这里直接
+    发出相同的 CDP 命令，然后由 ``doc_loaded()`` 使用服务配置的短超时等待。
+    """
+    tab._is_loading = True
+    tab._run_cdp("Page.reload", ignoreCache=False)
     loaded = bool(tab.wait.doc_loaded(timeout=config.REFRESH_LOAD_TIMEOUT, raise_err=False))
     if not loaded:
         logger.warning("refresh_session reload 后页面未在 %.1fs 内完成加载，执行 stop_loading",
@@ -207,7 +277,14 @@ def _login_ocr_on_tab(
     )
 
     # ====== 有锁段：操作浏览器 ======
-    _rwlock.acquire_write()
+    acquired = _stage(
+        timings,
+        "wait_for_browser_lock",
+        lambda: _rwlock.acquire_write(timeout=config.REFRESH_LOCK_TIMEOUT),
+    )
+    if not acquired:
+        timings["total"] = round(perf_counter() - started, 3)
+        return _lock_timeout_result(timings)
     try:
         navigation = _stage(timings, "ensure_admin_host", lambda: _ensure_on_admin_host(tab))
         cache = _stage(timings, "clear_cache", lambda: _clear_cache(tab))
@@ -218,7 +295,7 @@ def _login_ocr_on_tab(
 
     timings["total"] = round(perf_counter() - started, 3)
     return {"ok": True, "cookies": [c["name"] for c in injected],
-            "url": tab.url, "title": tab.title, "navigation": navigation,
+            "navigation": navigation,
             "cache": cache, "reload_loaded": reload_loaded, "timings": timings}
 
 
@@ -242,6 +319,8 @@ def login_ocr_for_tab(
 def check_session():
     """检测 top 层是否出现登录过期确认弹窗。返回 {expired: bool, detail}。"""
     tab = browser_session.get_tab()
+    if _is_auth_url(_cached_browser_url(tab)):
+        return {"expired": True, "detail": "当前页面位于登录或登出认证页", "source": "url"}
     confirm_wrapper = browser_session.ele_with_fallback(
         tab,
         ui_contract.CONFIRM_WRAPPER_CSS,

@@ -68,9 +68,9 @@ class _Context:
 def _without_observation(server):
     return (
         patch.multiple(
-            server,
-            _pre_click_cleanup=lambda *_args, **_kwargs: None,
-            _attach_cleanup=lambda result, _cleanup: result,
+            server.interaction.table_facade,
+            pre_click_cleanup=lambda *_args, **_kwargs: {"errors": []},
+            attach_cleanup=lambda result, _cleanup: result,
         ),
         patch.multiple(
             server.observe,
@@ -87,7 +87,7 @@ def test_explore_action_inputs_semantic_field_target_without_locator():
     cleanup, attach, screenshot = _without_observation(server)
     with cleanup, attach, screenshot, \
          patch.object(server.browser_session, "get_tab", return_value=fake_tab), \
-         patch.object(server, "set_field_value", return_value={
+         patch.object(server.interaction, "set_field_value", return_value={
              "ok": True, "field_name": "供应商编码", "value": "SUP-20260711",
          }) as setter:
         result = server.explore_action(
@@ -213,7 +213,7 @@ def test_semantic_button_prefers_latest_visible_modal_stable_xpath():
          patch.object(server.observe, "observe_snapshot", return_value=modal_data), \
          patch.object(server.page_model, "scan_toolbar_actions", side_effect=AssertionError("toolbar fallback not expected")), \
          patch.object(server.browser_session, "get_tab", return_value=fake_tab), \
-         patch.object(server, "_resolve_and_click", return_value={"ok": True}) as click:
+         patch.object(server.interaction, "_resolve_and_click", return_value={"ok": True}) as click:
         result = server.explore_action(
             target={"type": "button", "text": "确定"},
         )
@@ -242,7 +242,7 @@ def test_semantic_dropdown_option_uses_stable_xpath_and_explicit_modal_never_fal
     }
     with patch.object(server.observe, "observe_snapshot", return_value=dropdown), \
          patch.object(server.page_model, "scan_toolbar_actions", side_effect=AssertionError("no page fallback")):
-        resolved = server._resolve_visible_action_target(
+        resolved = server.interaction._resolve_visible_action_target(
             {"text": "弹窗模式", "scope": "dropdown"}, in_frame=True,
         )
 
@@ -252,7 +252,7 @@ def test_semantic_dropdown_option_uses_stable_xpath_and_explicit_modal_never_fal
 
     with patch.object(server.observe, "observe_snapshot", return_value={"ok": True, "overlays": []}), \
          patch.object(server.page_model, "scan_toolbar_actions", side_effect=AssertionError("explicit modal must not scan page")):
-        missing = server._resolve_visible_action_target(
+        missing = server.interaction._resolve_visible_action_target(
             {"text": "确定", "scope": "modal"}, in_frame=True,
         )
 
@@ -262,7 +262,7 @@ def test_semantic_dropdown_option_uses_stable_xpath_and_explicit_modal_never_fal
 
 def test_find_vtable_row_requires_unique_value_and_returns_canvas_row():
     from drissionpage_mcp import server
-    with patch.object(server, "get_table_values", return_value={
+    with patch.object(server.table_facade, "get_table_values", return_value={
         "ok": True, "kind": "vtable", "values": ["SO-1", "SO-2", "SO-3"],
         "header_rows": 2,
     }):
@@ -279,7 +279,7 @@ def test_find_vtable_row_requires_unique_value_and_returns_canvas_row():
         "header_rows": 2,
     }
 
-    with patch.object(server, "get_table_values", return_value={
+    with patch.object(server.table_facade, "get_table_values", return_value={
         "ok": True, "kind": "vtable", "values": ["SO-2", "SO-2"],
     }):
         duplicate = server.find_vtable_row("销售订单号", "SO-2")
@@ -292,10 +292,10 @@ def test_find_vtable_row_requires_unique_value_and_returns_canvas_row():
 def test_recipe_dispatcher_saves_dynamic_row_and_resolves_later_reference():
     from drissionpage_mcp import server
     server._reset_recipe_context()
-    with patch.object(server, "find_vtable_row", return_value={
+    with patch.object(server.table_facade, "find_vtable_row", return_value={
         "ok": True, "row": 7, "column_title": "采购单号", "value": "PO-7", "token": "secret",
     }) as find_row, \
-         patch.object(server, "vtable_action", return_value={"ok": True, "row": 7}) as action:
+         patch.object(server.table_facade, "vtable_action", return_value={"ok": True, "row": 7}) as action:
         saved = server._run_recipe_action("find_vtable_row", {
             "column_title": "采购单号", "value": "PO-7", "save_as": "purchase_row",
         })
@@ -335,7 +335,7 @@ def test_vtable_row_business_reads_are_dynamic_and_aligned():
     def values(column_title, **_kwargs):
         return {"ok": True, "kind": "vtable", "values": columns[column_title]}
 
-    with patch.object(server, "get_table_values", side_effect=values), \
+    with patch.object(server.table_facade, "get_table_values", side_effect=values), \
             patch.object(server.vtable, "get_columns_values", return_value={
                 "ok": True, "values": columns,
             }):
@@ -351,7 +351,7 @@ def test_vtable_row_business_reads_are_dynamic_and_aligned():
 
 def test_vtable_row_business_read_rejects_table_change_after_lookup():
     from drissionpage_mcp import server
-    with patch.object(server, "get_table_values", return_value={
+    with patch.object(server.table_facade, "get_table_values", return_value={
         "ok": True, "kind": "vtable", "values": ["A", "E2E-SALARY-1"],
         "header_rows": 1,
     }), patch.object(server.vtable, "get_columns_values", return_value={

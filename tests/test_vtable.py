@@ -157,6 +157,7 @@ def test_vtable_action_click_uses_visible_cell_coordinates():
     fake_tab = _FakeTab()
 
     with patch.object(vtable, "_ensure_vtable", return_value=True), \
+         patch.object(vtable, "wait_for_render_stable", return_value={"ok": True}), \
          patch.object(vtable, "get_cell_rect", return_value={
              "ok": True,
              "viewportX": 111.24,
@@ -185,6 +186,7 @@ def test_vtable_action_header_icon_scrolls_before_resolving_icon_point():
     fake_tab = _FakeTab()
 
     with patch.object(vtable, "_ensure_vtable", return_value=True), \
+         patch.object(vtable, "wait_for_render_stable", return_value={"ok": True}), \
          patch.object(vtable, "scroll_to_cell", return_value={"ok": True}) as scroll_to_cell, \
          patch.object(vtable, "_wait_cell_center_stable", return_value={"viewportX": 10, "viewportY": 20}) as wait_center, \
          patch.object(vtable, "_run", return_value=[{
@@ -214,6 +216,7 @@ def test_vtable_action_drag_supports_relative_destination():
     fake_tab = _FakeTab()
 
     with patch.object(vtable, "_ensure_vtable", return_value=True), \
+         patch.object(vtable, "wait_for_render_stable", return_value={"ok": True}), \
          patch.object(vtable, "get_cell_rect", return_value={
              "ok": True,
              "viewportX": 10,
@@ -291,6 +294,7 @@ def test_vtable_action_cell_icon_clicks_icon_by_index():
     fake_tab = _FakeTab()
 
     with patch.object(vtable, "_ensure_vtable", return_value=True), \
+         patch.object(vtable, "wait_for_render_stable", return_value={"ok": True}), \
          patch.object(vtable, "get_cell_icons", return_value={
              "ok": True,
              "icons": [

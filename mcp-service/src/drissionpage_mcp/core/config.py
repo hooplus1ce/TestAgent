@@ -162,6 +162,7 @@ WAIT_TOOL_TIMEOUT = max(
 REFRESH_NAV_TIMEOUT = float(os.environ.get("HL_REFRESH_NAV_TIMEOUT", "10"))
 REFRESH_LOAD_TIMEOUT = float(os.environ.get("HL_REFRESH_LOAD_TIMEOUT", "15"))
 REFRESH_HTTP_TIMEOUT = float(os.environ.get("HL_REFRESH_HTTP_TIMEOUT", "15"))
+REFRESH_LOCK_TIMEOUT = float(os.environ.get("HL_REFRESH_LOCK_TIMEOUT", "5"))
 
 
 def make_chromium_options():

@@ -1,13 +1,14 @@
 # ty:ignore type
 import random
 import uuid
+
 import ddddocr
 import httpx
 from DrissionPage import Chromium, ChromiumOptions
 from DrissionPage.items import ChromiumElement, ChromiumFrame, ChromiumTab
+from drissionpage_mcp.core import config
 from fast_vtable_helper import FastVTableHelper
 from rich import print
-from drissionpage_mcp.core import config
 
 
 def get_login_auth():
@@ -230,6 +231,7 @@ def get_active_tab() -> ChromiumTab:
     print("正在进行浏览器初始化...")
     co = ChromiumOptions(ini_path="./mcp-service/configs/dp_configs.ini")
     browser = Chromium(addr_or_opts=co)
+    # browser = Chromium(addr_or_opts='192.168.31.21:8888')
     print("浏览器初始化完成！")
     return browser.latest_tab
 
@@ -433,7 +435,6 @@ def main():
         detect_layer_msg(tabpanel_iframe, timeout=1)
     else:
         print("未检测到弹窗iframe")
-
 
     # tabpanel_iframe.actions.move_to((182.0, 173.0), duration=0.3).click(times=1).wait(
     #     0.15

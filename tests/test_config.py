@@ -24,6 +24,7 @@ def test_defaults(monkeypatch, tmp_path):
     assert config.REFRESH_NAV_TIMEOUT == 10
     assert config.REFRESH_LOAD_TIMEOUT == 15
     assert config.REFRESH_HTTP_TIMEOUT == 15
+    assert config.REFRESH_LOCK_TIMEOUT == 5
     assert callable(config.make_chromium_options)
 
 
@@ -35,6 +36,7 @@ def test_env_override(monkeypatch):
     monkeypatch.setenv("HL_REFRESH_NAV_TIMEOUT", "3.5")
     monkeypatch.setenv("HL_REFRESH_LOAD_TIMEOUT", "4.5")
     monkeypatch.setenv("HL_REFRESH_HTTP_TIMEOUT", "5.5")
+    monkeypatch.setenv("HL_REFRESH_LOCK_TIMEOUT", "2.5")
     from drissionpage_mcp.core import config
     importlib.reload(config)
     assert config.SCM_ADMIN_URL == "https://preprod.example.com/"
@@ -44,6 +46,7 @@ def test_env_override(monkeypatch):
     assert config.REFRESH_NAV_TIMEOUT == 3.5
     assert config.REFRESH_LOAD_TIMEOUT == 4.5
     assert config.REFRESH_HTTP_TIMEOUT == 5.5
+    assert config.REFRESH_LOCK_TIMEOUT == 2.5
     # 还原默认值，避免污染后续测试
     for k in [
         "HL_URL",
@@ -53,6 +56,7 @@ def test_env_override(monkeypatch):
         "HL_REFRESH_NAV_TIMEOUT",
         "HL_REFRESH_LOAD_TIMEOUT",
         "HL_REFRESH_HTTP_TIMEOUT",
+        "HL_REFRESH_LOCK_TIMEOUT",
     ]:
         monkeypatch.delenv(k, raising=False)
     importlib.reload(config)

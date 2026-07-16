@@ -44,7 +44,7 @@ def test_all_agent_configs_share_workspace_entry_and_full_profile():
         payload = json.loads((ROOT / relative).read_text(encoding="utf-8"))
         server = payload["mcpServers"]["drissionpage-mcp"]
         assert server["env"]["DRISSIONPAGE_MCP_PROFILE"] == "full"
-        assert server["env"]["DRISSIONPAGE_MCP_WARMUP_OCR"] in {"true", "false"}
+        assert server["env"]["DRISSIONPAGE_MCP_WARMUP_OCR"] == "true"
         assert server["env"]["DRISSIONPAGE_MCP_COMPONENT_RELOAD"] == "true"
         assert server["env"]["DRISSIONPAGE_MCP_DISCOVERY"] == "search"
         assert server["env"]["DRISSIONPAGE_MCP_OBSERVABILITY"] == "true"
@@ -55,7 +55,7 @@ def test_all_agent_configs_share_workspace_entry_and_full_profile():
     with (ROOT / ".codex/config.toml").open("rb") as config_file:
         server = tomllib.load(config_file)["mcp_servers"]["drissionpage-mcp"]
     assert server["env"]["DRISSIONPAGE_MCP_PROFILE"] == "full"
-    assert server["env"]["DRISSIONPAGE_MCP_WARMUP_OCR"] in {"true", "false"}
+    assert server["env"]["DRISSIONPAGE_MCP_WARMUP_OCR"] == "true"
     assert server["env"]["DRISSIONPAGE_MCP_COMPONENT_RELOAD"] == "true"
     assert server["env"]["DRISSIONPAGE_MCP_DISCOVERY"] == "search"
     assert server["env"]["DRISSIONPAGE_MCP_OBSERVABILITY"] == "true"

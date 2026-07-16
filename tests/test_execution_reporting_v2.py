@@ -427,7 +427,8 @@ def test_query_filter_rejects_business_failure_and_summarizes_network(monkeypatc
 
 def test_formal_recipe_rejects_js_and_non_vtable_coordinate_clicks():
     from drissionpage_mcp import server
-    server._recipe_context.native_actions_only = True
+    from drissionpage_mcp.core import recipe_context
+    recipe_context._recipe_context.native_actions_only = True
     try:
         js_click = server._run_recipe_action("explore_action", {
             "action": "click", "locator": "text:保存", "by_js": True,
@@ -436,7 +437,7 @@ def test_formal_recipe_rejects_js_and_non_vtable_coordinate_clicks():
             "action": "click_xy", "x": 100, "y": 100,
         })
     finally:
-        server._recipe_context.native_actions_only = False
+        recipe_context._recipe_context.native_actions_only = False
 
     assert js_click["ok"] is False and "禁止 by_js" in js_click["reason"]
     assert coordinate_click["ok"] is False and "禁止普通坐标点击" in coordinate_click["reason"]
@@ -444,10 +445,11 @@ def test_formal_recipe_rejects_js_and_non_vtable_coordinate_clicks():
 
 def test_formal_recipe_rechecks_dynamic_refs_for_coordinates_and_mutation():
     from drissionpage_mcp import server
-    server._recipe_context.native_actions_only = True
+    from drissionpage_mcp.core import recipe_context
+    recipe_context._recipe_context.native_actions_only = True
     try:
         server._reset_recipe_context()
-        server._recipe_context.values = {
+        recipe_context._recipe_context.values = {
             "dynamic": {"locator": "text:保存", "target": {"type": "xy"}},
         }
         mutation = server._run_recipe_action(
@@ -459,7 +461,7 @@ def test_formal_recipe_rechecks_dynamic_refs_for_coordinates_and_mutation():
             },
         )
     finally:
-        server._recipe_context.native_actions_only = False
+        recipe_context._recipe_context.native_actions_only = False
         server._reset_recipe_context()
 
     assert mutation["ok"] is False and "destructive=true" in mutation["reason"]
@@ -534,6 +536,7 @@ def test_run_test_cases_enables_native_mode_before_ready_gate(monkeypatch, tmp_p
     from drissionpage_mcp.core import config
     from drissionpage_mcp.workflows import flow_evidence
     from drissionpage_mcp import server
+    from drissionpage_mcp.workflows import recipe_execution
     from drissionpage_mcp.workflows import test_execution
     monkeypatch.setattr(config, "SHOT_DIR", str(tmp_path))
     case_file = tmp_path / "cases.json"
@@ -548,7 +551,7 @@ def test_run_test_cases_enables_native_mode_before_ready_gate(monkeypatch, tmp_p
         }],
     }, ensure_ascii=False), encoding="utf-8")
     seen = []
-    monkeypatch.setattr(server, "_browser_ready_gate", lambda *_: seen.append(server._recipe_requires_native_actions()) or {"ok": True})
+    monkeypatch.setattr(recipe_execution, "_browser_ready_gate", lambda *_: seen.append(server._recipe_requires_native_actions()) or {"ok": True})
     monkeypatch.setattr(flow_evidence, "is_active", lambda: False)
     monkeypatch.setattr(flow_evidence, "start", lambda *_args, **_kwargs: {"ok": True})
     monkeypatch.setattr(flow_evidence, "stop", lambda: {"ok": True})
@@ -637,18 +640,19 @@ def test_filter_value_evaluator_rejects_mismatch_and_empty_result_by_default():
 
 def test_verify_filter_query_configures_once_queries_once_and_checks_every_column(monkeypatch):
     from drissionpage_mcp import server
+    from drissionpage_mcp.workflows import recipe_execution
     configured = []
     monkeypatch.setattr(server.filter_area, "expand_filter_area", lambda: {"ok": True})
     monkeypatch.setattr(server.filter_area, "set_filter_condition", lambda field, operator, value, **kwargs: (
         configured.append((field, operator, value)) or {"ok": True}
     ))
     queries = []
-    monkeypatch.setattr(server, "_query_filter", lambda **kwargs: queries.append(kwargs) or {"ok": True})
+    monkeypatch.setattr(recipe_execution, "_query_filter", lambda **kwargs: queries.append(kwargs) or {"ok": True})
     columns = {
         "工位名称": ["1号工位", "2号工位"],
         "操作模块": ["生产报工", "生产报工"],
     }
-    monkeypatch.setattr(server, "get_table_values", lambda title, **kwargs: {
+    monkeypatch.setattr(recipe_execution.table_facade, "get_table_values", lambda title, **kwargs: {
         "ok": True, "values": columns[title], "title": title,
     })
 
@@ -665,10 +669,11 @@ def test_verify_filter_query_configures_once_queries_once_and_checks_every_colum
 
 def test_verify_filter_query_fails_when_any_corresponding_column_mismatches(monkeypatch):
     from drissionpage_mcp import server
+    from drissionpage_mcp.workflows import recipe_execution
     monkeypatch.setattr(server.filter_area, "expand_filter_area", lambda: {"ok": True})
     monkeypatch.setattr(server.filter_area, "set_filter_condition", lambda *args, **kwargs: {"ok": True})
-    monkeypatch.setattr(server, "_query_filter", lambda **kwargs: {"ok": True})
-    monkeypatch.setattr(server, "get_table_values", lambda *args, **kwargs: {
+    monkeypatch.setattr(recipe_execution, "_query_filter", lambda **kwargs: {"ok": True})
+    monkeypatch.setattr(recipe_execution.table_facade, "get_table_values", lambda *args, **kwargs: {
         "ok": True, "values": ["生产准备", "生产报工"],
     })
 
@@ -841,11 +846,12 @@ def test_report_bundle_rejects_spoofed_image(monkeypatch, tmp_path):
 
 def test_browser_ready_gate_checks_active_frame_without_module_name(monkeypatch):
     from drissionpage_mcp import server
+    from drissionpage_mcp.workflows import recipe_execution
     calls = []
-    monkeypatch.setattr(server, "connect", lambda *_: calls.append("connect") or {"ok": True})
-    monkeypatch.setattr(server, "check_session", lambda: {"expired": False})
-    monkeypatch.setattr(server, "get_active_frame", lambda: {"ok": True, "tab_name": "当前模块"})
-    monkeypatch.setattr(server, "enter_module", lambda *_args, **_kwargs: (_ for _ in ()).throw(
+    monkeypatch.setattr(recipe_execution, "connect", lambda *_: calls.append("connect") or {"ok": True})
+    monkeypatch.setattr(recipe_execution, "check_session", lambda: {"expired": False})
+    monkeypatch.setattr(recipe_execution, "get_active_frame", lambda: {"ok": True, "tab_name": "当前模块"})
+    monkeypatch.setattr(recipe_execution, "enter_module", lambda *_args, **_kwargs: (_ for _ in ()).throw(
         AssertionError("module navigation must not run")
     ))
 
@@ -1073,6 +1079,7 @@ def test_run_test_cases_preserves_source_order_across_preflight(monkeypatch, tmp
     from drissionpage_mcp.core import config
     from drissionpage_mcp.workflows import flow_evidence
     from drissionpage_mcp import server
+    from drissionpage_mcp.workflows import recipe_execution
     from drissionpage_mcp.workflows import test_execution
     monkeypatch.setattr(config, "SHOT_DIR", str(tmp_path))
     case_file = tmp_path / "ordered.json"
@@ -1089,7 +1096,7 @@ def test_run_test_cases_preserves_source_order_across_preflight(monkeypatch, tmp
         {"case_id": "V2", "automation_recipe": business},
     ]}), encoding="utf-8")
     active = {"value": False}
-    monkeypatch.setattr(server, "_browser_ready_gate", lambda *_: {"ok": True})
+    monkeypatch.setattr(recipe_execution, "_browser_ready_gate", lambda *_: {"ok": True})
     monkeypatch.setattr(flow_evidence, "is_active", lambda: active["value"])
     monkeypatch.setattr(flow_evidence, "start", lambda *_args, **_kwargs: active.update(value=True) or {"ok": True})
     monkeypatch.setattr(flow_evidence, "stop", lambda: active.update(value=False) or {"ok": True})

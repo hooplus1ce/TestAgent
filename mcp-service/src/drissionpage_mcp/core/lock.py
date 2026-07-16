@@ -1,6 +1,7 @@
 """全局读写锁，写优先。写操作互斥，且阻塞所有读操作。"""
 
 import threading
+from time import monotonic
 
 
 class _RWLock:
@@ -30,19 +31,31 @@ class _RWLock:
             if self._readers == 0:
                 self._can_write.notify()
 
-    def acquire_write(self):
+    def acquire_write(self, timeout: float | None = None) -> bool:
         with self._lock:
             current = threading.get_ident()
             if self._writing and self._writer_owner == current:
                 self._writer_depth += 1
-                return
+                return True
+            deadline = None if timeout is None else monotonic() + max(float(timeout), 0.0)
             self._writers_waiting += 1
-            while self._readers > 0 or self._writing:
-                self._can_write.wait()
-            self._writing = True
-            self._writer_owner = current
-            self._writer_depth = 1
-            self._writers_waiting -= 1
+            try:
+                while self._readers > 0 or self._writing:
+                    if deadline is None:
+                        self._can_write.wait()
+                        continue
+                    remaining = deadline - monotonic()
+                    if remaining <= 0:
+                        return False
+                    self._can_write.wait(remaining)
+                self._writing = True
+                self._writer_owner = current
+                self._writer_depth = 1
+                return True
+            finally:
+                self._writers_waiting -= 1
+                if not self._writing or self._writer_owner != current:
+                    self._can_read.notify_all()
 
     def release_write(self):
         with self._lock:
