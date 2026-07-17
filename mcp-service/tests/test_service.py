@@ -78,6 +78,81 @@ def test_default_runtime_paths_use_workspace_env_and_service_config():
     assert config.DP_CONFIG_PATH.is_file()
 
 
+def test_remote_address_resolution_prefers_environment_over_ini(tmp_path):
+    from drissionpage_mcp.core import config
+
+    ini_path = tmp_path / "dp_configs.ini"
+    ini_path.write_text(
+        "[chromium_options]\naddress = browser.internal:9223\n",
+        encoding="utf-8",
+    )
+
+    assert config.resolve_remote_address(ini_path, {}) == "browser.internal:9223"
+    assert config.resolve_remote_address(
+        ini_path, {"HL_REMOTE_PORT": "9333"}
+    ) == "browser.internal:9333"
+    assert config.resolve_remote_address(
+        ini_path,
+        {"HL_REMOTE_PORT": "9333", "HL_REMOTE_ADDRESS": "127.0.0.1:9444"},
+    ) == "127.0.0.1:9444"
+
+
+def test_remote_address_resolution_uses_dotenv_without_overriding_system_env(tmp_path, monkeypatch):
+    from drissionpage_mcp.core import config
+
+    env_path = tmp_path / ".env"
+    env_path.write_text("HL_REMOTE_ADDRESS=dotenv-host:9224\n", encoding="utf-8")
+    monkeypatch.delenv("HL_REMOTE_ADDRESS", raising=False)
+    assert config._load_env_file(env_path)
+    assert os.environ["HL_REMOTE_ADDRESS"] == "dotenv-host:9224"
+
+    monkeypatch.setenv("HL_REMOTE_ADDRESS", "system-host:9555")
+    assert config._load_env_file(env_path)
+    assert os.environ["HL_REMOTE_ADDRESS"] == "system-host:9555"
+
+
+def test_browser_session_applies_resolved_remote_address(monkeypatch):
+    from drissionpage_mcp.core import config
+    from drissionpage_mcp.services import browser_session
+
+    created_options = []
+
+    class FakeOptions:
+        def __init__(self, **_kwargs):
+            self.address = None
+            created_options.append(self)
+
+        def set_address(self, address):
+            self.address = address
+
+    class FakeTab:
+        url = "https://example.test/"
+        title = "example"
+
+    class FakeBrowser:
+        def __init__(self, _options):
+            self.latest_tab = FakeTab()
+
+    monkeypatch.setattr(config, "REMOTE_ADDRESS", "127.0.0.1:9223")
+    monkeypatch.setattr(config, "DEFAULT_PORT", 9223)
+    monkeypatch.setattr(config, "CHROME_PATH", "")
+    monkeypatch.setattr(config, "EDGE_MODE", False)
+    monkeypatch.setattr(config, "PROXY", "")
+    monkeypatch.setattr(config, "DISABLE_PDF_PREVIEW", False)
+    monkeypatch.setattr(config, "REMOVE_TEST_TYPE", False)
+    monkeypatch.setattr(config, "HEADLESS", False)
+    monkeypatch.setattr(browser_session, "ChromiumOptions", FakeOptions)
+    monkeypatch.setattr(browser_session, "Chromium", FakeBrowser)
+    monkeypatch.setattr(browser_session, "_browser", None)
+    monkeypatch.setattr(browser_session, "_tab", None)
+    monkeypatch.setattr(browser_session, "_address", "127.0.0.1:9223")
+    monkeypatch.setattr(browser_session, "_port", 9223)
+
+    browser_session.connect()
+
+    assert created_options[0].address == "127.0.0.1:9223"
+
+
 def test_module_entry_sets_service_working_directory(monkeypatch, tmp_path):
     from drissionpage_mcp import __main__, server
     from drissionpage_mcp.core import config

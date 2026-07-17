@@ -6,7 +6,7 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "ddddocr>=1.6.1",
-    "drissionpage>=4.2.0b20,<5",
+    "drissionpage>=4.2.0b20",
     "fastmcp==3.4.4",
     "httpx>=0.28.1",
     "python-dotenv>=1.2.2",

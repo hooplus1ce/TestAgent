@@ -251,6 +251,7 @@ def explore_action(
     timeout: float = 8,
     signals: list[str] = None,
     listen_targets: str = None,
+    wait_spec: dict = None,
     capture_before: bool = False,
     capture_after: bool = False,
     include_snapshot: bool = None,
@@ -259,7 +260,11 @@ def explore_action(
     observe_mode: str = "auto",
     clean_overlays: bool = True,
 ) -> dict:
-    """动作探索封装：observe_start → 执行动作 → observe_wait → 可选页面模型快照。"""
+    """执行动作并可使用 wait_spec 精确等待目标状态。
+
+    wait_spec.kind 可为 locator、url、response 或 table；默认返回紧凑匹配摘要。
+    response 的请求/响应正文仅在 body_artifact=true 时写入证据文件，不内联到响应。
+    """
     return with_write(
         interaction.explore_action,
         action=action,
@@ -286,6 +291,7 @@ def explore_action(
         timeout=timeout,
         signals=signals,
         listen_targets=listen_targets,
+        wait_spec=wait_spec,
         capture_before=capture_before,
         capture_after=capture_after,
         include_snapshot=include_snapshot,

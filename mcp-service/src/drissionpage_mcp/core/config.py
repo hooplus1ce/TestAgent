@@ -1,4 +1,4 @@
-"""配置外置：从环境变量读取，保留默认值。
+"""配置外置：系统环境变量优先，其次 .env、dp_configs.ini，最后使用默认值。
 
 环境变量：
   HL_HOST_PREFIX   一键切换环境前缀（推荐），自动推导 HL_URL / HL_BASE_URL /
@@ -11,7 +11,8 @@
   HL_COOKIE_DOMAIN    cookie 域
   HL_ACCESS_DOMAIN    CDP 注入 cookie 的域
   HL_TARGET_HINT      connect 时选 tab 的标题提示
-  HL_REMOTE_PORT      Chrome 远程调试端口
+  HL_REMOTE_ADDRESS   Chrome 远程调试地址，格式 host:port（最高端点覆盖）
+  HL_REMOTE_PORT      Chrome 远程调试端口（保留 dp_configs.ini 中的主机）
   HL_SHOT_DIR          screenshot 默认保存目录
   HL_CHROME_PATH       Chrome 浏览器路径（可选，自动探测）
   HL_EDGE_MODE         使用 Edge 浏览器（true/1 启用）
@@ -21,6 +22,7 @@
   HL_REFRESH_LOAD_TIMEOUT  会话刷新后等待页面加载的超时（秒）
   HL_REFRESH_HTTP_TIMEOUT  OCR 登录 HTTP 请求超时（秒）
 """
+import configparser
 import os
 from pathlib import Path
 
@@ -53,6 +55,95 @@ CONFIG_DIR = Path(
     )
 ).resolve()
 DP_CONFIG_PATH = CONFIG_DIR / "dp_configs.ini"
+
+
+_FALLBACK_REMOTE_ADDRESS = "127.0.0.1:9222"
+
+
+def _parse_remote_port(value) -> int | None:
+    """Return a valid CDP port, or None for an absent/invalid value."""
+    try:
+        port = int(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+    return port if 1 <= port <= 65535 else None
+
+
+def _split_remote_address(value: str | None) -> tuple[str, int] | None:
+    """Validate DrissionPage's host:port address format, including bracketed IPv6."""
+    if not isinstance(value, str):
+        return None
+    address = value.strip()
+    host, separator, raw_port = address.rpartition(":")
+    port = _parse_remote_port(raw_port) if separator else None
+    if (
+        not host
+        or port is None
+        or any(char.isspace() for char in host)
+        or any(char in host for char in "/?#@")
+        or (host.startswith("[") != host.endswith("]"))
+    ):
+        return None
+    return host, port
+
+
+def _format_remote_address(host: str, port: int) -> str:
+    return f"{host}:{port}"
+
+
+def _read_ini_remote_address(ini_path: Path) -> str | None:
+    """Read [chromium_options] address without letting a malformed ini abort startup."""
+    parser = configparser.ConfigParser()
+    try:
+        with ini_path.open(encoding="utf-8") as file:
+            parser.read_file(file)
+        return parser.get("chromium_options", "address", fallback=None)
+    except (OSError, configparser.Error):
+        return None
+
+
+def resolve_remote_address(ini_path: Path | None = None, environ=None) -> str:
+    """Resolve the browser endpoint with system/.env overrides over dp_configs.ini.
+
+    ``load_dotenv(..., override=False)`` has already populated absent process values,
+    so ``environ`` represents system variables first and .env values second.  A full
+    ``HL_REMOTE_ADDRESS`` wins over ``HL_REMOTE_PORT``; the latter only replaces the
+    port while retaining the host configured in the ini file.
+    """
+    env = os.environ if environ is None else environ
+    source_path = DP_CONFIG_PATH if ini_path is None else Path(ini_path)
+    ini_address = _read_ini_remote_address(source_path)
+    parsed_ini = _split_remote_address(ini_address)
+    fallback_host, fallback_port = _split_remote_address(_FALLBACK_REMOTE_ADDRESS)
+    host, port = parsed_ini or (fallback_host, fallback_port)
+
+    env_address = _split_remote_address(env.get("HL_REMOTE_ADDRESS"))
+    if env_address:
+        return _format_remote_address(*env_address)
+
+    env_port = _parse_remote_port(env.get("HL_REMOTE_PORT"))
+    if env_port is not None:
+        port = env_port
+    return _format_remote_address(host, port)
+
+
+def get_remote_port(address: str) -> int:
+    """Return the validated port from a resolved browser endpoint."""
+    parsed = _split_remote_address(address)
+    if parsed is None:
+        raise ValueError("invalid browser remote address: %r" % address)
+    return parsed[1]
+
+
+def get_remote_address(port: int | None = None) -> str:
+    """Return the configured endpoint, optionally overriding only this call's port."""
+    if port is None:
+        return REMOTE_ADDRESS
+    requested_port = _parse_remote_port(port)
+    if requested_port is None:
+        raise ValueError("port must be an integer between 1 and 65535")
+    host, _ = _split_remote_address(REMOTE_ADDRESS)
+    return _format_remote_address(host, requested_port)
 
 # ---- 目标环境：通过 HL_HOST_PREFIX 一键派生，也支持逐个覆盖 ----
 # 优先 HL_HOST_PREFIX 批量推导，逐个环境变量（HL_URL / HL_BASE_URL 等）可覆盖。
@@ -110,7 +201,9 @@ def set_target_prefix(prefix: str):
 
 NEEDED_COOKIES = ["SESSION", "UCTOKEN", "cookie_token"]
 
-DEFAULT_PORT = int(os.environ.get("HL_REMOTE_PORT", "9222"))
+# Browser endpoint precedence: inherited system env > .env > dp_configs.ini > fallback.
+REMOTE_ADDRESS = resolve_remote_address()
+DEFAULT_PORT = get_remote_port(REMOTE_ADDRESS)
 DEFAULT_TARGET_HINT = os.environ.get("HL_TARGET_HINT", "诺贝科技")
 
 
@@ -168,13 +261,16 @@ REFRESH_LOCK_TIMEOUT = float(os.environ.get("HL_REFRESH_LOCK_TIMEOUT", "5"))
 def make_chromium_options():
     """创建 ChromiumOptions（4.2 增强配置）。
 
-    仅用于「启动新浏览器实例」的场景（如自启 Chrome）。connect() 走的是接管已运行
-    Chrome 的路径（Chromium(port)），不会调用本函数，故 HL_CHROME_PATH / HL_EDGE_MODE /
-    HL_PROXY / HL_DISABLE_PDF_PREVIEW / HL_REMOVE_TEST_TYPE 在接管模式下不生效——
-    仅当未来新增 launch 工具时才生效。
+    使用 dp_configs.ini 的启动配置，并统一应用已解析的 REMOTE_ADDRESS。环境变量中的
+    HL_CHROME_PATH / HL_EDGE_MODE / HL_PROXY 等项在 ini 基础上覆盖。不会调用 auto_port()
+    以免为启动实例随机分配端口并偏离用户配置的浏览器端点。
     """
     from DrissionPage import ChromiumOptions
-    co = ChromiumOptions()
+    if DP_CONFIG_PATH.is_file():
+        co = ChromiumOptions(read_file=True, ini_path=str(DP_CONFIG_PATH))
+    else:
+        co = ChromiumOptions(read_file=False)
+    co.set_address(REMOTE_ADDRESS)
     if CHROME_PATH:
         co.set_browser_path(CHROME_PATH)
     elif EDGE_MODE:
@@ -185,5 +281,4 @@ def make_chromium_options():
         co.disable_pdf_preview()
     if REMOVE_TEST_TYPE:
         co.remove_test_type()
-    co.auto_port()
     return co

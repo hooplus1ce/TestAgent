@@ -91,13 +91,13 @@ from drissionpage_mcp import server
 async def main():
     async with Client(server.mcp) as client:
         tools = await client.list_tools()
-        chinese = await client.call_tool("search_tools", {"pattern": "表格"})
-        exact = await client.call_tool("search_tools", {"pattern": "query_table"})
+        chinese = await client.call_tool("search_tools", {"pattern": "\u8868\u683c"})
+        exact = await client.call_tool("search_tools", {"pattern": "find_vtable_row"})
         print(json.dumps({
             "names": [tool.name for tool in tools],
             "chinese_search": chinese.content[0].text,
             "exact_search": exact.content[0].text,
-        }, ensure_ascii=False))
+        }, ensure_ascii=True))
 
 asyncio.run(main())
 '''
@@ -115,12 +115,14 @@ asyncio.run(main())
         check=True,
     )
     payload = json.loads(result.stdout)
-    assert len(payload["names"]) == 11
-    assert {"search_tools", "call_tool", "detect_page_family"} <= set(
-        payload["names"]
-    )
+    assert len(payload["names"]) == 29
+    assert {
+        "search_tools", "call_tool", "detect_page_family", "enter_module",
+        "scan_toolbar_actions", "scan_table", "query_table", "explore_action",
+        "table_action", "observe_snapshot", "flow_start",
+    } <= set(payload["names"])
     assert '"name":"' in payload["chinese_search"]
-    assert "query_table" in payload["exact_search"]
+    assert "find_vtable_row" in payload["exact_search"]
 
 
 def test_session_visibility_activates_only_selected_capabilities():

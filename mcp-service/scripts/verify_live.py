@@ -1,4 +1,4 @@
-"""端到端验证：直接调用模块函数对 9222 浏览器跑只读链路。
+"""端到端验证：直接调用模块函数对配置的浏览器端点跑只读链路。
 不做任何点击/输入，仅验证连接、frame 解析、VTable 挂载与扫描（最高风险）。
 """
 import sys, os, json, traceback
@@ -24,7 +24,7 @@ def step(name, fn):
 
 
 print("==== 1. connect ====")
-tab = B.connect(9222, "诺贝科技")
+tab = B.connect()
 print("  url=%s title=%s" % (tab.url, tab.title))
 
 print("\n==== 2. get_active_frame ====")

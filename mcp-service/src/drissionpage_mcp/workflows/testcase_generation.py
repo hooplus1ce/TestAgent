@@ -20,16 +20,20 @@ _RECIPE_KEYS = {
     "start_date", "end_date", "row", "col", "column_title", "kind",
     "table_index", "icon_name", "option_text", "key", "modifiers", "by_js",
     "in_frame", "timeout", "expect", "signals", "listen_targets", "observe_mode",
-    "detail", "clean_overlays",
+    "detail", "clean_overlays", "wait_spec",
 }
-_DIRECT_RECIPE_ACTIONS = {
+_ALWAYS_DIRECT_RECIPE_ACTIONS = {
     "find_vtable_row", "count_vtable_rows", "get_vtable_row_values",
     "get_table_values", "get_vtable_cell_render_info",
     "vtable_action", "click_table_cell", "observe_snapshot",
 }
+_DIRECT_RECIPE_ACTIONS = _ALWAYS_DIRECT_RECIPE_ACTIONS | {
+    "click", "input", "set_field_value", "select_option", "set_date",
+}
 _DIRECT_RECIPE_KEYS = {
-    "field_name", "value", "in_frame", "clear", "timeout", "scope", "select_index",
-    "option_text", "column_title", "raw", "match", "header_rows", "save_as",
+    "locator", "text", "field_name", "value", "date", "start_date", "end_date",
+    "in_frame", "clear", "timeout", "scope", "select_index", "option_text",
+    "column_title", "raw", "match", "header_rows", "save_as",
     "expected_count",
     "key_column", "key_value", "column_titles", "row", "col", "kind", "table_index",
     "icon_name", "target", "icon_index", "hover_first", "duration", "detail",
@@ -731,14 +735,59 @@ def _chinese_step(step: dict) -> str:
     return "执行“%s”操作" % name
 
 
-def _recipe_args(step: dict) -> dict:
+def _recipe_args(step: dict, runner_action: str = "explore_action") -> dict:
     raw = _action_input(step)
-    action = _action_name(step)
-    allowed = _DIRECT_RECIPE_KEYS if action in _DIRECT_RECIPE_ACTIONS else _RECIPE_KEYS
+    source_action = _action_name(step)
+    allowed = _DIRECT_RECIPE_KEYS if runner_action in _DIRECT_RECIPE_ACTIONS else _RECIPE_KEYS
     args = {key: value for key, value in raw.items() if key in allowed and value not in (None, "", [])}
-    if action not in _DIRECT_RECIPE_ACTIONS:
-        args["action"] = action
+    if runner_action == "set_field_value":
+        args["value"] = raw.get("text")
+        args.pop("text", None)
+    if runner_action == "explore_action":
+        args["action"] = source_action
     return args
+
+
+def _required_observation_signals(traces: list[dict]) -> list[str]:
+    signal_groups = {
+        "modal": ["modal"],
+        "toast": ["message", "notification"],
+        "network_status": ["network"],
+        "network_body": ["network"],
+        "network_identity": ["network"],
+        "url": ["url"],
+        "tab": ["tab"],
+    }
+    required = []
+    for trace in traces:
+        if not trace.get("executable"):
+            continue
+        for signal in signal_groups.get(trace.get("kind"), []):
+            if signal not in required:
+                required.append(signal)
+    return required
+
+
+def _direct_runner_action(action: str, raw: dict, needs_observation: bool) -> str | None:
+    """Use lean native actions only when the recorded step has no feedback contract."""
+    if action in _ALWAYS_DIRECT_RECIPE_ACTIONS:
+        return action
+    if needs_observation:
+        return None
+    if action == "click" and raw.get("locator") and not raw.get("target"):
+        return "click"
+    if action == "input":
+        if raw.get("locator") and raw.get("text") is not None:
+            return "input"
+        if raw.get("field_name") and raw.get("text") is not None:
+            return "set_field_value"
+    if action == "select_option" and raw.get("field_name") and raw.get("option_text"):
+        return "select_option"
+    if action in {"set_date", "date_range"} and raw.get("field_name") and (
+        raw.get("date") or (raw.get("start_date") and raw.get("end_date"))
+    ):
+        return "set_date"
+    return None
 
 
 def _listener_target_from_url(url: str):
@@ -813,24 +862,18 @@ def _build_recipe(flow: dict, steps: list[dict]) -> tuple[dict, list[dict]]:
         for trace in traces:
             trace["phase"] = "cleanup" if is_cleanup else "steps"
         action = _action_name(step)
-        args = _recipe_args(step)
-        if action not in _DIRECT_RECIPE_ACTIONS and "signals" not in args:
-            signal_groups = {
-                "modal": ["modal"],
-                "toast": ["message", "notification"],
-                "network_status": ["network"],
-                "network_body": ["network"],
-                "network_identity": ["network"],
-                "url": ["url"],
-                "tab": ["tab"],
-            }
-            required_signals = []
-            for trace in traces:
-                if not trace.get("executable"):
-                    continue
-                for signal in signal_groups.get(trace.get("kind"), []):
-                    if signal not in required_signals:
-                        required_signals.append(signal)
+        raw = _action_input(step)
+        required_signals = _required_observation_signals(traces)
+        explicit_observation = (
+            bool(raw.get("signals"))
+            or raw.get("wait_spec") is not None
+            or str(raw.get("expect") or "auto").lower() != "auto"
+        )
+        runner_action = _direct_runner_action(
+            action, raw, bool(required_signals) or explicit_observation,
+        )
+        args = _recipe_args(step, runner_action or "explore_action")
+        if runner_action is None and "signals" not in args:
             if required_signals:
                 args["signals"] = required_signals
                 if "network" in required_signals and "listen_targets" not in args:
@@ -848,7 +891,7 @@ def _build_recipe(flow: dict, steps: list[dict]) -> tuple[dict, list[dict]]:
                     args["listen_targets"] = _listener_target_from_url(listen_target) or True
         command = {
             "sequence": index,
-            "action": action if action in _DIRECT_RECIPE_ACTIONS else "explore_action",
+            "action": runner_action or "explore_action",
             "args": args,
             "expect": {"path": "ok", "equals": True}, "assertions": assertions,
             "business_assertions": traces, "evidence_sequence": step.get("sequence", index),

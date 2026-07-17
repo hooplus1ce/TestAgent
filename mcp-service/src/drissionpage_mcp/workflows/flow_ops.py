@@ -15,6 +15,7 @@ def flow_start(
     risk_type: str = "正常路径",
     destructive: bool = False,
     cleanup_strategy: str = "",
+    screenshot_policy: str = "on_failure",
 ) -> dict:
     result = flow_evidence.start(
         module,
@@ -24,6 +25,7 @@ def flow_start(
         risk_type=risk_type,
         destructive=destructive,
         cleanup_strategy=cleanup_strategy,
+        screenshot_policy=screenshot_policy,
     )
     if result.get("ok"):
         resource_store.set_module(module)

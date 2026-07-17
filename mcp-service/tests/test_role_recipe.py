@@ -124,7 +124,7 @@ def test_run_test_cases_executes_role_recipe_without_default_session_gate(monkey
         "stop",
         lambda: flow_active.update(value=False) or {"ok": True},
     )
-    monkeypatch.setattr(flow_evidence, "wants_screenshot", lambda: False)
+    monkeypatch.setattr(flow_evidence, "wants_screenshot", lambda *_args: False)
     monkeypatch.setattr(flow_evidence, "record_exploration", lambda *args, **kwargs: {"sequence": 1})
 
     def role_action(name):

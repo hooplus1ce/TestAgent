@@ -97,8 +97,6 @@ def browser_get_element_state(locator: str, state: str = None) -> dict:
 
 
 def connect(port: int = None, target_hint: str = None) -> dict:
-    port = config.DEFAULT_PORT if port is None else port
-    target_hint = config.DEFAULT_TARGET_HINT if target_hint is None else target_hint
     tab = browser_session.connect(port, target_hint)
     return {
         "ok": True,
@@ -676,7 +674,7 @@ def _run_recipe_action(action: str, args: dict) -> dict:
         return result
 
     screenshot_path = None
-    if flow_evidence.wants_screenshot():
+    if flow_evidence.wants_screenshot(result):
         try:
             screenshot_path = resource_store.resolve_path(
                 "execution_%d.png" % time.time_ns(),
@@ -996,7 +994,7 @@ def _browser_connection_gate() -> dict:
     wrong account before the recipe activates its first role.
     """
     try:
-        connection = connect(config.DEFAULT_PORT, config.DEFAULT_TARGET_HINT)
+        connection = connect()
         if not connection.get("ok"):
             return {"ok": False, "reason": "browser connection failed", "connection": connection}
         return {
@@ -1012,7 +1010,7 @@ def _browser_connection_gate() -> dict:
 def _browser_ready_gate(module_text: str) -> dict:
     """连接浏览器、确认会话与业务 iframe；模块名存在时再精确导航。"""
     try:
-        connection = connect(config.DEFAULT_PORT, config.DEFAULT_TARGET_HINT)
+        connection = connect()
         if not connection.get("ok"):
             return {"ok": False, "reason": "browser connection failed",
                     "connection": connection}

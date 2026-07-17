@@ -1,4 +1,4 @@
-"""DrissionPage 浏览器单例：连接/启动 9222 端口、活动 tab / iframe(frame) 解析与自愈重连。
+"""DrissionPage 浏览器单例：连接配置的 CDP 地址、活动 tab / iframe(frame) 解析与自愈重连。
 
 所有 MCP 工具通过本模块取 tab / frame，保证跨工具调用复用同一个浏览器连接。
 启动/接管由 DrissionPage 的 Chromium() 依据 dp_configs.ini 自动处理（端口无实例则启动，有则接管）。
@@ -24,6 +24,7 @@ _JS_DIR = str(config.PACKAGE_ROOT / "assets" / "js")
 # 模块级单例
 _browser = None
 _tab = None
+_address = config.REMOTE_ADDRESS
 _port = config.DEFAULT_PORT
 _target_hint = config.DEFAULT_TARGET_HINT
 
@@ -131,43 +132,43 @@ def _pick_tab(browser, hint):
     return browser.latest_tab
 
 
-def connect(
-    port: int = config.DEFAULT_PORT, target_hint: str = config.DEFAULT_TARGET_HINT
-):
-    """接管或启动 Chromium，并复用同端口的健康 4.2 浏览器连接。
+def connect(port: int | None = None, target_hint: str | None = None):
+    """接管或启动 Chromium，并复用同地址的健康 4.2 浏览器连接。
 
     启动参数只组合 DrissionPage 4.2 官方 API：Edge、账密代理、PDF 下载模式和
     remove_test_type 均由项目环境变量显式控制。重连新浏览器时清空旧 Context
     注册表，避免把失效对象暴露给后续工具。
     """
     with _lock:
-        global _browser, _tab, _port, _target_hint, _active_tab_name, _context_seq
-        logger.info("connect port=%s target_hint=%r", port, target_hint)
+        global _browser, _tab, _address, _port, _target_hint, _active_tab_name, _context_seq
+        address = config.get_remote_address(port)
+        resolved_port = config.get_remote_port(address)
+        resolved_hint = config.DEFAULT_TARGET_HINT if target_hint is None else target_hint
+        logger.info("connect address=%s target_hint=%r", address, resolved_hint)
 
-        if _browser is not None and port == _port:
+        if _browser is not None and address == _address:
             try:
                 browser_alive = bool(_browser.states.is_alive)
                 tab_alive = _tab is not None and bool(_tab.states.is_alive)
                 if browser_alive:
-                    if not tab_alive or target_hint != _target_hint:
-                        _tab = _pick_tab(_browser, target_hint)
-                    _target_hint = target_hint
+                    if not tab_alive or resolved_hint != _target_hint:
+                        _tab = _pick_tab(_browser, resolved_hint)
+                    _target_hint = resolved_hint
                     return _tab
             except Exception as exc:
                 logger.debug("现有浏览器连接不可复用: %s", exc)
 
-        _port = port
-        _target_hint = target_hint
+        _address = address
+        _port = resolved_port
+        _target_hint = resolved_hint
         _ensure_display_env()
         if os.path.isfile(_DP_INI):
             options = ChromiumOptions(read_file=True, ini_path=_DP_INI)
         else:
             options = ChromiumOptions(read_file=False)
             logger.info("DrissionPage ini not found; using runtime options: %s", _DP_INI)
-        # 如果 ini 中已配置非 localhost 的远程 address（如局域网 Linux 设备），
-        # 则跳过默认的 127.0.0.1 覆盖，保持对远程设备的连接。
-        if not options.address or options.address.startswith("127.0.0.1:"):
-            options.set_address(f"127.0.0.1:{port}")
+        # config 统一处理 ini/.env/系统环境变量优先级，不能再被 ChromiumOptions 默认值覆盖。
+        options.set_address(address)
 
         if config.CHROME_PATH:
             options.set_browser_path(config.CHROME_PATH)
@@ -194,7 +195,7 @@ def connect(
             logger.info("headless 模式启动")
 
         _browser = Chromium(options)
-        _tab = _pick_tab(_browser, target_hint)
+        _tab = _pick_tab(_browser, resolved_hint)
         _active_tab_name = ""
         _contexts.clear()
         _context_seq = 0

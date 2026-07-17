@@ -144,14 +144,36 @@ component_providers = [
     if provider is not None
 ]
 _DISCOVERY_ALWAYS_VISIBLE = [
+    # Connection and session lifecycle.
     "connect",
     "browser_tabs",
     "check_session",
     "refresh_session",
     "get_active_frame",
     "detect_page_family",
+    # Daily page discovery and module navigation.
+    "enter_module",
     "capture_page_model",
+    "scan_page_elements",
+    "scan_toolbar_actions",
+    "scan_form_fields",
+    "scan_filter_fields",
+    "scan_table",
+    "query_table",
+    # Standard interaction and UI feedback loop.
     "explore_action",
+    "click",
+    "set_field_value",
+    "set_date",
+    "select_option",
+    "table_action",
+    "observe_snapshot",
+    "close_modal",
+    "screenshot",
+    # Evidence flow controls needed for browser exploration tasks.
+    "flow_start",
+    "flow_capture_page_state",
+    "flow_stop",
     "activate_tool_groups",
 ]
 server_transforms = [tool_metadata.ToolMetadataTransform()]
@@ -177,6 +199,7 @@ server_middleware = [
             "run_test_cases",
             "scan_page_elements",
             "scan_table",
+            "explore_action",
         ],
     ),
 ]
@@ -301,6 +324,7 @@ def context_resource() -> str:
         "resource_context": resource_store.get_context(),
         "enabled_caps": sorted(tool_metadata.ENABLED_CAPS),
         "tool_profile": tool_metadata.ENABLED_PROFILE,
+        "remote_address": config.REMOTE_ADDRESS,
         "remote_port": config.DEFAULT_PORT,
         "target_hint": config.DEFAULT_TARGET_HINT,
         "roles": role_sessions.list_roles(),
@@ -336,7 +360,7 @@ def evidence_resource(resource_path: str) -> str:
 
 
 @write_synchronized
-def connect(port: int = config.DEFAULT_PORT, target_hint: str = config.DEFAULT_TARGET_HINT) -> dict:
+def connect(port: int | None = None, target_hint: str | None = None) -> dict:
     """连接 Chrome（内部/配方可调用；MCP 注册见 components.core.session）。"""
     tab = browser_session.connect(port, target_hint)
     return {"ok": True, "url": tab.url, "title": tab.title, "tabs": browser_session.list_tabs()}
@@ -444,6 +468,7 @@ def explore_action(action: Literal["click", "input", "set_date",
                    key: str = None, modifiers: list[str] = None,
                    by_js: bool = False, in_frame: bool = True, timeout: float = 8,
                    signals: list[str] = None, listen_targets: str = None,
+                   wait_spec: dict = None,
                    capture_before: bool = False, capture_after: bool = False,
                    include_snapshot: bool = None, detail: str = "summary",
                    expect: str = "auto", observe_mode: str = "auto",
@@ -455,7 +480,7 @@ def explore_action(action: Literal["click", "input", "set_date",
         option_text=option_text, field_name=field_name, text=text, date=date,
         start_date=start_date, end_date=end_date, key=key, modifiers=modifiers,
         by_js=by_js, in_frame=in_frame, timeout=timeout, signals=signals,
-        listen_targets=listen_targets, capture_before=capture_before,
+        listen_targets=listen_targets, wait_spec=wait_spec, capture_before=capture_before,
         capture_after=capture_after, include_snapshot=include_snapshot, detail=detail,
         expect=expect, observe_mode=observe_mode, clean_overlays=clean_overlays,
     )
@@ -747,12 +772,14 @@ def _click_table_cell_raw(row: int, col: int = None, column_title: str = None,
 @write_synchronized
 def flow_start(module: str, flow_name: str = "exploration", capture_screenshots: bool = True,
                scenario_type: str = "功能测试", risk_type: str = "正常路径",
-               destructive: bool = False, cleanup_strategy: str = "") -> dict:
+               destructive: bool = False, cleanup_strategy: str = "",
+               screenshot_policy: str = "on_failure") -> dict:
     """开始记录真实业务流证据；后续 explore_action 自动关联元素、反馈、接口和截图。"""
     return flow_ops.flow_start(
         module, flow_name=flow_name, capture_screenshots=capture_screenshots,
         scenario_type=scenario_type, risk_type=risk_type,
         destructive=destructive, cleanup_strategy=cleanup_strategy,
+        screenshot_policy=screenshot_policy,
     )
 
 

@@ -19,6 +19,7 @@ def flow_start(
     risk_type: str = "正常路径",
     destructive: bool = False,
     cleanup_strategy: str = "",
+    screenshot_policy: str = "on_failure",
 ) -> dict:
     """开始记录真实业务流证据。"""
     return with_write(
@@ -30,6 +31,7 @@ def flow_start(
         risk_type=risk_type,
         destructive=destructive,
         cleanup_strategy=cleanup_strategy,
+        screenshot_policy=screenshot_policy,
     )
 
 

@@ -236,6 +236,12 @@ def _short_click_timeout(timeout: float, default: float = 2.0, upper: float = 2.
     return max(0.0, min(value, upper))
 
 
+def _remaining_timeout(deadline: float, upper: float = None) -> float:
+    """Return the remaining shared action budget, optionally capped per probe."""
+    remaining = max(0.0, deadline - time.monotonic())
+    return min(remaining, upper) if upper is not None else remaining
+
+
 def _extract_text_locator(locator: str) -> str | None:
     for prefix in ("text:", "text=", "tx:", "tx="):
         if isinstance(locator, str) and locator.startswith(prefix):
@@ -1735,33 +1741,303 @@ def _resolve_observe_policy(signals, listen_targets, expect: str, observe_mode: 
     elif semantic_requested and mode in ("fast", "none", "off"):
         effective_signals = []
     else:
-        effective_signals = (
-            ["overlay", "notification", "message", "tab", "url", "network"]
-            if listen_targets else ["overlay", "notification", "message", "tab", "url"]
-        )
+        # A generic action often changes no observable UI state. Keep the default
+        # probe short and leave navigation/network waits to explicit expectations.
+        effective_signals = ["overlay", "notification", "message"]
 
     if mode in ("none", "off") or inferred_expect == "none":
         effective_signals = []
 
     effective_detail = "full" if mode == "full" and detail == "summary" else detail
     if include_snapshot is None:
-        effective_snapshot = mode not in ("fast", "none", "off")
+        effective_snapshot = mode in ("evidence", "full")
     else:
         effective_snapshot = bool(include_snapshot)
 
     wait_timeout = timeout
-    if mode == "fast":
-        wait_timeout = min(timeout, 2.0)
+    if mode == "fast" or (
+        mode == "auto" and signals is None and inferred_expect == "auto"
+    ):
+        wait_timeout = min(timeout, 1.5)
 
     return {
         "mode": mode,
         "expect": inferred_expect,
         "signals": effective_signals,
         "include_snapshot": effective_snapshot,
+        "snapshot_on_signal": (
+            include_snapshot is None
+            and mode in ("auto", "fast")
+            and bool(effective_signals)
+        ),
         "detail": effective_detail,
         "timeout": wait_timeout,
         "skip_observe": not effective_signals,
     }
+
+
+_WAIT_SPEC_KINDS = {"locator", "url", "response", "table"}
+_WAIT_SPEC_EVIDENCE = {"none", "summary", "full", "on_failure"}
+
+
+def _normalize_wait_spec(raw, default_timeout: float) -> tuple[dict | None, str | None]:
+    """Validate a compact, condition-oriented post-action wait contract."""
+    if raw is None:
+        return None, None
+    if not isinstance(raw, dict):
+        return None, "wait_spec must be an object"
+    spec = dict(raw)
+    kind = str(spec.get("kind") or "locator").strip().lower()
+    if kind == "text":
+        kind = "locator"
+    if kind not in _WAIT_SPEC_KINDS:
+        return None, "wait_spec.kind must be locator, url, response, or table"
+    try:
+        timeout = float(spec.get("timeout", default_timeout))
+    except (TypeError, ValueError):
+        return None, "wait_spec.timeout must be numeric"
+    if not math.isfinite(timeout) or timeout < 0:
+        return None, "wait_spec.timeout must be a non-negative finite number"
+    evidence = str(spec.get("evidence") or "on_failure").strip().lower()
+    if evidence not in _WAIT_SPEC_EVIDENCE:
+        return None, "wait_spec.evidence must be none, summary, full, or on_failure"
+    normalized = {"kind": kind, "timeout": timeout, "evidence": evidence}
+
+    if kind == "locator":
+        locator = str(spec.get("locator") or "").strip()
+        if not locator:
+            return None, "wait_spec.locator is required for locator waits"
+        state = str(spec.get("state") or "visible").strip().lower()
+        if state not in {"visible", "hidden", "enabled", "disabled"}:
+            return None, "wait_spec.state must be visible, hidden, enabled, or disabled"
+        normalized.update({"locator": locator, "state": state})
+        for key in ("text_contains", "text_equals"):
+            if spec.get(key) is not None:
+                normalized[key] = str(spec[key])[:500]
+    elif kind == "url":
+        contains = str(spec.get("contains") or spec.get("url_contains") or "").strip()
+        pattern = str(spec.get("pattern") or "").strip()
+        if not contains and not pattern:
+            return None, "wait_spec.contains or wait_spec.pattern is required for url waits"
+        if pattern:
+            try:
+                re.compile(pattern)
+            except re.error as exc:
+                return None, "wait_spec.pattern is invalid: %s" % exc
+        normalized.update({"contains": contains[:500], "pattern": pattern[:500]})
+    elif kind == "response":
+        targets = spec.get("targets", spec.get("listen_targets"))
+        if not targets:
+            return None, "wait_spec.targets is required for response waits"
+        normalized["targets"] = targets
+        for key in ("method", "url_contains", "api_target", "body_contains"):
+            if spec.get(key) is not None:
+                normalized[key] = str(spec[key])[:500]
+        if spec.get("status") is not None:
+            statuses = spec["status"] if isinstance(spec["status"], list) else [spec["status"]]
+            try:
+                normalized["status"] = [int(value) for value in statuses]
+            except (TypeError, ValueError):
+                return None, "wait_spec.status must be an integer or integer list"
+        normalized["body_artifact"] = bool(spec.get("body_artifact", False))
+    else:
+        column_title = str(spec.get("column_title") or "").strip()
+        if not column_title:
+            return None, "wait_spec.column_title is required for table waits"
+        match = str(spec.get("match") or "contains").strip().lower()
+        if match not in {"contains", "equals"}:
+            return None, "wait_spec.match must be contains or equals"
+        try:
+            table_index = max(int(spec.get("table_index", 0) or 0), 0)
+        except (TypeError, ValueError):
+            return None, "wait_spec.table_index must be a non-negative integer"
+        normalized.update({
+            "column_title": column_title,
+            "value": None if spec.get("value") is None else str(spec.get("value")),
+            "match": match,
+            "kind_hint": str(spec.get("table_kind") or spec.get("kind_hint") or "auto"),
+            "table_index": table_index,
+        })
+        if spec.get("expected_count") is not None:
+            try:
+                normalized["expected_count"] = max(int(spec["expected_count"]), 0)
+            except (TypeError, ValueError):
+                return None, "wait_spec.expected_count must be a non-negative integer"
+    return normalized, None
+
+
+def _wait_spec_observe_policy(spec: dict) -> dict:
+    """Only response waits need a pre-action observer/listener session."""
+    if spec["kind"] != "response":
+        return {
+            "skip_observe": True,
+            "signals": [],
+            "listen_targets": None,
+            "timeout": spec["timeout"],
+            "include_snapshot": False,
+            "snapshot_on_signal": False,
+            "detail": "summary",
+        }
+    return {
+        "skip_observe": False,
+        "signals": ["network"],
+        "listen_targets": spec["targets"],
+        "timeout": spec["timeout"],
+        "include_snapshot": False,
+        "snapshot_on_signal": False,
+        "detail": "summary",
+    }
+
+
+def _element_wait_summary(element, locator: str, state: str, matched: bool, text: str = "") -> dict:
+    return {
+        "type": "locator",
+        "matched": matched,
+        "locator": locator,
+        "state": state,
+        "tag": getattr(element, "tag", "") if element is not None else "",
+        "text": text[:160],
+    }
+
+
+def _wait_for_locator_spec(spec: dict, deadline: float, in_frame: bool) -> dict:
+    locator, state = spec["locator"], spec["state"]
+    while True:
+        remaining = _remaining_timeout(deadline)
+        probe_timeout = min(remaining, 0.25)
+        element = browser_session.find(
+            locator, in_frame=in_frame, timeout=probe_timeout, wait_clickable=False,
+        ) if probe_timeout > 0 else None
+        visible = bool(element and getattr(getattr(element, "states", None), "is_displayed", True))
+        enabled = bool(element and getattr(getattr(element, "states", None), "is_enabled", True))
+        try:
+            text = (element.text or "").strip() if element is not None else ""
+        except Exception:
+            text = ""
+        matched = {
+            "visible": visible,
+            "hidden": not visible,
+            "enabled": visible and enabled,
+            "disabled": bool(element) and not enabled,
+        }[state]
+        if spec.get("text_contains") is not None:
+            matched = matched and spec["text_contains"] in text
+        if spec.get("text_equals") is not None:
+            matched = matched and spec["text_equals"] == text
+        result = _element_wait_summary(element, locator, state, matched, text)
+        if matched or remaining <= 0:
+            result["elapsedMs"] = 0
+            return result
+        time.sleep(min(0.08, remaining))
+
+
+def _wait_for_url_spec(spec: dict, deadline: float) -> dict:
+    pattern = re.compile(spec["pattern"]) if spec.get("pattern") else None
+    while True:
+        tab = browser_session.get_tab()
+        target = browser_session.get_active_frame_ro(tab, timeout=0.1) or tab
+        url = str(getattr(target, "url", "") or "")
+        matched = (not spec.get("contains") or spec["contains"] in url) and (
+            pattern is None or bool(pattern.search(url))
+        )
+        if matched or _remaining_timeout(deadline) <= 0:
+            return {"type": "url", "matched": matched, "url": url[:500]}
+        time.sleep(min(0.08, _remaining_timeout(deadline)))
+
+
+def _wait_for_table_spec(spec: dict, deadline: float) -> dict:
+    while True:
+        result = table_facade.query_table(
+            operation="values", column_title=spec["column_title"],
+            kind=spec["kind_hint"], table_index=spec["table_index"], raw=False,
+        )
+        values = [str(value) for value in (result.get("values") or [])]
+        expected = spec.get("value")
+        if expected is None:
+            matched_values = values
+        elif spec["match"] == "equals":
+            matched_values = [value for value in values if value == expected]
+        else:
+            matched_values = [value for value in values if expected in value]
+        expected_count = spec.get("expected_count")
+        matched = bool(result.get("ok")) and (
+            len(matched_values) == expected_count if expected_count is not None else bool(matched_values)
+        )
+        compact = {
+            "type": "table",
+            "matched": matched,
+            "column_title": spec["column_title"],
+            "match_count": len(matched_values),
+            "sample_values": matched_values[:3],
+            "table_kind": result.get("kind"),
+        }
+        if matched or _remaining_timeout(deadline) <= 0:
+            return compact
+        time.sleep(min(0.12, _remaining_timeout(deadline)))
+
+
+def _network_body_artifact(packet: dict) -> dict:
+    payload = flow_evidence.sanitize({
+        "url": packet.get("url"), "method": packet.get("method"),
+        "status": packet.get("status"), "headers": packet.get("headers"),
+        "post_data": packet.get("post_data"), "body": packet.get("body"),
+    })
+    path = resource_store.resolve_path(
+        default_name="wait_response_%d.json" % time.time_ns(), category="network",
+    )
+    resource_store.write_json_atomic(path, payload)
+    return {"path": path, "size": os.path.getsize(path)}
+
+
+def _wait_for_response_spec(spec: dict, raw_signal: dict) -> dict:
+    packet = raw_signal.get("packet") if isinstance(raw_signal.get("packet"), dict) else {}
+    body_text = json.dumps(packet.get("body"), ensure_ascii=False, default=str)
+    matched = raw_signal.get("type") == "network"
+    if spec.get("method"):
+        matched = matched and packet.get("method", "").upper() == spec["method"].upper()
+    if spec.get("url_contains"):
+        matched = matched and spec["url_contains"] in str(packet.get("url") or "")
+    if spec.get("api_target"):
+        matched = matched and spec["api_target"] == str(packet.get("api_target") or "")
+    if spec.get("status"):
+        matched = matched and packet.get("status") in spec["status"]
+    if spec.get("body_contains"):
+        matched = matched and spec["body_contains"] in body_text
+    result = {
+        "type": "response",
+        "matched": bool(matched),
+        "url": str(packet.get("url") or "")[:500],
+        "method": packet.get("method") or "",
+        "api_target": packet.get("api_target") or "",
+        "status": packet.get("status"),
+        "elapsedMs": raw_signal.get("elapsedMs", 0),
+    }
+    if spec.get("body_artifact") and packet:
+        try:
+            result["body_artifact"] = _network_body_artifact(packet)
+        except OSError as exc:
+            result["body_artifact_error"] = str(exc)
+    return result
+
+
+def _compact_network_signal(signal: dict) -> dict:
+    """Keep network observability useful without serializing request/response bodies."""
+    if not isinstance(signal, dict) or signal.get("type") != "network":
+        return signal
+    packet = signal.get("packet") if isinstance(signal.get("packet"), dict) else {}
+    compact = {
+        "type": "network",
+        "url": str(packet.get("url") or signal.get("url") or "")[:500],
+        "method": packet.get("method") or signal.get("method") or "",
+        "api_target": packet.get("api_target") or signal.get("api_target") or "",
+        "status": packet.get("status", signal.get("status")),
+        "elapsedMs": signal.get("elapsedMs", 0),
+    }
+    if signal.get("events") is not None:
+        compact["events"] = signal["events"]
+    if signal.get("event_count") is not None:
+        compact["event_count"] = signal["event_count"]
+    return compact
 
 
 def explore_action(action: Literal["click", "input", "set_date",
@@ -1775,6 +2051,7 @@ def explore_action(action: Literal["click", "input", "set_date",
                    key: str = None, modifiers: list[str] = None,
                    by_js: bool = False, in_frame: bool = True, timeout: float = 8,
                    signals: list[str] = None, listen_targets: str = None,
+                   wait_spec: dict = None,
                    capture_before: bool = False, capture_after: bool = False,
                    include_snapshot: bool = None, detail: str = "summary",
                    expect: str = "auto", observe_mode: str = "auto",
@@ -1791,11 +2068,29 @@ def explore_action(action: Literal["click", "input", "set_date",
     瘦身说明（2026-07）：
     - capture_after 默认 False，避免返回冗余的完整页面模型（actions/fields/modals/tables）。
     - observe_mode=fast/none 可减少或跳过点击后观察；expect=modal/calendar/dropdown/toast/network 等表达观察意图。
-    - include_snapshot 默认按 observe_mode 推断；旧调用默认仍返回精简浮层快照。
-    - 只需确认浮层有无 → 用 signal.snapshot_after 即可。
+    - 默认只进行 1.5 秒轻量反馈观察；显式 expect/signals 才延长等待。
+    - include_snapshot 默认仅在 evidence/full 模式返回；auto/fast 只在检测到反馈时附加浮层快照。
     - 需要完整页面动作列表/表格数据 → 显式 capture_after=True。
     """
     flow_started = time.perf_counter()
+    try:
+        timeout = max(float(timeout or 0), 0.0)
+    except (TypeError, ValueError):
+        timeout = 0.0
+    deadline = time.monotonic() + timeout
+    timings = {}
+
+    def run_phase(name: str, operation):
+        started = time.perf_counter()
+        try:
+            return operation()
+        finally:
+            timings[name] = round((time.perf_counter() - started) * 1000, 1)
+
+    wait_spec, wait_spec_error = _normalize_wait_spec(wait_spec, timeout)
+    if wait_spec_error:
+        return {"ok": False, "reason": wait_spec_error}
+
     action_name = (action or "click").lower()
     requested_target_type = (
         str(target.get("type") or "").strip().lower()
@@ -1815,9 +2110,12 @@ def explore_action(action: Literal["click", "input", "set_date",
                 "reason": "enterprise profile 禁止%s；请使用语义 target 并保留业务反馈观察" % "、".join(violations),
                 "profile": tool_metadata.ENABLED_PROFILE,
             }
-    resolved = _resolve_target_action(
-        target, action_name, locator, x, y, field_name, row, col, column_title,
-        kind, table_index, icon_name, option_text, key, modifiers, in_frame,
+    resolved = run_phase(
+        "resolve_target_ms",
+        lambda: _resolve_target_action(
+            target, action_name, locator, x, y, field_name, row, col, column_title,
+            kind, table_index, icon_name, option_text, key, modifiers, in_frame,
+        ),
     )
     target_meta = resolved.get("target_meta") or {}
     target_error = resolved.get("target_error")
@@ -1848,34 +2146,57 @@ def explore_action(action: Literal["click", "input", "set_date",
         signals, listen_targets, expect, observe_mode, include_snapshot, detail,
         action_name, target_meta, timeout,
     )
+    effective_listen_targets = listen_targets
+    if wait_spec:
+        observe_policy = _wait_spec_observe_policy(wait_spec)
+        effective_listen_targets = observe_policy["listen_targets"]
     if capture_after and include_snapshot is None:
         observe_policy["include_snapshot"] = False
+        observe_policy["snapshot_on_signal"] = False
     before = None
     if capture_before:
-        before = page_model.capture_page_model(include_filters=False, include_table_data=False,
-                                               max_table_rows=20, max_elements=80)
+        before = run_phase(
+            "capture_before_ms",
+            lambda: page_model.capture_page_model(
+                include_filters=False, include_table_data=False,
+                max_table_rows=20, max_elements=80,
+            ),
+        )
 
     if observe_policy["skip_observe"]:
         observe_start_result = {"ok": True, "session": "skipped",
                                 "reason": "observe disabled by expect/observe_mode"}
     else:
-        observe_start_result = observe.observe_start(
-            signals=observe_policy["signals"],
-            listen_targets=listen_targets,
-            native_wait=recipe_context.requires_native_actions(),
+        observe_start_result = run_phase(
+            "observe_start_ms",
+            lambda: observe.observe_start(
+                signals=observe_policy["signals"],
+                listen_targets=effective_listen_targets,
+                native_wait=recipe_context.requires_native_actions(),
+            ),
         )
     action_result = {"ok": False, "reason": "action not executed"}
-    cleanup = table_facade.pre_click_cleanup(clean_overlays)
+    cleanup = run_phase(
+        "pre_cleanup_ms",
+        lambda: table_facade.pre_click_cleanup(clean_overlays),
+    )
     try:
         tab = browser_session.get_tab()
-        if target_error:
+        action_timeout = _remaining_timeout(deadline)
+        if action_timeout <= 0:
+            action_result = {"ok": False, "reason": "动作执行前已超出时间预算"}
+        elif target_error:
             action_result = dict(target_error)
         elif action_name == "click":
             if not locator:
                 action_result = {"ok": False, "reason": "locator is required for click"}
             else:
-                action_result = _resolve_and_click(
-                    locator, in_frame=in_frame, by_js=by_js, timeout=timeout,
+                action_result = run_phase(
+                    "action_ms",
+                    lambda: _resolve_and_click(
+                        locator, in_frame=in_frame, by_js=by_js,
+                        timeout=action_timeout, deadline=deadline,
+                    ),
                 )
                 if action_result.get("ok"):
                     action_result["action"] = "click"
@@ -1883,22 +2204,31 @@ def explore_action(action: Literal["click", "input", "set_date",
             if x is None or y is None:
                 action_result = {"ok": False, "reason": "x/y are required for click_xy"}
             else:
-                tab.actions.move_to((x, y), duration=0.3).click()
+                run_phase(
+                    "action_ms",
+                    lambda: tab.actions.move_to((x, y), duration=0.3).click(),
+                )
                 action_result = {"ok": True, "action": "click_xy", "x": x, "y": y}
         elif action_name == "input":
             if text is None:
                 action_result = {"ok": False, "reason": "text is required for input"}
             elif field_name:
-                action_result = set_field_value(
-                    field_name, text, in_frame=in_frame, clear=True, timeout=timeout,
-                    scope=target_meta.get("scope", "auto"),
-                    select_index=int(target_meta.get("select_index", 0) or 0),
+                action_result = run_phase(
+                    "action_ms",
+                    lambda: set_field_value(
+                        field_name, text, in_frame=in_frame, clear=True, timeout=action_timeout,
+                        scope=target_meta.get("scope", "auto"),
+                        select_index=int(target_meta.get("select_index", 0) or 0),
+                    ),
                 )
                 action_result["action"] = "input"
             elif not locator:
                 action_result = {"ok": False, "reason": "locator or semantic field target is required for input"}
             else:
-                action_result = input(locator, text, in_frame=in_frame, timeout=timeout)
+                action_result = run_phase(
+                    "action_ms",
+                    lambda: input(locator, text, in_frame=in_frame, timeout=action_timeout),
+                )
                 action_result["action"] = "input"
         elif action_name == "set_date":
             if not field_name or not (date or (start_date and end_date)):
@@ -1907,44 +2237,65 @@ def explore_action(action: Literal["click", "input", "set_date",
                     "reason": "set_date requires field_name and either date or start_date/end_date",
                 }
             else:
-                action_result = set_date(
-                    field_name, date=date, start_date=start_date, end_date=end_date,
-                    in_frame=in_frame, timeout=timeout,
-                    scope=target_meta.get("scope", "auto"),
-                    select_index=int(target_meta.get("select_index", 0) or 0),
+                action_result = run_phase(
+                    "action_ms",
+                    lambda: set_date(
+                        field_name, date=date, start_date=start_date, end_date=end_date,
+                        in_frame=in_frame, timeout=action_timeout,
+                        scope=target_meta.get("scope", "auto"),
+                        select_index=int(target_meta.get("select_index", 0) or 0),
+                    ),
                 )
                 action_result["action"] = "set_date"
         elif action_name == "date_range":
             if not field_name or not start_date or not end_date:
                 action_result = {"ok": False, "reason": "field_name, start_date and end_date are required for date_range"}
             else:
-                action_result = set_date(
-                    field_name, start_date=start_date, end_date=end_date,
-                    in_frame=in_frame, timeout=timeout,
-                    scope=target_meta.get("scope", "auto"),
-                    select_index=int(target_meta.get("select_index", 0) or 0),
+                action_result = run_phase(
+                    "action_ms",
+                    lambda: set_date(
+                        field_name, start_date=start_date, end_date=end_date,
+                        in_frame=in_frame, timeout=action_timeout,
+                        scope=target_meta.get("scope", "auto"),
+                        select_index=int(target_meta.get("select_index", 0) or 0),
+                    ),
                 )
                 action_result["action"] = "date_range"
         elif action_name == "field_click":
             scope = "auto" if in_frame else "top"
-            action_result = _click_field_raw(field_name or "", in_frame=in_frame,
-                                             timeout=min(timeout, 5), scope=target_meta.get("scope", scope),
-                                             select_index=int(target_meta.get("select_index", 0) or 0))
+            action_result = run_phase(
+                "action_ms",
+                lambda: _click_field_raw(
+                    field_name or "", in_frame=in_frame,
+                    timeout=min(action_timeout, 5), scope=target_meta.get("scope", scope),
+                    select_index=int(target_meta.get("select_index", 0) or 0),
+                ),
+            )
             if action_result.get("control_type") and "control_type" not in target_meta:
                 target_meta["control_type"] = action_result["control_type"]
         elif action_name == "table_cell":
-            action_result = _click_table_cell_raw(
-                row=row, col=col, column_title=column_title, kind=kind,
-                table_index=table_index, icon_name=icon_name,
+            action_result = run_phase(
+                "action_ms",
+                lambda: _click_table_cell_raw(
+                    row=row, col=col, column_title=column_title, kind=kind,
+                    table_index=table_index, icon_name=icon_name,
+                ),
             )
             action_result["action"] = "table_cell"
         elif action_name == "select_option":
-            action_result = page_model.select_option(field_name=field_name or "",
-                                                     option_text=option_text or "",
-                                                     timeout=min(timeout, 5))
+            action_result = run_phase(
+                "action_ms",
+                lambda: page_model.select_option(
+                    field_name=field_name or "", option_text=option_text or "",
+                    timeout=min(action_timeout, 5),
+                ),
+            )
             action_result["action"] = "select_option"
         elif action_name == "press_key":
-            action_result = _press_key_raw(tab, key or "", modifiers=modifiers)
+            action_result = run_phase(
+                "action_ms",
+                lambda: _press_key_raw(tab, key or "", modifiers=modifiers),
+            )
             action_result["action"] = "press_key"
         else:
             action_result = {"ok": False, "reason": "unsupported action: %s" % action}
@@ -1952,39 +2303,117 @@ def explore_action(action: Literal["click", "input", "set_date",
         action_result = {"ok": False, "reason": str(e)}
     finally:
         action_result = table_facade.attach_cleanup(action_result, cleanup)
-        if observe_policy["skip_observe"]:
+        if not action_result.get("ok"):
+            raw_signal = (
+                {"type": "skipped", "events": []}
+                if observe_policy["skip_observe"] else run_phase(
+                    "observe_wait_ms",
+                    lambda: observe.observe_wait(
+                        timeout=0, include_snapshot=False,
+                        detail=observe_policy["detail"],
+                        native_wait=recipe_context.requires_native_actions(),
+                    ),
+                )
+            )
+            if wait_spec:
+                signal = {
+                    "type": wait_spec["kind"], "matched": False,
+                    "reason": "action_failed", "elapsedMs": raw_signal.get("elapsedMs", 0),
+                }
+            else:
+                signal = raw_signal
+                signal["skipped_reason"] = "action_failed"
+        elif wait_spec:
+            wait_budget = min(wait_spec["timeout"], _remaining_timeout(deadline))
+            wait_deadline = time.monotonic() + max(wait_budget, 0.0)
+            if wait_spec["kind"] == "response":
+                raw_signal = run_phase(
+                    "observe_wait_ms",
+                    lambda: observe.observe_wait(
+                        timeout=wait_budget, include_snapshot=False,
+                        detail="summary",
+                        native_wait=recipe_context.requires_native_actions(),
+                    ),
+                )
+                signal = run_phase(
+                    "wait_spec_ms",
+                    lambda: _wait_for_response_spec(wait_spec, raw_signal),
+                )
+            elif wait_spec["kind"] == "locator":
+                signal = run_phase(
+                    "wait_spec_ms",
+                    lambda: _wait_for_locator_spec(wait_spec, wait_deadline, in_frame),
+                )
+            elif wait_spec["kind"] == "url":
+                signal = run_phase(
+                    "wait_spec_ms",
+                    lambda: _wait_for_url_spec(wait_spec, wait_deadline),
+                )
+            else:
+                signal = run_phase(
+                    "wait_spec_ms",
+                    lambda: _wait_for_table_spec(wait_spec, wait_deadline),
+                )
+            signal["elapsedMs"] = timings.get("wait_spec_ms", signal.get("elapsedMs", 0))
+        elif observe_policy["skip_observe"]:
             signal = {"type": "skipped", "reason": observe_start_result["reason"],
                       "events": []}
-        elif not action_result.get("ok"):
-            signal = observe.observe_wait(timeout=0, include_snapshot=False,
-                                          detail=observe_policy["detail"],
-                                          native_wait=recipe_context.requires_native_actions())
-            signal["skipped_reason"] = "action_failed"
         else:
-            signal = observe.observe_wait(
-                timeout=observe_policy["timeout"],
-                include_snapshot=observe_policy["include_snapshot"],
-                detail=observe_policy["detail"],
-                native_wait=recipe_context.requires_native_actions(),
+            signal = run_phase(
+                "observe_wait_ms",
+                lambda: observe.observe_wait(
+                    timeout=min(observe_policy["timeout"], _remaining_timeout(deadline)),
+                    include_snapshot=observe_policy["include_snapshot"],
+                    detail=observe_policy["detail"],
+                    native_wait=recipe_context.requires_native_actions(),
+                ),
             )
+
+    if not wait_spec:
+        signal = _compact_network_signal(signal)
+
+    wait_snapshot = bool(wait_spec) and (
+        include_snapshot is True
+        or wait_spec["evidence"] == "full"
+        or (wait_spec["evidence"] == "on_failure" and not signal.get("matched"))
+    )
+    if wait_snapshot or (
+        not wait_spec
+        and observe_policy.get("snapshot_on_signal")
+        and signal.get("type") not in {"none", "skipped"}
+    ):
+        signal["snapshot_after"] = run_phase(
+            "signal_snapshot_ms",
+            lambda: observe.observe_snapshot(detail=observe_policy["detail"]),
+        )
 
     after = None
     if capture_after:
-        after = page_model.capture_page_model(include_filters=False, include_table_data=False,
-                                             max_table_rows=20, max_elements=80)
+        after = run_phase(
+            "capture_after_ms",
+            lambda: page_model.capture_page_model(
+                include_filters=False, include_table_data=False,
+                max_table_rows=20, max_elements=80,
+            ),
+        )
     result = {
-        "ok": bool(action_result.get("ok")),
+        "ok": bool(action_result.get("ok")) and (
+            wait_spec is None or bool(signal.get("matched"))
+        ),
         "observe_start": observe_start_result,
         "observe_policy": observe_policy,
+        "wait_spec": wait_spec,
         "target": target_meta or None,
         "action": action_result,
         "signal": signal,
         "before": before,
         "after": after,
+        "timings": timings,
     }
     screenshot_path = None
-    if flow_evidence.wants_screenshot():
+    if flow_evidence.wants_screenshot(result):
         try:
+            screenshot_started = time.perf_counter()
             screenshot_path = resource_store.resolve_path(
                 default_name="flow_step_%d.png" % time.time_ns(),
                 category="screenshots",
@@ -1993,7 +2422,11 @@ def explore_action(action: Literal["click", "input", "set_date",
         except Exception as exc:
             logger.debug("flow screenshot failed: %s", exc)
             screenshot_path = None
-    flow_step = flow_evidence.record_exploration(
+        finally:
+            timings["screenshot_ms"] = round((time.perf_counter() - screenshot_started) * 1000, 1)
+    flow_step = run_phase(
+        "evidence_record_ms",
+        lambda: flow_evidence.record_exploration(
         {
             "action": action, "target": target, "locator": locator, "x": x, "y": y,
             "row": row, "col": col, "column_title": column_title, "kind": kind,
@@ -2002,11 +2435,13 @@ def explore_action(action: Literal["click", "input", "set_date",
             "start_date": start_date, "end_date": end_date, "key": key, "modifiers": modifiers,
             "by_js": by_js, "in_frame": in_frame, "timeout": timeout,
             "signals": signals, "listen_targets": listen_targets, "expect": expect,
+            "wait_spec": wait_spec,
             "observe_mode": observe_mode, "detail": detail, "clean_overlays": clean_overlays,
         },
         result,
         elapsed_ms=int((time.perf_counter() - flow_started) * 1000),
-        screenshot=screenshot_path,
+            screenshot=screenshot_path,
+        ),
     )
     if isinstance(flow_step, dict) and flow_step.get("ok") is False:
         result = dict(result)
@@ -2015,6 +2450,7 @@ def explore_action(action: Literal["click", "input", "set_date",
         result["flow_recording"] = flow_step
     elif flow_step:
         result["flow_step"] = flow_step
+    timings["total_ms"] = round((time.perf_counter() - flow_started) * 1000, 1)
     return result
 
 
@@ -2141,8 +2577,18 @@ def get_frame(locator, timeout: float = 5) -> dict:
 
 
 def _resolve_and_click(locator: str, in_frame: bool = True, by_js: bool = False,
-                       timeout: float = 5) -> dict:
-    """Resolve a locator, click it using actions chain (move_to + click)."""
+                       timeout: float = 5, deadline: float = None) -> dict:
+    """Resolve and click within one shared deadline.
+
+    Text fallbacks are intentionally bounded. The former implementation let each
+    fallback consume the full timeout, so an unsuccessful text lookup could take
+    several times longer than the public ``timeout`` value.
+    """
+    try:
+        timeout = max(float(timeout or 0), 0.0)
+    except (TypeError, ValueError):
+        timeout = 0.0
+    deadline = deadline if deadline is not None else time.monotonic() + timeout
     raw_text = _extract_text_locator(locator)
     ele = None
     native_only = recipe_context.requires_native_actions()
@@ -2151,28 +2597,36 @@ def _resolve_and_click(locator: str, in_frame: bool = True, by_js: bool = False,
                 "reason": "run_test_cases 禁止 by_js 点击"}
     if raw_text:
         for candidate in _clickable_text_locators(raw_text):
-            ele = browser_session.find(candidate, in_frame=in_frame, timeout=min(timeout, 1.0),
+            probe_timeout = _remaining_timeout(deadline, 0.6)
+            if probe_timeout <= 0:
+                break
+            ele = browser_session.find(candidate, in_frame=in_frame, timeout=probe_timeout,
                                        wait_clickable=False)
             if ele:
                 break
     if not ele:
-        ele = browser_session.find(locator, in_frame=in_frame, timeout=timeout,
+        lookup_timeout = _remaining_timeout(deadline)
+        if lookup_timeout <= 0:
+            return {"ok": False, "locator": locator, "reason": "点击定位超出时间预算"}
+        ele = browser_session.find(locator, in_frame=in_frame, timeout=lookup_timeout,
                                    wait_clickable=False)
     if not ele and raw_text and in_frame:
-        # 1. @@text(): 搜索整个元素内所有文本（非仅直接文本节点）
+        fallback_locators = []
         if " " in raw_text:
-            ele = browser_session.find(f"@@text():{raw_text}", in_frame=in_frame,
-                                       timeout=timeout, wait_clickable=False)
-        # 2. tx: 简化写法
-        if not ele:
-            ele = browser_session.find(f"tx:{raw_text}", in_frame=in_frame,
-                                       timeout=timeout, wait_clickable=False)
-        # 3. tx= 精确匹配
-        if not ele:
-            ele = browser_session.find(f"tx={raw_text}", in_frame=in_frame,
-                                       timeout=timeout, wait_clickable=False)
+            fallback_locators.append(f"@@text():{raw_text}")
+        fallback_locators.extend((f"tx:{raw_text}", f"tx={raw_text}"))
+        for fallback_locator in fallback_locators:
+            probe_timeout = _remaining_timeout(deadline, 0.6)
+            if probe_timeout <= 0:
+                break
+            ele = browser_session.find(
+                fallback_locator, in_frame=in_frame,
+                timeout=probe_timeout, wait_clickable=False,
+            )
+            if ele:
+                break
         # 4. JS 降级只供交互探索使用；正式回放必须可由 DrissionPage 定位。
-        if not ele and not native_only:
+        if not ele and not native_only and _remaining_timeout(deadline) > 0:
             res = _click_text_by_js(locator, in_frame=in_frame)
             if res and res.get("ok"):
                 return {"ok": True, "locator": locator, "fallback": "js-text"}
@@ -2185,8 +2639,14 @@ def _resolve_and_click(locator: str, in_frame: bool = True, by_js: bool = False,
     try:
         waiter = getattr(ele, "wait", None)
         if waiter is not None:
-            waiter.clickable(timeout=timeout, wait_stop=True, raise_err=False)
-        clicked = ele.click(by_js=by_js, timeout=_short_click_timeout(timeout), wait_stop=False)
+            clickable_timeout = _remaining_timeout(deadline)
+            if clickable_timeout <= 0:
+                return {"ok": False, "locator": locator, "reason": "等待元素可点击超出时间预算"}
+            waiter.clickable(timeout=clickable_timeout, wait_stop=True, raise_err=False)
+        click_timeout = _remaining_timeout(deadline, 2.0)
+        if click_timeout <= 0:
+            return {"ok": False, "locator": locator, "reason": "执行点击超出时间预算"}
+        clicked = ele.click(by_js=by_js, timeout=_short_click_timeout(click_timeout), wait_stop=False)
         if clicked is False:
             raise RuntimeError("DrissionPage click returned False")
     except Exception as e:
@@ -2197,7 +2657,7 @@ def _resolve_and_click(locator: str, in_frame: bool = True, by_js: bool = False,
                     "reason": "DrissionPage 原生元素点击失败: %s" % e}
 
         # Fallback 1: Try coordinate-based click
-        if not by_js:
+        if not by_js and _remaining_timeout(deadline) > 0:
             try:
                 mp = ele.rect.viewport_midpoint
                 cx, cy = float(mp[0]), float(mp[1])
@@ -2220,7 +2680,7 @@ def _resolve_and_click(locator: str, in_frame: bool = True, by_js: bool = False,
 
         # Fallback 2: Try JS click directly on the found element. Formal
         # execution deliberately stops after native coordinate fallback.
-        if not by_js and not native_only:
+        if not by_js and not native_only and _remaining_timeout(deadline) > 0:
             try:
                 logger.info("Coordinate click failed or skipped, trying direct JS click on %s", locator)
                 ele.click(by_js=True)
@@ -2234,7 +2694,7 @@ def _resolve_and_click(locator: str, in_frame: bool = True, by_js: bool = False,
                 logger.debug("Direct JS click fallback failed: %s", js_err)
 
         # Fallback 3: Try text search JS click outside formal execution only.
-        if not by_js and not native_only:
+        if not by_js and not native_only and _remaining_timeout(deadline) > 0:
             res = _click_text_by_js(locator, in_frame=in_frame)
             if res and res.get("ok"):
                 return {

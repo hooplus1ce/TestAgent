@@ -26,6 +26,7 @@ _MAX_ITEMS = 2_000
 _MAX_DEPTH = 20
 _MAX_PAGE_STATES = 200
 _MAX_STEPS = 1_000
+_SCREENSHOT_POLICIES = {"always", "on_failure", "never"}
 _BEARER_TEXT = re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]+")
 _AUTH_TEXT = re.compile(r"(?i)\b(authorization\s*[:=]\s*)[^\r\n,;&#]+")
 _URL_USERINFO = re.compile(r"(?i)([a-z][a-z0-9+.-]*://)[^/@\s]+@")
@@ -128,10 +129,19 @@ def sanitize_artifact(value):
 
 def start(module: str, flow_name: str = "exploration", capture_screenshots: bool = True,
           scenario_type: str = "功能测试", risk_type: str = "正常路径",
-          destructive: bool = False, cleanup_strategy: str = "") -> dict:
+          destructive: bool = False, cleanup_strategy: str = "",
+          screenshot_policy: str = "on_failure") -> dict:
     """Start one evidence flow. A second active flow is rejected to preserve ordering."""
     if not isinstance(capture_screenshots, bool) or not isinstance(destructive, bool):
         return {"ok": False, "reason": "capture_screenshots and destructive must be booleans"}
+    screenshot_policy = str(screenshot_policy or "on_failure").strip().lower()
+    if screenshot_policy not in _SCREENSHOT_POLICIES:
+        return {
+            "ok": False,
+            "reason": "screenshot_policy must be one of: always, on_failure, never",
+        }
+    if not capture_screenshots:
+        screenshot_policy = "never"
     values = {}
     for name, value, default, limit in (
         ("module", module, "", 200),
@@ -161,10 +171,16 @@ def start(module: str, flow_name: str = "exploration", capture_screenshots: bool
             "cleanup_strategy": values["cleanup_strategy"],
             "started_at": _now(),
             "capture_screenshots": capture_screenshots,
+            "screenshot_policy": screenshot_policy,
             "page_states": [],
             "steps": [],
         }
-        return {"ok": True, "flow_id": _active_flow["flow_id"], "module": _active_flow["module"]}
+        return {
+            "ok": True,
+            "flow_id": _active_flow["flow_id"],
+            "module": _active_flow["module"],
+            "screenshot_policy": screenshot_policy,
+        }
 
 
 def is_active() -> bool:
@@ -172,9 +188,17 @@ def is_active() -> bool:
         return _active_flow is not None
 
 
-def wants_screenshot() -> bool:
+def wants_screenshot(result: dict | None = None) -> bool:
+    """Decide whether the active evidence flow should save this action screenshot."""
     with _lock:
-        return bool(_active_flow and _active_flow.get("capture_screenshots"))
+        if not _active_flow or not _active_flow.get("capture_screenshots"):
+            return False
+        policy = _active_flow.get("screenshot_policy", "always")
+        if policy == "always":
+            return True
+        if policy == "on_failure":
+            return result is None or not bool(isinstance(result, dict) and result.get("ok"))
+        return False
 
 
 def status() -> dict:
@@ -193,6 +217,7 @@ def status() -> dict:
                 "scenario_type": flow.get("scenario_type", "功能测试"),
                 "risk_type": flow.get("risk_type", "正常路径"),
                 "destructive": bool(flow.get("destructive")),
+                "screenshot_policy": flow.get("screenshot_policy", "always"),
                 "step_count": len(steps),
                 "passed_step_count": sum(step.get("outcome") == "passed" for step in steps if isinstance(step, dict)),
                 "failed_step_count": sum(step.get("outcome") == "failed" for step in steps if isinstance(step, dict)),

@@ -5,6 +5,7 @@ description = "Enterprise test automation project using the DrissionPage MCP ser
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+    "drissionpage>=5.0.0b0",
     "drissionpage-mcp",
     "openpyxl>=3.1.5",
 ]

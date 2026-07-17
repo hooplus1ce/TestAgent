@@ -12,11 +12,14 @@ from drissionpage_mcp.services import browser_session, session_auth
 
 @tool(name="connect")
 def connect(
-    port: int = config.DEFAULT_PORT,
-    target_hint: str = config.DEFAULT_TARGET_HINT,
+    port: int | None = None,
+    target_hint: str | None = None,
 ) -> dict:
-    """连接 Chrome。先检查 port 上是否已有 Chrome 实例，有则接管；无则根据
-    dp_configs.ini 配置自动启动新实例。返回当前 url/title 与所有 tab 列表。"""
+    """连接 Chrome。未指定端口时使用配置的完整 CDP 地址；指定端口仅覆盖本次调用。
+
+    先检查该地址上是否已有 Chrome 实例，有则接管；无则根据 dp_configs.ini 配置
+    自动启动新实例。返回当前 url/title 与所有 tab 列表。
+    """
     _rwlock.acquire_write()
     try:
         tab = browser_session.connect(port, target_hint)
