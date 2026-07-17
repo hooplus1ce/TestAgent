@@ -17,7 +17,8 @@
                 "DRISSIONPAGE_MCP_COMPONENT_RELOAD": "true",
                 "DRISSIONPAGE_MCP_DISCOVERY": "search",
                 "DRISSIONPAGE_MCP_OBSERVABILITY": "true"
-            }
+            },
+            "enabled": false
         }
     }
 }

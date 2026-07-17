@@ -1,23 +1,25 @@
 {
-    "mcpServers": {
-        "drissionpage-mcp": {
-            "command": "uv",
-            "args": [
-                "run",
-                "--package",
-                "drissionpage-mcp",
-                "-m",
-                "drissionpage_mcp"
-            ],
-            "cwd": "${workspaceFolder}",
-            "env": {
-                "DRISSIONPAGE_MCP_PROFILE": "full",
-                "DRISSIONPAGE_MCP_CAPS": "all",
-                "DRISSIONPAGE_MCP_WARMUP_OCR": "true",
-                "DRISSIONPAGE_MCP_COMPONENT_RELOAD": "true",
-                "DRISSIONPAGE_MCP_DISCOVERY": "search",
-                "DRISSIONPAGE_MCP_OBSERVABILITY": "true"
-            }
-        }
+  "$schema": "https://raw.githubusercontent.com/can1357/oh-my-pi/main/packages/coding-agent/src/config/mcp-schema.json",
+  "mcpServers": {
+    "drissionpage-mcp": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--package",
+        "drissionpage-mcp",
+        "-m",
+        "drissionpage_mcp"
+      ],
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "DRISSIONPAGE_MCP_PROFILE": "full",
+        "DRISSIONPAGE_MCP_CAPS": "all",
+        "DRISSIONPAGE_MCP_WARMUP_OCR": "true",
+        "DRISSIONPAGE_MCP_COMPONENT_RELOAD": "true",
+        "DRISSIONPAGE_MCP_DISCOVERY": "search",
+        "DRISSIONPAGE_MCP_OBSERVABILITY": "true"
+      },
+      "enabled": false
     }
+  }
 }
